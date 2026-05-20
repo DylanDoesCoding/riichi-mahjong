@@ -1,0 +1,29 @@
+# Godot 4 generated files
+.godot/
+*.uid
+
+# Mono / .NET build output
+.mono/
+*.dll
+*.pdb
+*.user
+bin/
+obj/
+tests/bin/
+tests/obj/
+
+# Godot export binaries (keep sources, not the built executables)
+export/windows/
+export/android/
+
+# Android SDK files (Godot library AAR files exceed GitHub's 100 MB limit)
+android/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.suo
+
+# OS metadata
+Thumbs.db
+.DS_Store
