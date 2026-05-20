@@ -1,24 +1,14 @@
 // =============================================================================
 // GameController.cs
-// The root script of the GameTable scene — the bridge between GameState
-// (pure C# logic) and Godot (rendering, input, timing).
+// Root script of the GameTable scene — bridges game logic and Godot rendering.
 //
-// Responsibilities:
-//   - Own the GameState and three AIPlayer instances
-//   - Drive the game loop: advance AI turns automatically with a small delay
-//   - Listen to GameState events and update the UI in response
-//   - Route human player input (tile clicks, button presses) into GameState
-//   - Handle the claim window: show Pon/Chi/Ron buttons when applicable
+// Supports two modes detected at startup:
+//   Local mode  — owns GameState + AIPlayer[]; same as original single-player flow.
+//   Network mode — subscribes to NetworkManager events; routes human actions through
+//                  NetworkManager.Send*(); the server drives everything else.
 //
-// Node structure expected in the scene (set up in GameTable.tscn):
-//   GameTable (this script)
-//   └── UI (Control)
-//       ├── PlayerHand    (HandDisplay — bottom)
-//       ├── TopHand       (HandDisplay — top)
-//       ├── LeftHand      (HandDisplay — left)
-//       ├── RightHand     (HandDisplay — right)
-//       ├── DiscardArea   (Control — centre table)
-//       └── HUD           (HUD script)
+// The human seat is stored in _humanSeat (local: always 0; network: from server).
+// GetHandDisplay() uses _humanSeat so seat-rotation works identically in both modes.
 // =============================================================================
 
 using Godot;
@@ -33,58 +23,85 @@ namespace RiichiMahjong.UI
 {
     public partial class GameController : Node
     {
-        // ---- Game logic objects (no Godot dependency) -----------------------
+        // ---- Mode -----------------------------------------------------------
 
-        private GameState  _game  = null!;
-        private AIPlayer[] _ai    = null!;
+        private bool _isNetworkMode;
+        private int  _humanSeat;           // 0 in local mode; server-assigned in network mode
 
-        // ---- AI turn delay (seconds) ----------------------------------------
+        // ---- Local (single-player) objects ----------------------------------
 
-        [Export] public float AIThinkDelay   = 0.8f;   // Pause before AI discards
-        [Export] public float AIClaimDelay   = 0.4f;   // Pause before AI decides to claim
+        private GameState  _game = null!;
+        private AIPlayer[] _ai   = null!;
 
-        // ---- Pending AI timer -----------------------------------------------
+        // ---- Network-mode display state -------------------------------------
+        // Populated/updated by incoming server messages; drives HandDisplay + HUD.
 
-        private float  _aiTimer      = 0f;
-        private bool   _aiTimerActive = false;
+        private string[] _netNames      = new string[4];
+        private int[]    _netScores     = new int[4];
+        private int[]    _netTileCounts = new int[4];
+        private int      _netDealerSeat;
+        private string   _netRoundWind  = "East";
+        private int      _netCounters;
+        private bool     _netIsInRiichi;     // human is in riichi this hand
+
+        // Per-seat open melds built up from meldDeclared messages
+        private readonly List<Meld>[] _netMelds =
+            { new(), new(), new(), new() };
+
+        // Human's own closed tiles (updated on handDealt / tileDrawn / meldDeclared)
+        private readonly List<Tile> _netMyTiles   = new();
+        private Tile?                _netDrawnTile = null;
+
+        // Last discard info — used to remove the correct tile when a meld is claimed
+        private int   _netLastDiscarderSeat   = -1;
+        private Tile? _netLastDiscardedTile   = null;
+
+        // Best chi combo pre-computed when claim window opens
+        private (Tile t1, Tile t2)? _netChiCombo;
+
+        // Minimal AI helper used only for chi-combo / riichi-candidate checks in network mode
+        private readonly AIPlayer _helperAi = new(AIDifficulty.Medium);
+
+        // ---- AI turn delay (seconds — local mode only) ----------------------
+
+        [Export] public float AIThinkDelay = 0.8f;
+        [Export] public float AIClaimDelay = 0.4f;
+
+        private float  _aiTimer         = 0f;
+        private bool   _aiTimerActive   = false;
         private string _aiPendingAction = "";
 
-        // ---- Claim window state ---------------------------------------------
+        // ---- Claim window (local mode only) ---------------------------------
 
-        // When a tile is discarded, we wait briefly for human to claim before AI claims
-        private float  _claimWindowTimer  = 0f;
-        private bool   _claimWindowActive = false;
-        private const float ClaimWindowDuration = 8.0f;   // Seconds human has to click Ron/Pon/Chi
+        private float _claimWindowTimer  = 0f;
+        private bool  _claimWindowActive = false;
+        private const float ClaimWindowDuration = 8.0f;
 
-        // ---- Riichi selection mode ------------------------------------------
+        // ---- Riichi selection mode (shared between modes) -------------------
 
-        // True while the player is in riichi mode (choosing which tile to discard for riichi)
         private bool       _riichiMode       = false;
         private List<Tile> _riichiCandidates = new();
 
         // ---- Riichi discard tracking ----------------------------------------
 
-        // Set in OnRiichiDeclared; consumed in the immediately-following OnTileDiscarded.
-        // Tells AddDiscard to render that one tile sideways in the river.
         private bool _nextDiscardIsRiichi = false;
         private int  _riichiDiscardSeat   = -1;
 
-        // ---- Post-riichi auto-discard timer ---------------------------------
+        // ---- Post-riichi auto-discard timer (local mode only) ---------------
 
-        // After declaring riichi and drawing a tile that can't tsumo, auto-discard after a brief pause
         private bool  _autoDiscardPending = false;
         private float _autoDiscardTimer   = 0f;
-        private const float AutoDiscardDelay = 0.9f;   // Seconds to show drawn tile before discarding
+        private const float AutoDiscardDelay = 0.9f;
 
-        // ---- Child node references (assigned in _Ready) --------------------
+        // ---- Child node references ------------------------------------------
 
-        private HandDisplay _playerHand  = null!;
-        private HandDisplay _topHand     = null!;
-        private HandDisplay _leftHand    = null!;
-        private HandDisplay _rightHand   = null!;
-        private HUD         _hud         = null!;
+        private HandDisplay _playerHand = null!;
+        private HandDisplay _topHand    = null!;
+        private HandDisplay _leftHand   = null!;
+        private HandDisplay _rightHand  = null!;
+        private HUD         _hud        = null!;
 
-        // ---- Audio -----------------------------------------------------------
+        // ---- Audio ----------------------------------------------------------
 
         private AudioStreamPlayer _bgMusic      = null!;
         private AudioStreamPlayer _sfxTileClack = null!;
@@ -96,102 +113,553 @@ namespace RiichiMahjong.UI
 
         public override void _Ready()
         {
-            // Get child node references — these must exist in the scene tree
             _playerHand = GetNode<HandDisplay>("UI/PlayerHand");
             _topHand    = GetNode<HandDisplay>("UI/TopHand");
             _leftHand   = GetNode<HandDisplay>("UI/LeftHand");
             _rightHand  = GetNode<HandDisplay>("UI/RightHand");
             _hud        = GetNode<HUD>("UI/HUD");
 
-            // Orientation / FaceDown / IsInteractive are set via the scene file
-            // so HandDisplay._Ready() already built the correct inner container.
-            // We only need to confirm the human hand is interactive here.
             _playerHand.IsInteractive = true;
             _playerHand.FaceDown      = false;
 
-            // Connect human hand signals
             _playerHand.TileDiscarded += OnHumanTileDiscarded;
             _playerHand.TileSelected  += OnHumanTileSelected;
 
-            // Connect HUD button signals
-            _hud.RiichiPressed           += OnHumanRiichi;
-            _hud.TsumoPressed            += OnHumanTsumo;
-            _hud.RonPressed              += OnHumanRon;
-            _hud.PonPressed              += OnHumanPon;
-            _hud.ChiPressed              += OnHumanChi;
-            _hud.KanPressed              += OnHumanKan;
-            _hud.PassPressed             += OnHumanPass;
-            _hud.NextHandPressed         += OnNextHand;
-            _hud.MenuPressed             += ReturnToMenu;
-            _hud.ScoringNextHandPressed  += OnNextHand;
-            _hud.ScoringMenuPressed      += ReturnToMenu;
-
-            // Create game logic
-            _game = new GameState(humanSeat: 0);
-
-            // Subscribe to game events
-            _game.OnTileDrawn     += OnTileDrawn;
-            _game.OnTileDiscarded += OnTileDiscarded;
-            _game.OnMeldDeclared  += OnMeldDeclared;
-            _game.OnRiichiDeclared += OnRiichiDeclared;
-            _game.OnHandEnd       += OnHandEnd;
-            _game.OnNewHand       += OnNewHand;
-            _game.OnGameOver      += OnGameOver;
-
-            // Create AI players (seats 1, 2, 3 are CPU)
-            _ai = new[]
-            {
-                new AIPlayer(AIDifficulty.Medium),   // Seat 0 = human (unused slot)
-                new AIPlayer(AIDifficulty.Medium),   // Seat 1
-                new AIPlayer(AIDifficulty.Medium),   // Seat 2
-                new AIPlayer(AIDifficulty.Medium),   // Seat 3
-            };
+            _hud.RiichiPressed          += OnHumanRiichi;
+            _hud.TsumoPressed           += OnHumanTsumo;
+            _hud.RonPressed             += OnHumanRon;
+            _hud.PonPressed             += OnHumanPon;
+            _hud.ChiPressed             += OnHumanChi;
+            _hud.KanPressed             += OnHumanKan;
+            _hud.PassPressed            += OnHumanPass;
+            _hud.NextHandPressed        += OnNextHand;
+            _hud.MenuPressed            += ReturnToMenu;
+            _hud.ScoringNextHandPressed += OnNextHand;
+            _hud.ScoringMenuPressed     += ReturnToMenu;
 
             // ---- Background music -------------------------------------------
-            _bgMusic = new AudioStreamPlayer();
-            _bgMusic.Bus = "Master";
+            _bgMusic = new AudioStreamPlayer { Bus = "Master" };
             var music = GD.Load<AudioStream>(
                 "res://Assets/Sounds/Whispering_Bamboo_Garden_2026-05-18T203144.wav");
             if (music != null)
             {
                 _bgMusic.Stream   = music;
                 _bgMusic.VolumeDb = GameSettings.LinearToDb(GameSettings.MusicVolume);
-                _bgMusic.Autoplay = false;
-                // Loop: reconnect finished signal to restart
                 _bgMusic.Finished += () => _bgMusic.Play();
                 _bgMusic.Play();
             }
             AddChild(_bgMusic);
 
-            // ---- SFX players ------------------------------------------------
             _sfxTileClack = MakeSfxPlayer(
                 "res://Assets/Sounds/mahjong_tile_clack_#1-1779136185604.wav");
             _sfxRiichi = MakeSfxPlayer(
                 "res://Assets/Sounds/richii_bet.wav");
 
-            // Start the game!
+            // ---- Detect and initialise mode ---------------------------------
+            _isNetworkMode = NetworkManager.Instance != null
+                             && NetworkManager.Instance.LocalSeat >= 0;
+
+            if (_isNetworkMode) InitNetworkMode();
+            else                InitLocalMode();
+        }
+
+        public override void _ExitTree()
+        {
+            if (_isNetworkMode) UnsubscribeNetworkEvents();
+        }
+
+        // =====================================================================
+        // Mode initialisation
+        // =====================================================================
+
+        private void InitLocalMode()
+        {
+            _humanSeat = 0;
+
+            _game = new GameState(humanSeat: 0);
+            _game.OnTileDrawn      += OnTileDrawn;
+            _game.OnTileDiscarded  += OnTileDiscarded;
+            _game.OnMeldDeclared   += OnMeldDeclared;
+            _game.OnRiichiDeclared += OnRiichiDeclared;
+            _game.OnHandEnd        += OnHandEnd;
+            _game.OnNewHand        += OnNewHand;
+            _game.OnGameOver       += OnGameOver;
+
+            _ai = new[]
+            {
+                new AIPlayer(AIDifficulty.Medium),   // seat 0 — human (slot unused)
+                new AIPlayer(AIDifficulty.Medium),   // seat 1
+                new AIPlayer(AIDifficulty.Medium),   // seat 2
+                new AIPlayer(AIDifficulty.Medium),   // seat 3
+            };
+
             _game.StartGame();
         }
 
-        private AudioStreamPlayer MakeSfxPlayer(string path)
+        private void InitNetworkMode()
         {
-            var player = new AudioStreamPlayer();
-            player.Bus = "Master";
-            var stream = GD.Load<AudioStream>(path);
-            if (stream != null)
-                player.Stream = stream;
-            player.VolumeDb = GameSettings.LinearToDb(GameSettings.SfxVolume);
-            AddChild(player);
-            return player;
+            _humanSeat = NetworkManager.Instance!.LocalSeat;
+            foreach (var ml in _netMelds) ml.Clear();
+            SubscribeNetworkEvents();
+            _hud.SetStatus("Waiting for hand to be dealt…");
         }
 
-        private void PlaySfx(AudioStreamPlayer player)
+        // =====================================================================
+        // NetworkManager event wiring
+        // =====================================================================
+
+        private void SubscribeNetworkEvents()
         {
-            if (player.Stream == null) return;
-            player.VolumeDb = GameSettings.LinearToDb(GameSettings.SfxVolume);
-            player.Stop();   // restart if already playing
-            player.Play();
+            var nm = NetworkManager.Instance!;
+            nm.OnHandDealt         += Net_OnHandDealt;
+            nm.OnTileDrawn         += Net_OnTileDrawn;
+            nm.OnTileDiscarded     += Net_OnTileDiscarded;
+            nm.OnMeldDeclared      += Net_OnMeldDeclared;
+            nm.OnRiichiDeclared    += Net_OnRiichiDeclared;
+            nm.OnClaimWindowOpened += Net_OnClaimWindowOpened;
+            nm.OnHandEnded         += Net_OnHandEnded;
+            nm.OnGameOver          += Net_OnGameOver;
+            nm.OnDisconnected      += Net_OnDisconnected;
         }
+
+        private void UnsubscribeNetworkEvents()
+        {
+            var nm = NetworkManager.Instance;
+            if (nm == null) return;
+            nm.OnHandDealt         -= Net_OnHandDealt;
+            nm.OnTileDrawn         -= Net_OnTileDrawn;
+            nm.OnTileDiscarded     -= Net_OnTileDiscarded;
+            nm.OnMeldDeclared      -= Net_OnMeldDeclared;
+            nm.OnRiichiDeclared    -= Net_OnRiichiDeclared;
+            nm.OnClaimWindowOpened -= Net_OnClaimWindowOpened;
+            nm.OnHandEnded         -= Net_OnHandEnded;
+            nm.OnGameOver          -= Net_OnGameOver;
+            nm.OnDisconnected      -= Net_OnDisconnected;
+        }
+
+        // =====================================================================
+        // Network-mode event handlers (server → UI)
+        // =====================================================================
+
+        private void Net_OnHandDealt(List<Tile> yourTiles, int[] tileCounts, int[] scores,
+            int dealerSeat, string roundWind, int counters, string[] names)
+        {
+            ExitRiichiMode();
+            _autoDiscardPending  = false;
+            _nextDiscardIsRiichi = false;
+            _riichiDiscardSeat   = -1;
+            _netChiCombo         = null;
+            _netIsInRiichi       = false;
+            _netLastDiscarderSeat   = -1;
+            _netLastDiscardedTile   = null;
+
+            _netNames      = names;
+            _netScores     = scores;
+            _netTileCounts = tileCounts;
+            _netDealerSeat = dealerSeat;
+            _netRoundWind  = roundWind;
+            _netCounters   = counters;
+
+            _netMyTiles.Clear();
+            _netMyTiles.AddRange(yourTiles);
+            _netDrawnTile = null;
+            foreach (var ml in _netMelds) ml.Clear();
+
+            _playerHand.FaceDown = false;
+            _topHand.FaceDown    = true;
+            _leftHand.FaceDown   = true;
+            _rightHand.FaceDown  = true;
+
+            _hud.ClearAllDiscards();
+            _hud.HideActionButtons();
+            _btnNextVisible(false);
+
+            NetRebuildMyHand();
+            for (int s = 0; s < 4; s++)
+                if (s != _humanSeat) NetRebuildOpponentHand(s);
+
+            NetUpdateHud();
+            _hud.SetStatus("Hand dealt — waiting for your turn…");
+        }
+
+        private void Net_OnTileDrawn(int seat, Tile? tile)
+        {
+            PlaySfx(_sfxTileClack);
+
+            if (seat == _humanSeat)
+            {
+                if (tile != null)
+                {
+                    _netMyTiles.Add(tile);
+                    _netDrawnTile = tile;
+                }
+                _netTileCounts[seat] = _netMyTiles.Count;
+                NetRebuildMyHand();
+
+                if (_netIsInRiichi)
+                {
+                    // Already in riichi — check tsumo
+                    var hand = NetBuildHand();
+                    bool canTsumo = hand.Shanten() == -1;
+                    if (canTsumo)
+                    {
+                        _hud.ShowActionButtons(canTsumo: true, canRiichi: false, canKan: false);
+                        _hud.SetStatus("TSUMO available! Click TSUMO to win, or discard drawn tile to pass.");
+                    }
+                    else
+                    {
+                        _hud.HideActionButtons();
+                        _hud.SetStatus("In Riichi — discard your drawn tile.");
+                    }
+                }
+                else
+                {
+                    ShowHumanActionButtonsNet();
+                }
+            }
+            else
+            {
+                _netTileCounts[seat]++;
+                NetRebuildOpponentHand(seat);
+                _hud.SetStatus("");
+            }
+        }
+
+        private void Net_OnTileDiscarded(int seat, Tile tile, bool isRiichi)
+        {
+            PlaySfx(_sfxTileClack);
+
+            _netLastDiscarderSeat = seat;
+            _netLastDiscardedTile = tile;
+
+            if (seat == _humanSeat)
+            {
+                // Remove from our closed tile list
+                for (int i = _netMyTiles.Count - 1; i >= 0; i--)
+                {
+                    if (_netMyTiles[i] == tile) { _netMyTiles.RemoveAt(i); break; }
+                }
+                _netDrawnTile = null;
+                _netTileCounts[seat] = _netMyTiles.Count;
+                GetHandDisplay(seat).RemoveTile(tile);
+            }
+            else
+            {
+                _netTileCounts[seat] = Math.Max(0, _netTileCounts[seat] - 1);
+                NetRebuildOpponentHand(seat);
+            }
+
+            bool isRiichiDiscard = isRiichi && _nextDiscardIsRiichi && seat == _riichiDiscardSeat;
+            if (isRiichiDiscard) { _nextDiscardIsRiichi = false; _riichiDiscardSeat = -1; }
+
+            _hud.AddDiscard(seat, tile, isRiichiDiscard);
+            NetUpdateHud();
+        }
+
+        private void Net_OnMeldDeclared(int seat, NetMeldDto dto)
+        {
+            var meld    = NetMeldDtoToMeld(dto);
+            string type = dto.Type.ToLower();
+
+            // Remove the claimed tile from the discarder's pool
+            if (type is "chi" or "pon" or "kanopen")
+                if (_netLastDiscarderSeat >= 0)
+                    _hud.RemoveLastDiscard(_netLastDiscarderSeat);
+
+            _netMelds[seat].Add(meld);
+
+            if (seat == _humanSeat)
+            {
+                // Remove hand tiles that went into the meld.
+                // Open melds: one tile came from the discard (not in our hand), rest from hand.
+                var meldTiles = dto.Tiles.Select(t => t.ToTile()).ToList();
+
+                int fromHand = type switch
+                {
+                    "chi"         => 2,   // 2 of 3 tiles were in hand
+                    "pon"         => 2,   // 2 of 3 tiles were in hand
+                    "kanopen"     => 3,   // 3 of 4 tiles were in hand
+                    "kanclosed"   => 4,   // all 4 from hand
+                    "kanextended" => 1,   // just the one extra tile
+                    _             => 0
+                };
+
+                // For open melds, skip one copy of the claimed (discard) tile
+                var tilesToRemove = new List<Tile>(meldTiles);
+                if (type is "chi" or "pon" or "kanopen" && _netLastDiscardedTile != null)
+                {
+                    for (int i = tilesToRemove.Count - 1; i >= 0; i--)
+                    {
+                        if (tilesToRemove[i] == _netLastDiscardedTile)
+                        {
+                            tilesToRemove.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+
+                // Remove at most `fromHand` tiles from our closed list
+                int removed = 0;
+                foreach (var t in tilesToRemove)
+                {
+                    if (removed >= fromHand) break;
+                    for (int i = _netMyTiles.Count - 1; i >= 0; i--)
+                    {
+                        if (_netMyTiles[i] == t) { _netMyTiles.RemoveAt(i); removed++; break; }
+                    }
+                }
+
+                _netDrawnTile        = null;
+                _netTileCounts[seat] = _netMyTiles.Count;
+                NetRebuildMyHand();
+
+                // After pon/chi the player must discard; after kan, a rinshan draw will arrive
+                if (type is "chi" or "pon")
+                    ShowHumanActionButtonsNet();
+                else
+                    _hud.SetStatus("Kan declared — waiting for rinshan draw…");
+            }
+            else
+            {
+                // Opponent: adjust closed-tile count and rebuild face-down display
+                int fromHand = type switch
+                {
+                    "chi" or "pon" => 2,
+                    "kanopen"      => 3,
+                    "kanclosed"    => 4,
+                    "kanextended"  => 1,
+                    _              => 0
+                };
+                _netTileCounts[seat] = Math.Max(0, _netTileCounts[seat] - fromHand);
+                NetRebuildOpponentHand(seat);
+            }
+
+            NetUpdateHud();
+        }
+
+        private void Net_OnRiichiDeclared(int seat)
+        {
+            PlaySfx(_sfxRiichi);
+            _nextDiscardIsRiichi = true;
+            _riichiDiscardSeat   = seat;
+            if (seat == _humanSeat) _netIsInRiichi = true;
+            _hud.ShowRiichiStick(seat);
+            NetUpdateHud();
+            _hud.SetStatus($"{_netNames[seat]} declares Riichi!");
+        }
+
+        private void Net_OnClaimWindowOpened(int discarderSeat, Tile tile,
+            bool canRon, bool canPon, bool canChi, bool canKan)
+        {
+            _hud.ShowClaimButtons(canRon: canRon, canPon: canPon, canChi: canChi, canKan: canKan);
+            _hud.HighlightLastDiscard(discarderSeat);
+
+            // Pre-compute best chi combo so CHI button just sends it
+            _netChiCombo = null;
+            if (canChi)
+            {
+                var hand  = NetBuildHand();
+                var combo = _helperAi.BestChiCombination(tile, hand);
+                if (combo != null) _netChiCombo = combo;
+            }
+
+            // Highlight the hand tiles involved in the potential meld
+            if (canPon)
+                _playerHand.HighlightClaimTiles(new[] { tile, tile });
+            else if (canChi && _netChiCombo != null)
+                _playerHand.HighlightClaimTiles(new[] { _netChiCombo.Value.t1, _netChiCombo.Value.t2 });
+            else if (canKan)
+                _playerHand.HighlightClaimTiles(new[] { tile, tile, tile });
+
+            _hud.SetStatus(canRon ? "RON available! Click RON or PASS." : "Claim window — act or PASS.");
+        }
+
+        private void Net_OnHandEnded(string reason, int[] winners, List<NetScoreEntry> scoreBoard,
+            int han, int fu, int basePoints, string[] yakuNames, int doraCount,
+            int winnerSeat, int payerSeat)
+        {
+            ExitRiichiMode();
+            _nextDiscardIsRiichi = false;
+            _riichiDiscardSeat   = -1;
+            _netIsInRiichi       = false;
+
+            if (_netLastDiscarderSeat >= 0)
+                _hud.ClearLastDiscardHighlight(_netLastDiscarderSeat);
+            _playerHand.ClearClaimTileHighlights();
+
+            // Reveal hands — in network mode opponents just flip their face-down tiles
+            for (int i = 0; i < 4; i++)
+                GetHandDisplay(i).RevealAll();
+
+            _hud.HideActionButtons();
+
+            // Apply updated scores from scoreboard
+            foreach (var entry in scoreBoard)
+                if (entry.Seat >= 0 && entry.Seat < 4) _netScores[entry.Seat] = entry.Points;
+            NetUpdateHud();
+
+            string r = reason.ToLower();
+            string msg = r switch
+            {
+                "tsumo"          => $"🀄 {_netNames[winnerSeat]} wins by Tsumo!",
+                "ron"            => $"🀄 {_netNames[winnerSeat]} wins by Ron!",
+                "exhaustivedraw" => "Exhaustive draw (Ryuukyoku)",
+                _                => "Hand over"
+            };
+            _hud.SetStatus(msg);
+
+            bool isWin = r is "tsumo" or "ron";
+            if (isWin)
+            {
+                string payerName = payerSeat >= 0 && payerSeat < 4 ? _netNames[payerSeat] : "";
+                _hud.ShowScoringPanelNet(
+                    winnerName:     _netNames[winnerSeat],
+                    isTsumo:        r == "tsumo",
+                    payerName:      payerName,
+                    allNames:       _netNames,
+                    allPoints:      _netScores,
+                    winnerSeat:     winnerSeat,
+                    dealerSeat:     _netDealerSeat,
+                    yakuNames:      yakuNames,
+                    han:            han,
+                    fu:             fu,
+                    doraCount:      doraCount,
+                    totalPointsWon: basePoints);
+            }
+            else
+            {
+                _btnNextVisible(true);
+            }
+        }
+
+        private void Net_OnGameOver(List<NetScoreEntry> scoreBoard)
+        {
+            _hud.SetStatus("");
+            var points = new int[4];
+            foreach (var e in scoreBoard)
+                if (e.Seat >= 0 && e.Seat < 4) points[e.Seat] = e.Points;
+
+            _hud.ShowGameOverPanel(
+                reason:       "Game over",
+                playerNames:  _netNames,
+                playerPoints: points,
+                dealerSeat:   _netDealerSeat);
+        }
+
+        private void Net_OnDisconnected()
+        {
+            _hud?.SetStatus("Disconnected from server.");
+            _hud?.HideActionButtons();
+        }
+
+        // =====================================================================
+        // Network-mode helpers
+        // =====================================================================
+
+        /// <summary>Build a Hand from current local tile list (for Shanten / tenpai checks).</summary>
+        private Hand NetBuildHand()
+        {
+            var hand = new Hand();
+            hand.AddTiles(_netMyTiles);
+            return hand;
+        }
+
+        private void NetRebuildMyHand()
+        {
+            _playerHand.Rebuild(_netMyTiles, _netMelds[_humanSeat], _netDrawnTile);
+        }
+
+        private void NetRebuildOpponentHand(int seat)
+        {
+            int count = Math.Max(0, _netTileCounts[seat]);
+            var dummy = Enumerable.Repeat(new Tile(TileSuit.Man, 1, false), count).ToList();
+            GetHandDisplay(seat).Rebuild(dummy, _netMelds[seat], drawnTile: null);
+        }
+
+        private void NetUpdateHud()
+            => _hud.UpdateAll(_netNames, _netScores, _netDealerSeat, _netRoundWind, _netCounters);
+
+        private void ShowHumanActionButtonsNet()
+        {
+            var hand = NetBuildHand();
+            hand.Sort();
+
+            bool tsumo = hand.Shanten() == -1;
+
+            bool hasOpenMelds = _netMelds[_humanSeat].Any(m => m.IsOpen);
+            bool riichi = false;
+            if (!_netIsInRiichi && !hasOpenMelds && _netMyTiles.Count == 14)
+                riichi = GetRiichiCandidatesFromTiles(_netMyTiles).Count > 0;
+
+            bool kan = NetCanHumanKan();
+            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: kan);
+        }
+
+        private bool NetCanHumanKan()
+        {
+            var counts = new Dictionary<int, int>();
+            foreach (var t in _netMyTiles)
+                counts[t.TileId] = counts.GetValueOrDefault(t.TileId, 0) + 1;
+            if (counts.Values.Any(v => v >= 4)) return true;
+
+            foreach (var meld in _netMelds[_humanSeat])
+                if (meld.Type == MeldType.Pon && _netMyTiles.Any(t => t == meld.Lead))
+                    return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Convert a wire-format NetMeldDto into a Core Meld for display purposes.
+        /// ClaimedTile / Source are approximated — they are not used for rendering.
+        /// </summary>
+        private static Meld NetMeldDtoToMeld(NetMeldDto dto)
+        {
+            var tiles = dto.Tiles.Select(t => t.ToTile()).ToList();
+            if (tiles.Count == 0) tiles.Add(new Tile(TileSuit.Man, 1, false));
+
+            return dto.Type.ToLower() switch
+            {
+                "chi"         => tiles.Count >= 3
+                                 ? Meld.Chi(tiles[0], tiles[1], tiles[2], tiles[0])
+                                 : Meld.Pair(tiles[0]),
+                "pon"         => Meld.Pon(tiles[0], tiles[0], ClaimSource.Right),
+                "kanopen"     => Meld.KanOpen(tiles[0], tiles[0], ClaimSource.Right),
+                "kanclosed"   => Meld.KanClosed(tiles[0]),
+                "kanextended" => Meld.KanExtended(tiles[0]),
+                _             => Meld.Pair(tiles[0])
+            };
+        }
+
+        /// <summary>
+        /// Finds tiles that, when discarded from the given list, leave the remaining 13 in tenpai.
+        /// Works from a raw tile list — usable in both local and network modes.
+        /// </summary>
+        private static List<Tile> GetRiichiCandidatesFromTiles(IList<Tile> allTiles)
+        {
+            var candidates = new List<Tile>();
+            var seenIds    = new HashSet<int>();
+
+            for (int i = 0; i < allTiles.Count; i++)
+            {
+                var candidate = allTiles[i];
+                if (!seenIds.Add(candidate.TileId)) continue;
+
+                var testTiles = allTiles.ToList();
+                testTiles.RemoveAt(i);
+
+                var testHand = new Hand();
+                testHand.AddTiles(testTiles);
+
+                if (testHand.IsTenpai())
+                    candidates.Add(candidate);
+            }
+            return candidates;
+        }
+
+        // =====================================================================
+        // Godot lifecycle — _Process, _Input
+        // =====================================================================
 
         public override void _Input(InputEvent e)
         {
@@ -199,82 +667,37 @@ namespace RiichiMahjong.UI
             {
                 if (key.Keycode == Key.Escape)
                     ReturnToMenu();
-                else if (key.Keycode == Key.F12)
+                else if (key.Keycode == Key.F12 && !_isNetworkMode)
                     PrintInputDiagnostics();
             }
         }
 
-        private void PrintInputDiagnostics()
-        {
-            GD.Print("=== INPUT DIAGNOSTICS (F12) ===");
-            var winSize  = DisplayServer.WindowGetSize();
-            var vpSize   = GetViewport().GetVisibleRect();
-            GD.Print($"  Window size = {winSize}  Viewport rect = {vpSize}");
-            GD.Print($"  HUD.MouseFilter       = {_hud.MouseFilter}");
-            GD.Print($"  PlayerHand.MouseFilter = {_playerHand.MouseFilter}");
-            GD.Print($"  PlayerHand.IsInteractive = {_playerHand.IsInteractive}");
-
-            var inner = _playerHand.GetChildCount() > 0 ? _playerHand.GetChild(0) : null;
-            if (inner != null)
-            {
-                GD.Print($"  _inner ({inner.GetType().Name}) child count = {inner.GetChildCount()}");
-                for (int i = 0; i < Math.Min(3, inner.GetChildCount()); i++)
-                {
-                    if (inner.GetChild(i) is TileNode tn)
-                        GD.Print($"    TileNode[{i}] MouseFilter={tn.MouseFilter} Disabled={tn.Disabled} Rect={tn.GetGlobalRect()}");
-                }
-            }
-            GD.Print("===============================");
-        }
-
-        private void ReturnToMenu()
-        {
-            // Stop any running timers so nothing fires after the scene changes
-            _aiTimerActive      = false;
-            _claimWindowActive  = false;
-            _autoDiscardPending = false;
-            _bgMusic?.Stop();
-            GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
-        }
-
         public override void _Process(double delta)
         {
-            // AI turn timer
+            // AI and claim-window timers only run in local mode
+            if (_isNetworkMode) return;
+
             if (_aiTimerActive)
             {
                 _aiTimer -= (float)delta;
-                if (_aiTimer <= 0f)
-                {
-                    _aiTimerActive = false;
-                    ExecuteAIPendingAction();
-                }
+                if (_aiTimer <= 0f) { _aiTimerActive = false; ExecuteAIPendingAction(); }
             }
 
-            // Claim window timer (auto-pass if human doesn't act)
             if (_claimWindowActive)
             {
                 _claimWindowTimer -= (float)delta;
-                if (_claimWindowTimer <= 0f)
-                {
-                    _claimWindowActive = false;
-                    AutoResolveClaimWindow();
-                }
+                if (_claimWindowTimer <= 0f) { _claimWindowActive = false; AutoResolveClaimWindow(); }
             }
 
-            // Post-riichi auto-discard: brief delay so the player can see the drawn tile
             if (_autoDiscardPending)
             {
                 _autoDiscardTimer -= (float)delta;
-                if (_autoDiscardTimer <= 0f)
-                {
-                    _autoDiscardPending = false;
-                    ExecuteAutoDiscard();
-                }
+                if (_autoDiscardTimer <= 0f) { _autoDiscardPending = false; ExecuteAutoDiscard(); }
             }
         }
 
         // =====================================================================
-        // Game event handlers (GameState → UI)
+        // Local (single-player) GameState event handlers
         // =====================================================================
 
         private void OnNewHand()
@@ -284,7 +707,6 @@ namespace RiichiMahjong.UI
             _nextDiscardIsRiichi = false;
             _riichiDiscardSeat   = -1;
 
-            // RevealAll() sets FaceDown=false on opponent displays — reset before rebuild.
             _playerHand.FaceDown = false;
             _topHand.FaceDown    = true;
             _leftHand.FaceDown   = true;
@@ -297,15 +719,16 @@ namespace RiichiMahjong.UI
             _hud.HideActionButtons();
             _btnNextVisible(false);
 
-            // Dealer already has 14 tiles — trigger their action immediately
             TriggerCurrentPlayerAction();
         }
 
         private void OnNextHand()
         {
-            _hud.HideScoringPanel();  // Safe to call even when already hidden
+            _hud.HideScoringPanel();
             _btnNextVisible(false);
-            _game.BeginNextHand();
+
+            if (_isNetworkMode) NetworkManager.Instance?.SendNextHand();
+            else                _game.BeginNextHand();
         }
 
         private void _btnNextVisible(bool v) => _hud.SetNextHandButtonVisible(v);
@@ -315,29 +738,22 @@ namespace RiichiMahjong.UI
             PlaySfx(_sfxTileClack);
 
             var hand    = _game.Players[playerIndex].Hand;
-            hand.Sort();   // Keep hand ordered; drawn tile stays at end
-            var display = GetHandDisplay(playerIndex);
-            display.Rebuild(hand.ClosedTiles, melds: hand.OpenMelds, drawnTile: hand.DrawnTile);
+            hand.Sort();
+            GetHandDisplay(playerIndex).Rebuild(hand.ClosedTiles, hand.OpenMelds, hand.DrawnTile);
             _hud.UpdateAll(_game);
 
-            if (playerIndex == _game.HumanSeat)
+            if (playerIndex == _humanSeat)
             {
                 if (hand.IsRiichi)
                 {
-                    // ---- Already in riichi: special draw handling ----
-                    // In riichi, shanten == -1 means the drawn tile completes the hand.
-                    // Riichi is always a yaku, so we don't need the full yaku pipeline here —
-                    // just use Shanten() as a fast, reliable tsumo check.
                     bool canTsumo = hand.Shanten() == -1;
                     if (canTsumo)
                     {
-                        // Pause and wait for player to click TSUMO (or manually discard the drawn tile)
                         _hud.ShowActionButtons(canTsumo: true, canRiichi: false, canKan: false);
                         _hud.SetStatus("TSUMO available! Click TSUMO to win, or discard to pass.");
                     }
                     else
                     {
-                        // Auto-discard the drawn tile after a brief pause so it's visible
                         _hud.HideActionButtons();
                         _hud.SetStatus("In Riichi — auto-discarding drawn tile…");
                         _autoDiscardPending = true;
@@ -355,52 +771,38 @@ namespace RiichiMahjong.UI
             }
         }
 
-        /// <summary>Discard the drawn tile automatically (called after auto-discard delay fires).</summary>
         private void ExecuteAutoDiscard()
         {
             if (!_game.IsHumanTurn || _game.Phase != TurnPhase.ActionPhase) return;
-            var hand = _game.Players[_game.HumanSeat].Hand;
+            var hand = _game.Players[_humanSeat].Hand;
             if (!hand.IsRiichi || hand.DrawnTile == null) return;
 
-            // Safety re-check: don't auto-discard if tsumo is now available.
-            // Use the same fast Shanten() == -1 check (riichi always provides yaku).
             if (hand.Shanten() == -1)
             {
                 _hud.ShowActionButtons(canTsumo: true, canRiichi: false, canKan: false);
                 _hud.SetStatus("TSUMO available! Click TSUMO to win, or discard to pass.");
                 return;
             }
-
-            _game.Discard(_game.HumanSeat, hand.DrawnTile);
+            _game.Discard(_humanSeat, hand.DrawnTile);
         }
 
         private void OnTileDiscarded(int playerIndex, Tile tile)
         {
             PlaySfx(_sfxTileClack);
 
-            var display = GetHandDisplay(playerIndex);
-            display.RemoveTile(tile);
+            GetHandDisplay(playerIndex).RemoveTile(tile);
 
-            // Consume the riichi flag — this exact discard is the one placed sideways.
             bool isRiichiDiscard = _nextDiscardIsRiichi && playerIndex == _riichiDiscardSeat;
-            if (isRiichiDiscard)
-            {
-                _nextDiscardIsRiichi = false;
-                _riichiDiscardSeat   = -1;
-            }
+            if (isRiichiDiscard) { _nextDiscardIsRiichi = false; _riichiDiscardSeat = -1; }
 
-            // Show the discard in the discard pool (HUD handles this)
             _hud.AddDiscard(playerIndex, tile, isRiichiDiscard);
             _hud.UpdateAll(_game);
 
-            // Open the claim window
             OpenClaimWindow(playerIndex, tile);
         }
 
         private void OnMeldDeclared(int playerIndex, Meld meld)
         {
-            // Only remove the discarded tile for open claims (Chi, Pon, KanOpen/daiminkan).
-            // Ankan (KanClosed) and Kakan (KanExtended) involve no discard to remove.
             if (meld.Type is MeldType.Chi or MeldType.Pon or MeldType.KanOpen)
                 _hud.RemoveLastDiscard(_game.DiscarderIndex);
 
@@ -411,12 +813,8 @@ namespace RiichiMahjong.UI
         private void OnRiichiDeclared(int playerIndex)
         {
             PlaySfx(_sfxRiichi);
-
-            // Mark the very next discard from this player as the riichi discard tile
-            // so HUD.AddDiscard can render it sideways in the river.
             _nextDiscardIsRiichi = true;
             _riichiDiscardSeat   = playerIndex;
-
             _hud.ShowRiichiStick(playerIndex);
             _hud.UpdateAll(_game);
             _hud.SetStatus($"{_game.Players[playerIndex].Name} declares Riichi!");
@@ -431,26 +829,13 @@ namespace RiichiMahjong.UI
             if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(_game.DiscarderIndex);
             _playerHand.ClearClaimTileHighlights();
 
-            // Reveal all hands so players can see what everyone held
-            for (int i = 0; i < 4; i++)
-                GetHandDisplay(i).RevealAll();
+            for (int i = 0; i < 4; i++) GetHandDisplay(i).RevealAll();
 
-            // For Ron wins: the winning tile was added to the winner's hand by ClaimRon
-            // (DrawnTile is set so it shows lifted) but the display still shows 13 tiles
-            // and the tile is still in the discard pool.
-            // → Remove it from the river and rebuild the winner's 14-tile hand so the
-            //   completed hand is visible with the Ron tile clearly marked at the end.
             if (reason == HandEndReason.Ron && winners.Length > 0)
             {
-                int discarderSeat = _game.LastDiscarderSeat;
-                if (discarderSeat >= 0)
-                    _hud.RemoveLastDiscard(discarderSeat);
-
-                RebuildHand(winners[0]);   // FaceDown is already false from RevealAll above
-
-                // Highlight the Ron tile (the lifted DrawnTile node) in the rebuilt hand
-                var winDisplay = GetHandDisplay(winners[0]);
-                winDisplay.DrawnTileNode?.SetClaimHighlight(true);
+                if (_game.LastDiscarderSeat >= 0) _hud.RemoveLastDiscard(_game.LastDiscarderSeat);
+                RebuildHand(winners[0]);
+                GetHandDisplay(winners[0]).DrawnTileNode?.SetClaimHighlight(true);
             }
 
             _hud.HideActionButtons();
@@ -466,15 +851,9 @@ namespace RiichiMahjong.UI
             _hud.SetStatus(msg);
 
             if (reason is HandEndReason.Tsumo or HandEndReason.Ron)
-            {
-                // Show scoring breakdown — "Next Hand" is gated behind the Continue button
                 ShowScoringOverlay(reason, winners[0]);
-            }
             else
-            {
-                // Draw: no scoring to show — go straight to Next Hand button
                 _btnNextVisible(true);
-            }
         }
 
         private void ShowScoringOverlay(HandEndReason reason, int winnerSeat)
@@ -482,20 +861,14 @@ namespace RiichiMahjong.UI
             var score = _game.LastScoreResult;
             var yaku  = _game.LastYakuResult;
             var ctx   = _game.LastWinContext;
-            if (score == null || yaku == null || ctx == null)
-            {
-                // Safety fallback: no data, skip overlay
-                _btnNextVisible(true);
-                return;
-            }
+            if (score == null || yaku == null || ctx == null) { _btnNextVisible(true); return; }
 
-            bool   isTsumo      = reason == HandEndReason.Tsumo;
-            string winnerName   = _game.Players[winnerSeat].Name;
-            string discarderName = _game.LastDiscarderSeat >= 0
-                ? _game.Players[_game.LastDiscarderSeat].Name
-                : "";
-            string[] allNames   = _game.Players.Select(p => p.Name).ToArray();
-            int[]    allPoints  = _game.Players.Select(p => p.Points).ToArray();
+            bool     isTsumo      = reason == HandEndReason.Tsumo;
+            string   winnerName   = _game.Players[winnerSeat].Name;
+            string   discarderName = _game.LastDiscarderSeat >= 0
+                                     ? _game.Players[_game.LastDiscarderSeat].Name : "";
+            string[] allNames  = _game.Players.Select(p => p.Name).ToArray();
+            int[]    allPoints = _game.Players.Select(p => p.Points).ToArray();
 
             _hud.ShowScoringPanel(
                 score, yaku, ctx,
@@ -518,14 +891,13 @@ namespace RiichiMahjong.UI
         }
 
         // =====================================================================
-        // Human input handlers (UI → GameState)
+        // Human input handlers (UI → GameState or NetworkManager)
         // =====================================================================
 
         private void OnHumanTileSelected(TileNode tile)
         {
             if (_riichiMode)
             {
-                // In riichi mode: show waits popup for the selected candidate tile
                 if (tile.TileData != null && _riichiCandidates.Any(c => c == tile.TileData))
                     ShowWaitsForRiichi(tile.TileData);
                 else
@@ -533,19 +905,43 @@ namespace RiichiMahjong.UI
                 return;
             }
 
-            // Normal mode: refresh action buttons based on selection
-            ShowHumanActionButtons();
+            if (_isNetworkMode) ShowHumanActionButtonsNet();
+            else                ShowHumanActionButtons();
         }
 
         private void OnHumanTileDiscarded(TileNode tile)
         {
-            if (_game.Phase != TurnPhase.ActionPhase) return;
-            if (!_game.IsHumanTurn) return;
             if (tile.TileData == null) return;
 
-            var hand = _game.Players[_game.HumanSeat].Hand;
+            // ---- Network mode ------------------------------------------------
+            if (_isNetworkMode)
+            {
+                if (_riichiMode)
+                {
+                    if (!_riichiCandidates.Any(c => c == tile.TileData))
+                    {
+                        _hud.SetStatus("Discard a highlighted (green) tile to declare Riichi.");
+                        return;
+                    }
+                    var candidate = tile.TileData;
+                    ExitRiichiMode();
+                    NetworkManager.Instance?.SendRiichi(candidate);
+                    _hud.HideActionButtons();
+                    _hud.SetStatus("Riichi declared — waiting for server…");
+                    return;
+                }
 
-            // ---- Riichi selection mode: discard a candidate to declare riichi ----
+                NetworkManager.Instance?.SendDiscard(tile.TileData);
+                _hud.HideActionButtons();
+                return;
+            }
+
+            // ---- Local mode --------------------------------------------------
+            if (_game.Phase != TurnPhase.ActionPhase) return;
+            if (!_game.IsHumanTurn) return;
+
+            var hand = _game.Players[_humanSeat].Hand;
+
             if (_riichiMode)
             {
                 if (!_riichiCandidates.Any(c => c == tile.TileData))
@@ -553,14 +949,13 @@ namespace RiichiMahjong.UI
                     _hud.SetStatus("Discard a highlighted (green) tile to declare Riichi.");
                     return;
                 }
-                var discardTile = tile.TileData;
+                var candidate = tile.TileData;
                 ExitRiichiMode();
-                bool riichiOk = _game.DeclareRiichi(_game.HumanSeat, discardTile);
-                if (!riichiOk) _hud.SetStatus("Cannot declare Riichi right now.");
+                if (!_game.DeclareRiichi(_humanSeat, candidate))
+                    _hud.SetStatus("Cannot declare Riichi right now.");
                 return;
             }
 
-            // ---- Already in riichi: can only discard the drawn tile ----
             if (hand.IsRiichi)
             {
                 var drawnNode = _playerHand.DrawnTileNode;
@@ -569,195 +964,104 @@ namespace RiichiMahjong.UI
                     _hud.SetStatus("You are in Riichi — you can only discard your drawn tile.");
                     return;
                 }
-                // Player manually clicked the drawn tile — cancel any pending auto-discard
                 _autoDiscardPending = false;
             }
 
-            bool ok = _game.Discard(_game.HumanSeat, tile.TileData);
-            if (!ok) _hud.SetStatus("Cannot discard that tile right now.");
+            if (!_game.Discard(_humanSeat, tile.TileData))
+                _hud.SetStatus("Cannot discard that tile right now.");
         }
 
         private void OnHumanRiichi()
         {
-            // Toggle riichi mode off if already active
             if (_riichiMode)
             {
                 ExitRiichiMode();
-                ShowHumanActionButtons();
+                if (_isNetworkMode) ShowHumanActionButtonsNet();
+                else                ShowHumanActionButtons();
                 return;
             }
 
-            var candidates = GetRiichiCandidates();
-            if (candidates.Count == 0)
-            {
-                _hud.SetStatus("No valid riichi discard — hand may not be tenpai.");
-                return;
-            }
+            List<Tile> candidates = _isNetworkMode
+                ? GetRiichiCandidatesFromTiles(_netMyTiles)
+                : GetRiichiCandidates();
+
+            if (candidates.Count == 0) { _hud.SetStatus("No valid riichi discard."); return; }
 
             _riichiMode       = true;
             _riichiCandidates = candidates;
             _playerHand.SetRiichiCandidates(_riichiCandidates);
 
-            // Immediately show waits for the drawn tile (most natural riichi discard),
-            // falling back to the first candidate if the drawn tile is not a valid discard.
-            var drawnTile = _game.Players[_game.HumanSeat].Hand.DrawnTile;
-            var initialCandidate = candidates.FirstOrDefault(
-                c => drawnTile != null && c.TileId == drawnTile.TileId)
-                ?? candidates[0];
-            ShowWaitsForRiichi(initialCandidate);
+            Tile? drawnTile = _isNetworkMode
+                ? _netDrawnTile
+                : _game.Players[_humanSeat].Hand.DrawnTile;
 
-            _hud.SetStatus("Riichi — green tiles are valid discards. Select one to see your waits, then discard it.");
+            var initial = candidates.FirstOrDefault(
+                c => drawnTile != null && c.TileId == drawnTile.TileId) ?? candidates[0];
+            ShowWaitsForRiichi(initial);
+
+            _hud.SetStatus("Riichi — select a green tile to see waits, then discard it.");
         }
-
-        // ---- Riichi mode helpers ------------------------------------------------
-
-        /// <summary>
-        /// Returns all tiles from the human's closed hand that, when discarded,
-        /// leave the remaining 13 tiles in tenpai. Uses a safe 13-tile IsTenpai() check.
-        /// </summary>
-        private List<Tile> GetRiichiCandidates()
-        {
-            var hand = _game.Players[_game.HumanSeat].Hand;
-            var candidates = new List<Tile>();
-            var seenIds    = new HashSet<int>();
-
-            var closedList = hand.ClosedTiles.ToList();
-            for (int i = 0; i < closedList.Count; i++)
-            {
-                var candidate = closedList[i];
-                // Skip duplicate tile types (same TileId already tested)
-                if (!seenIds.Add(candidate.TileId)) continue;
-
-                // Build a 13-tile test hand with this one tile removed
-                var testTiles = closedList.ToList();
-                testTiles.RemoveAt(i);
-
-                var testHand = new Hand();
-                testHand.AddTiles(testTiles);
-
-                if (testHand.IsTenpai())
-                    candidates.Add(candidate);
-            }
-            return candidates;
-        }
-
-        /// <summary>
-        /// Compute waiting tiles after discarding <paramref name="discardTile"/> and show the popup.
-        /// Always called on a 13-tile test hand, so GetWaitingTiles() is safe.
-        /// Also computes how many of each wait tile are still unseen (wall + opponents' hands).
-        /// </summary>
-        private void ShowWaitsForRiichi(Tile discardTile)
-        {
-            var hand      = _game.Players[_game.HumanSeat].Hand;
-            var testTiles = hand.ClosedTiles.ToList();
-
-            // Remove the first occurrence of the discard candidate
-            for (int i = 0; i < testTiles.Count; i++)
-            {
-                if (testTiles[i] == discardTile)
-                {
-                    testTiles.RemoveAt(i);
-                    break;
-                }
-            }
-
-            // Safe: 13 tiles, so GetWaitingTiles() iterates 34 candidates on 14-tile tests
-            var testHand = new Hand();
-            testHand.AddTiles(testTiles);
-            var waits = testHand.GetWaitingTiles();
-
-            // Count how many of each wait tile are still unseen by all players,
-            // then subtract the player's own closed tiles (they can't draw what they hold).
-            var remaining = ComputeRemainingCounts(waits, testTiles);
-            _hud.ShowWaitsPopup(waits, remaining, discardTile);
-        }
-
-        /// <summary>
-        /// For each tile in <paramref name="waitTiles"/>, count copies still drawable:
-        ///   drawable = 4 − (discards) − (open melds) − (player's own closed hand).
-        /// <paramref name="ownClosedTiles"/> = the player's hand tiles AFTER the riichi discard
-        /// (so those copies are known and cannot come from the wall).
-        /// </summary>
-        private Dictionary<int, int> ComputeRemainingCounts(
-            List<Tile> waitTiles, IEnumerable<Tile>? ownClosedTiles = null)
-        {
-            // Initialise: all tile types start with 4 copies
-            var remaining = new Dictionary<int, int>();
-            foreach (var t in waitTiles)
-                remaining.TryAdd(t.TileId, 4);
-
-            // Subtract tiles that are publicly visible (discards + open melds for every player)
-            for (int seat = 0; seat < 4; seat++)
-            {
-                var player = _game.Players[seat];
-
-                foreach (var d in player.Discards)
-                    if (remaining.ContainsKey(d.TileId))
-                        remaining[d.TileId]--;
-
-                foreach (var meld in player.Hand.OpenMelds)
-                    foreach (var mt in meld.Tiles)
-                        if (remaining.ContainsKey(mt.TileId))
-                            remaining[mt.TileId]--;
-            }
-
-            // Subtract tiles the player already holds — they can't draw what they have.
-            // For shanpon waits (e.g. waiting for 中 while holding 中中), this correctly
-            // reduces the remaining count by the copies already in hand.
-            if (ownClosedTiles != null)
-                foreach (var t in ownClosedTiles)
-                    if (remaining.ContainsKey(t.TileId))
-                        remaining[t.TileId]--;
-
-            // Clamp to zero
-            foreach (var key in remaining.Keys.ToList())
-                remaining[key] = Math.Max(0, remaining[key]);
-
-            return remaining;
-        }
-
-        /// <summary>Clear riichi selection mode and hide all related UI.</summary>
-        private void ExitRiichiMode()
-        {
-            if (!_riichiMode) return;
-            _riichiMode = false;
-            _riichiCandidates.Clear();
-            _playerHand.ClearRiichiCandidates();
-            _hud.HideWaitsPopup();
-        }
-
-        // ---- End riichi mode helpers -------------------------------------------
 
         private void OnHumanTsumo()
         {
-            bool ok = _game.DeclareTsumo();
-            if (!ok) _hud.SetStatus("Cannot declare tsumo — hand is not complete.");
+            if (_isNetworkMode)
+            {
+                NetworkManager.Instance?.SendTsumo();
+                _hud.HideActionButtons();
+                return;
+            }
+            if (!_game.DeclareTsumo()) _hud.SetStatus("Cannot declare tsumo — hand is not complete.");
         }
 
         private void OnHumanRon()
         {
-            bool ok = _game.ClaimRon(_game.HumanSeat);
-            if (!ok) _hud.SetStatus("Cannot declare ron — furiten or invalid hand.");
+            if (_isNetworkMode)
+            {
+                NetworkManager.Instance?.SendRon();
+                _playerHand.ClearClaimTileHighlights();
+                _hud.HideClaimButtons();
+                return;
+            }
+            if (!_game.ClaimRon(_humanSeat)) _hud.SetStatus("Cannot declare ron — furiten or invalid hand.");
         }
 
         private void OnHumanPon()
         {
+            if (_isNetworkMode)
+            {
+                NetworkManager.Instance?.SendPon();
+                _playerHand.ClearClaimTileHighlights();
+                _hud.HideClaimButtons();
+                _hud.SetStatus("Pon declared — waiting for server…");
+                return;
+            }
+
             if (_game.PendingDiscard == null) return;
-            if (!_game.ClaimPon(_game.HumanSeat)) { _hud.SetStatus("Cannot pon."); return; }
+            if (!_game.ClaimPon(_humanSeat)) { _hud.SetStatus("Cannot pon."); return; }
             _claimWindowActive = false;
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
-            // After pon, human must discard — ActionPhase is already set by ClaimPon
             ShowHumanActionButtons();
         }
 
         private void OnHumanChi()
         {
+            if (_isNetworkMode)
+            {
+                if (_netChiCombo == null) { _hud.SetStatus("No valid chi."); return; }
+                NetworkManager.Instance?.SendChi(_netChiCombo.Value.t1, _netChiCombo.Value.t2);
+                _netChiCombo = null;
+                _playerHand.ClearClaimTileHighlights();
+                _hud.HideClaimButtons();
+                _hud.SetStatus("Chi declared — waiting for server…");
+                return;
+            }
+
             if (_game.PendingDiscard == null) return;
-            var combo = _ai[_game.HumanSeat].BestChiCombination(
-                _game.PendingDiscard, _game.Players[_game.HumanSeat].Hand);
+            var combo = _ai[_humanSeat].BestChiCombination(
+                _game.PendingDiscard, _game.Players[_humanSeat].Hand);
             if (combo == null) { _hud.SetStatus("No valid chi."); return; }
-            if (!_game.ClaimChi(_game.HumanSeat, combo.Value.t1, combo.Value.t2))
+            if (!_game.ClaimChi(_humanSeat, combo.Value.t1, combo.Value.t2))
                 { _hud.SetStatus("Cannot chi."); return; }
             _claimWindowActive = false;
             _playerHand.ClearClaimTileHighlights();
@@ -767,36 +1071,37 @@ namespace RiichiMahjong.UI
 
         private void OnHumanKan()
         {
+            if (_isNetworkMode)
+            {
+                // Server validates whether it's daiminkan / ankan / kakan
+                NetworkManager.Instance?.SendKan();
+                _playerHand.ClearClaimTileHighlights();
+                _hud.HideClaimButtons();
+                _hud.SetStatus("Kan declared — waiting for server…");
+                return;
+            }
+
             if (_game.Phase == TurnPhase.ClaimWindow)
             {
-                // Daiminkan — claim discard to form open Kan
-                bool ok = _game.ClaimDaiminkan(_game.HumanSeat);
-                if (!ok) { _hud.SetStatus("Cannot declare kan."); return; }
+                if (!_game.ClaimDaiminkan(_humanSeat)) { _hud.SetStatus("Cannot declare kan."); return; }
                 _claimWindowActive = false;
                 _playerHand.ClearClaimTileHighlights();
                 _hud.HideClaimButtons();
-                // OnTileDrawn will fire from inside ClaimDaiminkan → shows action buttons
             }
             else if (_game.Phase == TurnPhase.ActionPhase && _game.IsHumanTurn)
             {
-                var hand = _game.Players[_game.HumanSeat].Hand;
+                var hand = _game.Players[_humanSeat].Hand;
 
-                // Try kakan first (extend an existing open Pon)
                 foreach (var meld in hand.OpenMelds)
                 {
                     if (meld.Type == MeldType.Pon && hand.ClosedTiles.Any(t => t == meld.Lead))
-                    {
-                        if (_game.DeclareKakan(_game.HumanSeat, meld.Lead)) return;
-                    }
+                        if (_game.DeclareKakan(_humanSeat, meld.Lead)) return;
                 }
 
-                // Try ankan (all 4 copies in closed hand)
                 foreach (var t in Hand.AllTileTypes())
                 {
                     if (hand.ClosedTiles.Count(c => c == t) >= 4)
-                    {
-                        if (_game.DeclareAnkan(_game.HumanSeat, t)) return;
-                    }
+                        if (_game.DeclareAnkan(_humanSeat, t)) return;
                 }
 
                 _hud.SetStatus("No valid kan available.");
@@ -805,6 +1110,15 @@ namespace RiichiMahjong.UI
 
         private void OnHumanPass()
         {
+            if (_isNetworkMode)
+            {
+                NetworkManager.Instance?.SendPass();
+                _playerHand.ClearClaimTileHighlights();
+                _hud.HideClaimButtons();
+                _hud.SetStatus("Passed — waiting for server…");
+                return;
+            }
+
             _claimWindowActive = false;
             if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(_game.DiscarderIndex);
             _playerHand.ClearClaimTileHighlights();
@@ -813,91 +1127,127 @@ namespace RiichiMahjong.UI
         }
 
         // =====================================================================
-        // Claim window logic
+        // Riichi helpers (shared between modes)
+        // =====================================================================
+
+        private List<Tile> GetRiichiCandidates()
+            => GetRiichiCandidatesFromTiles(_game.Players[_humanSeat].Hand.ClosedTiles.ToList());
+
+        private void ShowWaitsForRiichi(Tile discardTile)
+        {
+            IList<Tile> source = _isNetworkMode
+                ? (IList<Tile>)_netMyTiles
+                : (IList<Tile>)_game.Players[_humanSeat].Hand.ClosedTiles.ToList();
+
+            var testTiles = source.ToList();
+            for (int i = 0; i < testTiles.Count; i++)
+                if (testTiles[i] == discardTile) { testTiles.RemoveAt(i); break; }
+
+            var testHand = new Hand();
+            testHand.AddTiles(testTiles);
+            var waits = testHand.GetWaitingTiles();
+
+            // Remaining-count computation only available in local mode (we can see all discards)
+            Dictionary<int, int>? remaining = _isNetworkMode
+                ? null
+                : ComputeRemainingCounts(waits, testTiles);
+
+            _hud.ShowWaitsPopup(waits, remaining, discardTile);
+        }
+
+        private Dictionary<int, int> ComputeRemainingCounts(
+            List<Tile> waitTiles, IEnumerable<Tile>? ownClosedTiles = null)
+        {
+            var remaining = new Dictionary<int, int>();
+            foreach (var t in waitTiles) remaining.TryAdd(t.TileId, 4);
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                foreach (var d in _game.Players[seat].Discards)
+                    if (remaining.ContainsKey(d.TileId)) remaining[d.TileId]--;
+                foreach (var meld in _game.Players[seat].Hand.OpenMelds)
+                    foreach (var mt in meld.Tiles)
+                        if (remaining.ContainsKey(mt.TileId)) remaining[mt.TileId]--;
+            }
+
+            if (ownClosedTiles != null)
+                foreach (var t in ownClosedTiles)
+                    if (remaining.ContainsKey(t.TileId)) remaining[t.TileId]--;
+
+            foreach (var key in remaining.Keys.ToList())
+                remaining[key] = Math.Max(0, remaining[key]);
+
+            return remaining;
+        }
+
+        private void ExitRiichiMode()
+        {
+            if (!_riichiMode) return;
+            _riichiMode = false;
+            _riichiCandidates.Clear();
+            _playerHand.ClearRiichiCandidates();
+            _hud.HideWaitsPopup();
+        }
+
+        // =====================================================================
+        // Local-mode claim window
         // =====================================================================
 
         private void OpenClaimWindow(int discarderIndex, Tile tile)
         {
             if (_game.Phase != TurnPhase.ClaimWindow) return;
 
-            var humanHand = _game.Players[_game.HumanSeat].Hand;
+            var humanHand = _game.Players[_humanSeat].Hand;
 
-            // Check if human can ron — fast path: IsTenpai + IsWaitingFor (2 Shanten calls)
-            // rather than GetWaitingTiles().Contains() (35 Shanten calls).
-            bool humanRon  = discarderIndex != _game.HumanSeat
-                             && !_game.Players[_game.HumanSeat].Furiten.IsFuriten
-                             && humanHand.IsTenpai()
-                             && humanHand.IsWaitingFor(tile);
+            bool humanRon = discarderIndex != _humanSeat
+                            && !_game.Players[_humanSeat].Furiten.IsFuriten
+                            && humanHand.IsTenpai()
+                            && humanHand.IsWaitingFor(tile);
 
-            // Check if human can pon — not allowed when in riichi
-            bool humanPon  = !humanHand.IsRiichi
-                             && discarderIndex != _game.HumanSeat
-                             && humanHand.ClosedTiles.Count(t => t == tile) >= 2;
+            bool humanPon = !humanHand.IsRiichi
+                            && discarderIndex != _humanSeat
+                            && humanHand.ClosedTiles.Count(t => t == tile) >= 2;
 
-            // Check if human can chi (left player's discard only)
-            int  leftOfHuman = (_game.HumanSeat - 1 + 4) % 4;
+            int  leftOfHuman = (_humanSeat - 1 + 4) % 4;
             bool humanChi    = discarderIndex == leftOfHuman
                                && !humanHand.IsRiichi
-                               && _ai[_game.HumanSeat].BestChiCombination(tile, humanHand) != null;
+                               && _ai[_humanSeat].BestChiCombination(tile, humanHand) != null;
 
-            // Check if human can daiminkan (3 copies in hand, any discarder)
-            bool humanKan  = discarderIndex != _game.HumanSeat
-                             && !humanHand.IsRiichi
-                             && humanHand.ClosedTiles.Count(t => t == tile) >= 3
-                             && _game.Wall.KanCount < 4;
+            bool humanKan = discarderIndex != _humanSeat
+                            && !humanHand.IsRiichi
+                            && humanHand.ClosedTiles.Count(t => t == tile) >= 3
+                            && _game.Wall.KanCount < 4;
 
             bool humanCanAct = humanRon || humanPon || humanChi || humanKan;
 
             if (humanCanAct)
             {
-                _hud.ShowClaimButtons(canRon: humanRon, canPon: humanPon, canChi: humanChi, canKan: humanKan);
+                _hud.ShowClaimButtons(canRon: humanRon, canPon: humanPon,
+                                      canChi: humanChi, canKan: humanKan);
                 _hud.HighlightLastDiscard(discarderIndex);
 
-                // Highlight the tiles in the human's hand that would be used to complete the meld
                 if (humanPon)
-                {
-                    // Two copies of the discarded tile
                     _playerHand.HighlightClaimTiles(new[] { tile, tile });
-                }
                 else if (humanChi)
                 {
-                    var combo = _ai[_game.HumanSeat].BestChiCombination(tile,
-                        _game.Players[_game.HumanSeat].Hand);
+                    var combo = _ai[_humanSeat].BestChiCombination(tile, humanHand);
                     if (combo != null)
                         _playerHand.HighlightClaimTiles(new[] { combo.Value.t1, combo.Value.t2 });
                 }
                 else if (humanKan)
-                {
-                    // Three copies of the discarded tile (fourth tile is the discard itself)
                     _playerHand.HighlightClaimTiles(new[] { tile, tile, tile });
-                }
-                // Ron: no hand tiles to highlight — the winning tile comes from the discard pool
 
-                if (humanRon)
-                {
-                    // Ron on the table — pause indefinitely, player must actively decide.
-                    // The timer is intentionally NOT started; only an explicit Pass or Ron
-                    // click will resolve the window.
-                    _claimWindowActive = false;
-                }
-                else
-                {
-                    // Pon / Chi / Kan only — keep the auto-resolve timer so the game
-                    // doesn't stall if the player ignores the buttons.
-                    _claimWindowActive = true;
-                    _claimWindowTimer  = ClaimWindowDuration;
-                }
+                _claimWindowActive = !humanRon;
+                if (_claimWindowActive) _claimWindowTimer = ClaimWindowDuration;
             }
             else
             {
-                // Human cannot act — let AI decide immediately (with small delay)
                 ScheduleAIAction(discarderIndex, "claim");
             }
         }
 
         private void AutoResolveClaimWindow()
         {
-            // Claim window timed out without human action — treat as pass
             if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(_game.DiscarderIndex);
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
@@ -912,77 +1262,47 @@ namespace RiichiMahjong.UI
             var tile = _game.PendingDiscard;
 
             // Priority: Ron > Daiminkan > Pon > Chi
-            // Check each non-discarding player in priority order
             for (int i = 1; i <= 3; i++)
             {
                 int seat = (_game.DiscarderIndex + i) % 4;
-                if (seat == _game.HumanSeat) continue;  // Human already passed
-
-                var aiHand = _game.Players[seat].Hand;
-
-                // AI Ron?
-                if (_ai[seat].ShouldClaimRon(tile, aiHand, _game, seat))
-                {
+                if (seat == _humanSeat) continue;
+                if (_ai[seat].ShouldClaimRon(tile, _game.Players[seat].Hand, _game, seat))
                     if (_game.ClaimRon(seat)) return;
-                }
             }
 
-            // AI Daiminkan? (check all non-discarders with 3 copies)
             for (int i = 1; i <= 3; i++)
             {
                 int seat = (_game.DiscarderIndex + i) % 4;
-                if (seat == _game.HumanSeat) continue;
-                var aiHand = _game.Players[seat].Hand;
-                if (_ai[seat].ShouldClaimDaiminkan(tile, aiHand, _game, seat))
-                {
+                if (seat == _humanSeat) continue;
+                if (_ai[seat].ShouldClaimDaiminkan(tile, _game.Players[seat].Hand, _game, seat))
                     if (_game.ClaimDaiminkan(seat)) return;
-                }
             }
 
-            // AI Pon? (check all non-discarders)
             for (int i = 1; i <= 3; i++)
             {
                 int seat = (_game.DiscarderIndex + i) % 4;
-                if (seat == _game.HumanSeat) continue;
-
-                var aiHand = _game.Players[seat].Hand;
-                if (_ai[seat].ShouldClaimPon(tile, aiHand, _game, seat))
-                {
-                    if (_game.ClaimPon(seat))
-                    {
-                        // ClaimPon sets Phase=ActionPhase but fires no OnTileDrawn, so nothing
-                        // would schedule the AI's mandatory discard — trigger it explicitly here.
-                        TriggerCurrentPlayerAction();
-                        return;
-                    }
-                }
+                if (seat == _humanSeat) continue;
+                if (_ai[seat].ShouldClaimPon(tile, _game.Players[seat].Hand, _game, seat))
+                    if (_game.ClaimPon(seat)) { TriggerCurrentPlayerAction(); return; }
             }
 
-            // AI Chi? (left player only)
             int leftSeat = (_game.DiscarderIndex + 1) % 4;
-            if (leftSeat != _game.HumanSeat)
+            if (leftSeat != _humanSeat)
             {
                 var aiHand = _game.Players[leftSeat].Hand;
                 var combo  = _ai[leftSeat].BestChiCombination(tile, aiHand);
                 if (combo != null && _ai[leftSeat].ShouldClaimChi(
                         tile, combo.Value.t1, combo.Value.t2, aiHand, _game, leftSeat))
-                {
                     if (_game.ClaimChi(leftSeat, combo.Value.t1, combo.Value.t2))
-                    {
-                        // Same fix as Pon — ClaimChi does not fire OnTileDrawn either.
-                        TriggerCurrentPlayerAction();
-                        return;
-                    }
-                }
+                        { TriggerCurrentPlayerAction(); return; }
             }
 
-            // Nobody claimed — advance to next player's draw
             _game.PassAllClaims();
             TriggerCurrentPlayerAction();
         }
 
         // =====================================================================
-        // AI action scheduling
+        // Local-mode AI scheduling
         // =====================================================================
 
         private void ScheduleAIAction(int playerIndex, string action)
@@ -997,15 +1317,8 @@ namespace RiichiMahjong.UI
             var parts  = _aiPendingAction.Split(':');
             var action = parts[0];
             int seat   = int.Parse(parts[1]);
-
-            if (action == "discard")
-            {
-                ExecuteAIDiscard(seat);
-            }
-            else if (action == "claim")
-            {
-                ResolveAIClaims();
-            }
+            if (action == "discard") ExecuteAIDiscard(seat);
+            else if (action == "claim") ResolveAIClaims();
         }
 
         private void ExecuteAIDiscard(int seat)
@@ -1013,141 +1326,161 @@ namespace RiichiMahjong.UI
             if (_game.Phase != TurnPhase.ActionPhase) return;
             if (_game.CurrentPlayerIndex != seat) return;
 
-            var player = _game.Players[seat];
-            var hand   = player.Hand;
+            var hand = _game.Players[seat].Hand;
 
-            // Try tsumo first
             if (_game.DeclareTsumo()) return;
 
-            // Try ankan (all 4 in hand)
             var ankanTile = _ai[seat].GetAnkanTile(hand, _game, seat);
             if (ankanTile != null && _game.DeclareAnkan(seat, ankanTile)) return;
 
-            // Try kakan (extend existing pon)
             var kakanTile = _ai[seat].GetKakanTile(hand, _game, seat);
             if (kakanTile != null && _game.DeclareKakan(seat, kakanTile)) return;
 
-            // Try riichi — use per-tile IsTenpai() on 13-tile test hands (avoids freeze from
-            // calling GetWaitingTiles() on a 14-tile hand, which can mutate and scan incorrectly)
             if (_ai[seat].ShouldDeclareRiichi(hand, _game, seat))
             {
                 var closedList = hand.ClosedTiles.ToList();
                 var seenIds    = new HashSet<int>();
                 for (int i = 0; i < closedList.Count; i++)
                 {
-                    if (!seenIds.Add(closedList[i].TileId)) continue;   // Skip duplicate types
-
+                    if (!seenIds.Add(closedList[i].TileId)) continue;
                     var testTiles = closedList.ToList();
                     testTiles.RemoveAt(i);
                     var testHand = new Hand();
                     testHand.AddTiles(testTiles);
-
                     if (testHand.IsTenpai())
-                    {
                         if (_game.DeclareRiichi(seat, closedList[i])) return;
-                    }
                 }
             }
 
-            // Normal discard
-            var discard = _ai[seat].ChooseDiscard(hand, _game, seat);
-            _game.Discard(seat, discard);
+            _game.Discard(seat, _ai[seat].ChooseDiscard(hand, _game, seat));
         }
 
-        // Called whenever we need to kick off whoever's turn it is.
         private void TriggerCurrentPlayerAction()
         {
             if (_game.Phase == TurnPhase.DrawPhase)
             {
-                var tile = _game.DrawForCurrentPlayer();
-                if (tile == null) return;           // Wall empty — exhaustive draw resolved
-                // OnTileDrawn fires and handles the rest
+                _game.DrawForCurrentPlayer();  // OnTileDrawn fires and handles the rest
             }
             else if (_game.Phase == TurnPhase.ActionPhase)
             {
-                if (_game.CurrentPlayerIndex == _game.HumanSeat)
-                    ShowHumanActionButtons();
-                else
-                    ScheduleAIAction(_game.CurrentPlayerIndex, "discard");
+                if (_game.CurrentPlayerIndex == _humanSeat) ShowHumanActionButtons();
+                else ScheduleAIAction(_game.CurrentPlayerIndex, "discard");
             }
         }
 
         // =====================================================================
-        // UI helpers
+        // Local-mode UI helpers
         // =====================================================================
 
         private void ShowHumanActionButtons()
         {
             if (!_game.IsHumanTurn) return;
 
-            var hand = _game.Players[_game.HumanSeat].Hand;
+            var  hand  = _game.Players[_humanSeat].Hand;
+            bool tsumo = _game.WinChecker_CanWinTsumo(_humanSeat);
 
-            // WinChecker_CanWinTsumo works correctly on a 14-tile hand.
-            bool tsumo = _game.WinChecker_CanWinTsumo(_game.HumanSeat);
-
-            // Only show riichi if there is at least one valid discard that leaves a 13-tile
-            // tenpai hand. We pre-compute candidates here rather than using IsTenpai() on the
-            // 14-tile hand, which can return true even when no single discard gives tenpai
-            // (e.g. hand has two lone honour tiles above the useful structure).
             bool riichi = false;
-            if (!hand.IsRiichi
-                && hand.IsFullyClosed
+            if (!hand.IsRiichi && hand.IsFullyClosed
                 && _game.Wall.TilesRemaining >= 4
-                && _game.Players[_game.HumanSeat].Points >= GameState.RiichiBetAmount)
+                && _game.Players[_humanSeat].Points >= GameState.RiichiBetAmount)
             {
                 riichi = GetRiichiCandidates().Count > 0;
             }
 
-            bool kan = CanHumanKan();
-
-            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: kan);
+            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: CanHumanKan());
         }
 
-        /// <summary>True if the human can declare ankan or kakan right now.</summary>
         private bool CanHumanKan()
         {
             if (_game.Wall.KanCount >= 4) return false;
-            var hand = _game.Players[_game.HumanSeat].Hand;
+            var hand = _game.Players[_humanSeat].Hand;
             if (hand.IsRiichi) return false;
 
-            // Ankan: 4 copies of any tile in closed hand
-            var tileCounts = new System.Collections.Generic.Dictionary<int, int>();
+            var counts = new Dictionary<int, int>();
             foreach (var t in hand.ClosedTiles)
-                tileCounts[t.TileId] = tileCounts.GetValueOrDefault(t.TileId, 0) + 1;
-            if (tileCounts.Values.Any(v => v >= 4)) return true;
+                counts[t.TileId] = counts.GetValueOrDefault(t.TileId, 0) + 1;
+            if (counts.Values.Any(v => v >= 4)) return true;
 
-            // Kakan: existing open Pon + 4th tile in closed hand
-            if (hand.OpenMelds.Any(m => m.Type == MeldType.Pon
-                                        && hand.ClosedTiles.Any(t => t == m.Lead)))
-                return true;
-
-            return false;
+            return hand.OpenMelds.Any(m => m.Type == MeldType.Pon
+                                           && hand.ClosedTiles.Any(t => t == m.Lead));
         }
 
         private void RebuildAllHands()
         {
-            for (int i = 0; i < 4; i++)
-                RebuildHand(i);
+            for (int i = 0; i < 4; i++) RebuildHand(i);
         }
 
         private void RebuildHand(int seat)
         {
-            var hand    = _game.Players[seat].Hand;
-            var display = GetHandDisplay(seat);
-            display.Rebuild(hand.ClosedTiles, melds: hand.OpenMelds, drawnTile: hand.DrawnTile);
+            var hand = _game.Players[seat].Hand;
+            GetHandDisplay(seat).Rebuild(hand.ClosedTiles, hand.OpenMelds, hand.DrawnTile);
         }
 
+        // =====================================================================
+        // Shared helpers
+        // =====================================================================
+
+        private void ReturnToMenu()
+        {
+            _aiTimerActive      = false;
+            _claimWindowActive  = false;
+            _autoDiscardPending = false;
+            _bgMusic?.Stop();
+            if (_isNetworkMode) NetworkManager.Instance?.Disconnect();
+            GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
+        }
+
+        /// <summary>Map a global seat number to the correct HandDisplay using seat rotation.</summary>
         private HandDisplay GetHandDisplay(int seat)
         {
-            int relativeSeat = (seat - _game.HumanSeat + 4) % 4;
-            return relativeSeat switch
+            return ((seat - _humanSeat + 4) % 4) switch
             {
-                0 => _playerHand,  // Human = bottom
-                1 => _rightHand,   // Next player clockwise = right
-                2 => _topHand,     // Across = top
-                3 => _leftHand,    // Counter-clockwise = left
+                0 => _playerHand,   // self — bottom
+                1 => _rightHand,    // next clockwise — right
+                2 => _topHand,      // across — top
+                3 => _leftHand,     // counter-clockwise — left
                 _ => _playerHand,
             };
+        }
+
+        // =====================================================================
+        // Audio helpers
+        // =====================================================================
+
+        private AudioStreamPlayer MakeSfxPlayer(string path)
+        {
+            var player = new AudioStreamPlayer { Bus = "Master" };
+            var stream = GD.Load<AudioStream>(path);
+            if (stream != null) player.Stream = stream;
+            player.VolumeDb = GameSettings.LinearToDb(GameSettings.SfxVolume);
+            AddChild(player);
+            return player;
+        }
+
+        private void PlaySfx(AudioStreamPlayer player)
+        {
+            if (player.Stream == null) return;
+            player.VolumeDb = GameSettings.LinearToDb(GameSettings.SfxVolume);
+            player.Stop();
+            player.Play();
+        }
+
+        // =====================================================================
+        // Debug
+        // =====================================================================
+
+        private void PrintInputDiagnostics()
+        {
+            GD.Print("=== INPUT DIAGNOSTICS (F12) ===");
+            GD.Print($"  Window={DisplayServer.WindowGetSize()}  VP={GetViewport().GetVisibleRect()}");
+            GD.Print($"  HUD.MouseFilter={_hud.MouseFilter}");
+            GD.Print($"  PlayerHand.IsInteractive={_playerHand.IsInteractive}");
+            var inner = _playerHand.GetChildCount() > 0 ? _playerHand.GetChild(0) : null;
+            if (inner != null)
+                for (int i = 0; i < Math.Min(3, inner.GetChildCount()); i++)
+                    if (inner.GetChild(i) is TileNode tn)
+                        GD.Print($"  TileNode[{i}] Filter={tn.MouseFilter} Rect={tn.GetGlobalRect()}");
+            GD.Print("===============================");
         }
     }
 }

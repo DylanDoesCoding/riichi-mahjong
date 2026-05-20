@@ -98,6 +98,26 @@ namespace RiichiMahjong.UI
         // Public API — called by GameController
         // =====================================================================
 
+        /// <summary>
+        /// Refresh score/wind/round info from raw arrays (network mode — no GameState available).
+        /// </summary>
+        public void UpdateAll(string[] names, int[] points, int dealerSeat,
+                              string roundWind, int counters)
+        {
+            string[] windLetters = { "E", "S", "W", "N" };
+            for (int i = 0; i < 4; i++)
+            {
+                _nameLabels[i].Text  = names.Length > i ? names[i] : $"Player {i}";
+                _scoreLabels[i].Text = points.Length > i ? points[i].ToString("N0") : "0";
+                int windOff = (i - dealerSeat + 4) % 4;
+                _windLabels[i].Text  = windLetters[windOff];
+            }
+            _roundWindLabel.Text = $"{roundWind} Round";
+            _counterLabel.Text   = counters > 0 ? $"×{counters}" : "";
+            // Dora indicators not sent in current network protocol — hide them
+            foreach (var node in _doraTileNodes) node.Visible = false;
+        }
+
         /// <summary>Refresh all score/wind/round info from current game state.</summary>
         public void UpdateAll(GameState game)
         {
@@ -904,6 +924,73 @@ namespace RiichiMahjong.UI
             }
 
             // Show overlay
+            _scoringBackdrop.Visible = true;
+        }
+
+        /// <summary>
+        /// Populate and display the scoring overlay from raw network data (no ScoreResult objects).
+        /// </summary>
+        public void ShowScoringPanelNet(
+            string   winnerName,
+            bool     isTsumo,
+            string   payerName,
+            string[] allNames,
+            int[]    allPoints,
+            int      winnerSeat,
+            int      dealerSeat,
+            string[] yakuNames,
+            int      han,
+            int      fu,
+            int      doraCount,
+            int      totalPointsWon)
+        {
+            // ── Title ──
+            string method = isTsumo ? "Tsumo" : "Ron";
+            _scoringTitle.Text = $"★  {winnerName} wins by {method}!  ★";
+            _scoringTitle.AddThemeColorOverride("font_color",
+                isTsumo ? new Color(0.35f, 1f, 0.45f) : new Color(1f, 0.55f, 0.20f));
+
+            // ── Yaku rows ──
+            foreach (var child in _scoringYakuRows.GetChildren()) child.QueueFree();
+            foreach (var name in yakuNames)
+                _scoringYakuRows.AddChild(MakeScoringRow($"  {name}", "", Colors.White));
+            if (doraCount > 0)
+                _scoringYakuRows.AddChild(MakeScoringRow(
+                    "  Dora", $"{doraCount} han", new Color(1f, 0.80f, 0.30f)));
+
+            // ── Han / Fu ──
+            _scoringHanFuLabel.Text = $"  {han} han  {fu} fu";
+            _scoringLimitLabel.Text = "";
+
+            // ── Payment ──
+            foreach (var child in _scoringPayRows.GetChildren()) child.QueueFree();
+            if (!isTsumo && !string.IsNullOrEmpty(payerName))
+                _scoringPayRows.AddChild(MakeScoringRow(
+                    $"  {payerName} pays:", "", new Color(1f, 0.6f, 0.6f)));
+
+            // ── Total ──
+            _scoringTotalWon.Text = totalPointsWon > 0
+                ? $"Total: +{totalPointsWon:N0} points" : "";
+
+            // ── All-player scores, sorted by points ──
+            foreach (var child in _scoringAllScores.GetChildren()) child.QueueFree();
+            string[] windLetters = { "E", "S", "W", "N" };
+            var order = Enumerable.Range(0, allNames.Length)
+                                  .OrderByDescending(i => allPoints[i])
+                                  .ToList();
+            for (int rank = 0; rank < order.Count; rank++)
+            {
+                int    i       = order[rank];
+                int    windOff = (i - dealerSeat + 4) % 4;
+                string wind    = windLetters[Math.Min(windOff, 3)];
+                bool   isWin   = i == winnerSeat;
+                string prefix  = isWin ? "  ★ " : $"  {rank + 1}. ";
+                _scoringAllScores.AddChild(MakeScoringRow(
+                    $"{prefix}{allNames[i]}  ({wind})",
+                    $"{allPoints[i]:N0}",
+                    isWin ? new Color(0.35f, 1f, 0.45f) : Colors.White));
+            }
+
             _scoringBackdrop.Visible = true;
         }
 
