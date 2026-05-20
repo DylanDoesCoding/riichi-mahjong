@@ -21,7 +21,8 @@ namespace RiichiServer
             Converters                  = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
         };
 
-        public string      PlayerId    { get; }   // Unique connection ID
+        public string      PlayerId    { get; }            // Server-generated connection ID
+        public string      PlayerUuid  { get; set; } = ""; // Client-provided UUID (for reconnection)
         public string      DisplayName { get; set; } = "Player";
         public int         Seat        { get; set; } = -1;
         public bool        IsAlive     => _ws.State == WebSocketState.Open;

@@ -33,6 +33,20 @@ namespace RiichiMahjong.UI
         private GameState  _game = null!;
         private AIPlayer[] _ai   = null!;
 
+        // ---- Reconnection state (network mode only) -------------------------
+
+        private bool   _isReconnecting       = false;
+        private int    _reconnectAttempts     = 0;
+        private float  _reconnectTimer        = 0f;
+        private bool   _waitingForSocketOpen  = false;
+        private const int   MaxReconnectAttempts = 3;
+        private const float ReconnectRetryDelay  = 3.0f;  // seconds between attempts
+        private const float SocketOpenTimeout     = 5.0f;  // seconds to wait for WS to open
+
+        // Reconnect overlay — shown while disconnected (built in code)
+        private Control? _reconnectOverlay;
+        private Label?   _reconnectStatusLabel;
+
         // ---- Network-mode display state -------------------------------------
         // Populated/updated by incoming server messages; drives HandDisplay + HUD.
 
@@ -211,15 +225,17 @@ namespace RiichiMahjong.UI
         private void SubscribeNetworkEvents()
         {
             var nm = NetworkManager.Instance!;
-            nm.OnHandDealt         += Net_OnHandDealt;
-            nm.OnTileDrawn         += Net_OnTileDrawn;
-            nm.OnTileDiscarded     += Net_OnTileDiscarded;
-            nm.OnMeldDeclared      += Net_OnMeldDeclared;
-            nm.OnRiichiDeclared    += Net_OnRiichiDeclared;
-            nm.OnClaimWindowOpened += Net_OnClaimWindowOpened;
-            nm.OnHandEnded         += Net_OnHandEnded;
-            nm.OnGameOver          += Net_OnGameOver;
-            nm.OnDisconnected      += Net_OnDisconnected;
+            nm.OnHandDealt          += Net_OnHandDealt;
+            nm.OnTileDrawn          += Net_OnTileDrawn;
+            nm.OnTileDiscarded      += Net_OnTileDiscarded;
+            nm.OnMeldDeclared       += Net_OnMeldDeclared;
+            nm.OnRiichiDeclared     += Net_OnRiichiDeclared;
+            nm.OnClaimWindowOpened  += Net_OnClaimWindowOpened;
+            nm.OnHandEnded          += Net_OnHandEnded;
+            nm.OnGameOver           += Net_OnGameOver;
+            nm.OnDisconnected       += Net_OnDisconnected;
+            nm.OnGameStateSnapshot  += Net_OnGameStateSnapshot;
+            nm.OnRejoinSuccess      += Net_OnRejoinSuccess;
         }
 
         private void UnsubscribeNetworkEvents()
@@ -235,6 +251,8 @@ namespace RiichiMahjong.UI
             nm.OnHandEnded         -= Net_OnHandEnded;
             nm.OnGameOver          -= Net_OnGameOver;
             nm.OnDisconnected      -= Net_OnDisconnected;
+            nm.OnGameStateSnapshot -= Net_OnGameStateSnapshot;
+            nm.OnRejoinSuccess     -= Net_OnRejoinSuccess;
         }
 
         // =====================================================================
@@ -548,8 +566,191 @@ namespace RiichiMahjong.UI
 
         private void Net_OnDisconnected()
         {
-            _hud?.SetStatus("Disconnected from server.");
+            if (_isReconnecting) return;   // already handling a disconnect
+
+            _isReconnecting   = true;
+            _reconnectAttempts = 0;
             _hud?.HideActionButtons();
+
+            ShowReconnectOverlay("Disconnected — reconnecting…");
+            BeginReconnectAttempt();
+        }
+
+        private void Net_OnRejoinSuccess()
+        {
+            // Server accepted the rejoin — hide overlay, game resumes via Net_OnGameStateSnapshot
+            _isReconnecting = false;
+            _waitingForSocketOpen = false;
+            _reconnectOverlay?.QueueFree();
+            _reconnectOverlay = null;
+        }
+
+        private void Net_OnGameStateSnapshot(
+            List<Tile> yourTiles, int[] tileCounts, int[] scores,
+            int dealerSeat, string roundWind, int counters, string[] names,
+            List<List<NetTileDto>> discardDtos, List<List<NetMeldDto>> meldDtos,
+            int[] riichiSeats, int currentTurn)
+        {
+            // Reset everything just like a new hand
+            ExitRiichiMode();
+            _nextDiscardIsRiichi = false;
+            _riichiDiscardSeat   = -1;
+            _netChiCombo         = null;
+            _netIsInRiichi       = false;
+            _netLastDiscarderSeat   = -1;
+            _netLastDiscardedTile   = null;
+
+            _netNames      = names;
+            _netScores     = scores;
+            _netTileCounts = tileCounts;
+            _netDealerSeat = dealerSeat;
+            _netRoundWind  = roundWind;
+            _netCounters   = counters;
+
+            _netMyTiles.Clear();
+            _netMyTiles.AddRange(yourTiles);
+            _netDrawnTile = null;
+            foreach (var ml in _netMelds) ml.Clear();
+
+            // Apply riichi flags
+            foreach (int rs in riichiSeats)
+            {
+                _hud.ShowRiichiStick(rs);
+                if (rs == _humanSeat) _netIsInRiichi = true;
+            }
+
+            // Convert and apply melds per seat
+            for (int s = 0; s < 4 && s < meldDtos.Count; s++)
+                foreach (var dto in meldDtos[s])
+                    _netMelds[s].Add(NetMeldDtoToMeld(dto));
+
+            // Reset face-down flags
+            _playerHand.FaceDown = false;
+            _topHand.FaceDown    = true;
+            _leftHand.FaceDown   = true;
+            _rightHand.FaceDown  = true;
+
+            _hud.ClearAllDiscards();
+
+            // Rebuild hands
+            NetRebuildMyHand();
+            for (int s = 0; s < 4; s++)
+                if (s != _humanSeat) NetRebuildOpponentHand(s);
+
+            // Replay discards for each seat (including riichi rotations)
+            for (int s = 0; s < 4 && s < discardDtos.Count; s++)
+                foreach (var tDto in discardDtos[s])
+                    _hud.AddDiscard(s, tDto.ToTile());
+
+            NetUpdateHud();
+
+            // Determine if it's our turn and show appropriate buttons
+            if (currentTurn == _humanSeat)
+                ShowHumanActionButtonsNet();
+            else
+                _hud.SetStatus("Reconnected — waiting for your turn…");
+        }
+
+        // =====================================================================
+        // Reconnection logic (network mode only)
+        // =====================================================================
+
+        private void BeginReconnectAttempt()
+        {
+            _reconnectAttempts++;
+            SetReconnectStatus($"Reconnecting… (attempt {_reconnectAttempts}/{MaxReconnectAttempts})");
+
+            var nm = NetworkManager.Instance;
+            if (nm == null) { OnReconnectFailed(); return; }
+
+            nm.Connect(GameSettings.ServerUrl);
+            _waitingForSocketOpen = true;
+            _reconnectTimer       = SocketOpenTimeout;
+        }
+
+        private void SetReconnectStatus(string text)
+        {
+            if (_reconnectStatusLabel != null)
+                _reconnectStatusLabel.Text = text;
+        }
+
+        private void OnReconnectFailed()
+        {
+            _isReconnecting       = false;
+            _waitingForSocketOpen = false;
+            SetReconnectStatus("Could not reconnect. Please return to the menu.");
+            // Show only the Menu button by removing the reconnect button
+        }
+
+        private void ShowReconnectOverlay(string status)
+        {
+            _reconnectOverlay?.QueueFree();
+
+            // Full-screen dim
+            var overlay = new Control();
+            overlay.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+            overlay.MouseFilter = Control.MouseFilterEnum.Stop;
+
+            var bg = new ColorRect();
+            bg.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+            bg.Color = new Color(0f, 0f, 0f, 0.75f);
+            overlay.AddChild(bg);
+
+            // Centred card
+            var card = new PanelContainer();
+            card.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.Center);
+            card.OffsetLeft   = -220;
+            card.OffsetTop    = -100;
+            card.OffsetRight  =  220;
+            card.OffsetBottom =  100;
+
+            var style = new StyleBoxFlat();
+            style.BgColor     = new Color(0.08f, 0.10f, 0.18f, 1f);
+            style.BorderColor = new Color(0.30f, 0.45f, 0.70f, 1f);
+            style.BorderWidthTop = style.BorderWidthBottom =
+            style.BorderWidthLeft = style.BorderWidthRight = 2;
+            style.CornerRadiusTopLeft    = style.CornerRadiusTopRight    =
+            style.CornerRadiusBottomLeft = style.CornerRadiusBottomRight = 8;
+            card.AddThemeStyleboxOverride("panel", style);
+
+            var vbox = new VBoxContainer();
+            vbox.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+            vbox.OffsetLeft   = 20;
+            vbox.OffsetTop    = 16;
+            vbox.OffsetRight  = -20;
+            vbox.OffsetBottom = -16;
+            vbox.Alignment    = BoxContainer.AlignmentMode.Center;
+            vbox.AddThemeConstantOverride("separation", 14);
+
+            var title = new Label { Text = "⚠  Disconnected" };
+            title.HorizontalAlignment = HorizontalAlignment.Center;
+            title.AddThemeFontSizeOverride("font_size", 20);
+            title.AddThemeColorOverride("font_color", new Color(1f, 0.7f, 0.3f));
+            vbox.AddChild(title);
+
+            _reconnectStatusLabel = new Label { Text = status };
+            _reconnectStatusLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _reconnectStatusLabel.AddThemeFontSizeOverride("font_size", 14);
+            _reconnectStatusLabel.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1f));
+            vbox.AddChild(_reconnectStatusLabel);
+
+            var menuBtn = new Button { Text = "← Return to Menu" };
+            menuBtn.CustomMinimumSize = new Vector2(200, 42);
+            menuBtn.AddThemeFontSizeOverride("font_size", 15);
+            var btnStyle = new StyleBoxFlat();
+            btnStyle.BgColor = new Color(0.25f, 0.28f, 0.38f);
+            btnStyle.CornerRadiusTopLeft    = btnStyle.CornerRadiusTopRight    =
+            btnStyle.CornerRadiusBottomLeft = btnStyle.CornerRadiusBottomRight = 6;
+            menuBtn.AddThemeStyleboxOverride("normal", btnStyle);
+            menuBtn.AddThemeColorOverride("font_color", Colors.White);
+            menuBtn.Pressed += ReturnToMenu;
+            vbox.AddChild(menuBtn);
+
+            card.AddChild(vbox);
+            overlay.AddChild(card);
+            AddChild(overlay);
+
+            _reconnectOverlay = overlay;
         }
 
         // =====================================================================
@@ -674,6 +875,40 @@ namespace RiichiMahjong.UI
 
         public override void _Process(double delta)
         {
+            // Network-mode: poll for reconnection
+            if (_isNetworkMode && _isReconnecting)
+            {
+                if (_waitingForSocketOpen)
+                {
+                    var nm = NetworkManager.Instance;
+                    if (nm != null && nm.IsSocketConnected)
+                    {
+                        // Socket is open — send rejoin request
+                        _waitingForSocketOpen = false;
+                        nm.SendRejoinRoom(nm.RoomCode);
+                        SetReconnectStatus("Reconnected — syncing game state…");
+                    }
+                    else
+                    {
+                        _reconnectTimer -= (float)delta;
+                        if (_reconnectTimer <= 0f)
+                        {
+                            // Timed out waiting for socket
+                            if (_reconnectAttempts < MaxReconnectAttempts)
+                            {
+                                _reconnectTimer = ReconnectRetryDelay;
+                                BeginReconnectAttempt();
+                            }
+                            else
+                            {
+                                OnReconnectFailed();
+                            }
+                        }
+                    }
+                }
+                return;   // skip AI timers while reconnecting
+            }
+
             // AI and claim-window timers only run in local mode
             if (_isNetworkMode) return;
 

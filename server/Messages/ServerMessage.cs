@@ -53,6 +53,14 @@ namespace RiichiServer.Messages
         public int               DoraCount     { get; set; }
         public int               WinnerSeat    { get; set; }
         public int               PayerSeat     { get; set; }  // -1 for tsumo
+
+        // ---- Reconnection state snapshot --------------------------------
+        // Sent as "gameStateSnapshot" when a player rejoins mid-game.
+        // Carries the full current board state so the client can resync.
+        public List<List<TileDto>>?  Discards     { get; set; }  // [seat][tile]
+        public List<List<MeldDto>>?  Melds        { get; set; }  // [seat][meld]
+        public int[]?                RiichiSeats  { get; set; }  // seats currently in riichi
+        public int                   CurrentTurn  { get; set; }  // seat whose turn it is
     }
 
     /// <summary>Well-known Type string constants.</summary>
@@ -73,5 +81,6 @@ namespace RiichiServer.Messages
         public const string HandEnded           = "handEnded";
         public const string NewHand             = "newHand";
         public const string GameOver            = "gameOver";
+        public const string GameStateSnapshot   = "gameStateSnapshot";  // full resync on rejoin
     }
 }

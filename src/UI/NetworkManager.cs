@@ -87,6 +87,12 @@ namespace RiichiMahjong.UI
         public int                     DoraCount      { get; set; }
         public int                     WinnerSeat     { get; set; }
         public int                     PayerSeat      { get; set; }
+
+        // ---- Reconnection snapshot ------------------------------------------
+        public List<List<NetTileDto>>? Discards       { get; set; }  // [seat][tile]
+        public List<List<NetMeldDto>>? Melds          { get; set; }  // [seat][meld]
+        public int[]?                  RiichiSeats    { get; set; }
+        public int                     CurrentTurn    { get; set; }
     }
 
     // =========================================================================
@@ -108,6 +114,7 @@ namespace RiichiMahjong.UI
         public event Action<int, List<NetPlayerInfo>>?          OnPlayerLeft;   // seat, updated list
         public event Action<string>?                            OnError;
         public event Action?                                    OnDisconnected;
+        public event Action?                                    OnRejoinSuccess; // server accepted rejoin
 
         // ---- Game events (mirror GameState events so GameController is unaware) --
         public event Action<int, string[]>?          OnGameStarted;     // yourSeat, names
@@ -122,6 +129,14 @@ namespace RiichiMahjong.UI
         public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int, int, int>? OnHandEnded;
         //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, doraCount, winnerSeat, payerSeat
         public event Action<List<NetScoreEntry>>?    OnGameOver;        // scoreBoard
+
+        // Fired when a mid-game rejoin succeeds — carries same payload as OnHandDealt
+        // plus per-seat discards and melds for full board resync.
+        public event Action<List<Tile>, int[], int[], int, string, int, string[],
+                            List<List<NetTileDto>>, List<List<NetMeldDto>>, int[], int>?
+            OnGameStateSnapshot;
+        // yourTiles, tileCounts, scores, dealerSeat, roundWind, counters, names,
+        // discards[seat][tile], melds[seat][meld], riichiSeats, currentTurn
 
         // ---- Internal --------------------------------------------------------
         private WebSocketPeer _ws = new();
@@ -192,10 +207,13 @@ namespace RiichiMahjong.UI
         // =====================================================================
 
         public void CreateRoom(string displayName)
-            => Send(new { type = "createRoom", displayName });
+            => Send(new { type = "createRoom", displayName, uuid = GameSettings.PlayerUuid });
 
         public void JoinRoom(string code, string displayName)
-            => Send(new { type = "joinRoom", code, displayName });
+            => Send(new { type = "joinRoom", code, displayName, uuid = GameSettings.PlayerUuid });
+
+        public void SendRejoinRoom(string code)
+            => Send(new { type = "rejoinRoom", code, uuid = GameSettings.PlayerUuid });
 
         public void StartGame()
             => Send(new { type = "startGame" });
@@ -317,6 +335,23 @@ namespace RiichiMahjong.UI
 
                 case "gameOver":
                     OnGameOver?.Invoke(msg.ScoreBoard ?? new());
+                    break;
+
+                case "gameStateSnapshot":
+                    var snapTiles = (msg.YourTiles ?? new()).Select(d => d.ToTile()).ToList();
+                    OnGameStateSnapshot?.Invoke(
+                        snapTiles,
+                        msg.TileCounts  ?? Array.Empty<int>(),
+                        msg.Scores      ?? Array.Empty<int>(),
+                        msg.DealerSeat,
+                        msg.RoundWind   ?? "East",
+                        msg.Counters,
+                        msg.Names       ?? Array.Empty<string>(),
+                        msg.Discards    ?? new(),
+                        msg.Melds       ?? new(),
+                        msg.RiichiSeats ?? Array.Empty<int>(),
+                        msg.CurrentTurn);
+                    OnRejoinSuccess?.Invoke();
                     break;
             }
         }

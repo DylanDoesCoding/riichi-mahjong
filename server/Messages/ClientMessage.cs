@@ -12,7 +12,8 @@ namespace RiichiServer.Messages
 
         // ---- Lobby fields -------------------------------------------------------
         public string?   DisplayName { get; set; }   // CreateRoom, JoinRoom
-        public string?   Code        { get; set; }   // JoinRoom
+        public string?   Code        { get; set; }   // JoinRoom, RejoinRoom
+        public string?   Uuid        { get; set; }   // All lobby messages — client-generated identity
 
         // ---- Game action fields -------------------------------------------------
         public TileDto?  Tile        { get; set; }   // Discard, Riichi, Ankan
@@ -35,5 +36,6 @@ namespace RiichiServer.Messages
         public const string Kan        = "kan";       // Ankan or Kakan — server picks correct method
         public const string Pass       = "pass";
         public const string NextHand   = "nextHand";
+        public const string RejoinRoom = "rejoinRoom";  // uuid + code → reconnect mid-game
     }
 }

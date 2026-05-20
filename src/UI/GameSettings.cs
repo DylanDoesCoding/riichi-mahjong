@@ -19,6 +19,13 @@ namespace RiichiMahjong.UI
         /// <summary>Sound-effects volume (0 = silent, 1 = full). Persists across scene changes.</summary>
         public static float SfxVolume { get; set; } = 1.0f;
 
+        /// <summary>
+        /// Per-session UUID sent to the server on connect so a disconnected player
+        /// can reclaim their seat if they reconnect within the same app session.
+        /// Generated once at startup; a full game restart gets a new UUID.
+        /// </summary>
+        public static string PlayerUuid { get; } = System.Guid.NewGuid().ToString("N");
+
         /// <summary>Display name used in multiplayer lobbies.</summary>
         public static string PlayerName { get; set; } = "";
 

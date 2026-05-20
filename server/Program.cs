@@ -58,6 +58,7 @@ app.MapGet("/ws", async context =>
                 {
                     case ClientMessageType.CreateRoom:
                         conn.DisplayName = msg.DisplayName ?? "Player";
+                        conn.PlayerUuid  = msg.Uuid ?? conn.PlayerId;
                         room = rooms.CreateRoom();
                         room.AddPlayer(conn);
 
@@ -92,6 +93,7 @@ app.MapGet("/ws", async context =>
                         }
 
                         conn.DisplayName = msg.DisplayName ?? "Player";
+                        conn.PlayerUuid  = msg.Uuid ?? conn.PlayerId;
                         int seat = room.AddPlayer(conn);
                         if (seat < 0)
                         {
@@ -100,7 +102,6 @@ app.MapGet("/ws", async context =>
                             break;
                         }
 
-                        // Tell the new player they joined
                         await conn.SendAsync(new ServerMessage
                         {
                             Type     = ServerMessageType.RoomJoined,
@@ -109,13 +110,39 @@ app.MapGet("/ws", async context =>
                             Players  = room.GetPlayerList(),
                         });
 
-                        // Tell everyone else
                         await BroadcastToRoom(room, conn, new ServerMessage
                         {
                             Type    = ServerMessageType.PlayerJoined,
                             Seat    = seat,
                             Players = room.GetPlayerList(),
                         });
+                        break;
+
+                    case ClientMessageType.RejoinRoom:
+                        // Player is reconnecting mid-game with their UUID + room code
+                        if (string.IsNullOrWhiteSpace(msg.Code) || string.IsNullOrWhiteSpace(msg.Uuid))
+                        {
+                            await conn.SendErrorAsync("Room code and UUID required to rejoin.");
+                            break;
+                        }
+
+                        var rejoinRoom = rooms.FindRoom(msg.Code);
+                        if (rejoinRoom == null)
+                        {
+                            await conn.SendErrorAsync($"Room '{msg.Code}' not found.");
+                            break;
+                        }
+
+                        conn.PlayerUuid = msg.Uuid;
+                        bool rejoined = await rejoinRoom.RejoinAsync(msg.Uuid, conn);
+                        if (!rejoined)
+                        {
+                            await conn.SendErrorAsync("Could not rejoin — UUID not recognised or game ended.");
+                            break;
+                        }
+
+                        // Assign room so subsequent messages are routed as in-game actions
+                        room = rejoinRoom;
                         break;
 
                     default:

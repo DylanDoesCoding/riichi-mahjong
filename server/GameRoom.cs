@@ -32,6 +32,7 @@ namespace RiichiServer
         // null entry = CPU seat
         private readonly PlayerConnection?[] _connections = new PlayerConnection?[MaxPlayers];
         private readonly string[]            _names       = ["CPU 1", "CPU 2", "CPU 3", "CPU 4"];
+        private readonly string?[]           _playerUuids = new string?[MaxPlayers];  // for reconnection
         private int                          _hostSeat    = 0;
         private int                          _playerCount = 0;   // humans currently in lobby
 
@@ -81,6 +82,7 @@ namespace RiichiServer
                 {
                     _connections[seat]   = conn;
                     _names[seat]         = conn.DisplayName;
+                    _playerUuids[seat]   = conn.PlayerUuid;
                     conn.Seat            = seat;
                     _playerCount++;
                     if (_playerCount == 1) _hostSeat = seat;
@@ -115,6 +117,78 @@ namespace RiichiServer
 
         public bool IsEmpty => _playerCount == 0;
         public bool IsHost(PlayerConnection conn) => conn.Seat == _hostSeat;
+
+        /// <summary>
+        /// Attempt to reconnect a player mid-game using their client-generated UUID.
+        /// Replaces the dead connection, sends a full state snapshot, returns true on success.
+        /// </summary>
+        public async Task<bool> RejoinAsync(string uuid, PlayerConnection newConn)
+        {
+            if (_game == null) return false;
+
+            // Find the seat that belongs to this UUID
+            int seat = -1;
+            for (int s = 0; s < MaxPlayers; s++)
+            {
+                if (_playerUuids[s] == uuid) { seat = s; break; }
+            }
+            if (seat < 0) return false;
+
+            // Swap in the new connection
+            newConn.Seat        = seat;
+            newConn.DisplayName = _names[seat];
+            _connections[seat]  = newConn;
+            _playerCount        = Array.IndexOf(_connections, null) < 0
+                                  ? MaxPlayers
+                                  : _connections.Count(c => c != null);
+
+            // Build and send a full state snapshot under the lock
+            await _gameSem.WaitAsync();
+            try
+            {
+                _outbox.Add((seat, BuildStateSnapshot(seat)));
+            }
+            finally { _gameSem.Release(); }
+
+            await FlushOutboxAsync();
+            return true;
+        }
+
+        /// <summary>Build a complete board-state message for one player (used on rejoin).</summary>
+        private ServerMessage BuildStateSnapshot(int seat)
+        {
+            if (_game == null) throw new InvalidOperationException("Game not started");
+
+            return new ServerMessage
+            {
+                Type        = ServerMessageType.GameStateSnapshot,
+                YourSeat    = seat,
+                YourTiles   = _game.Players[seat].Hand.ClosedTiles
+                                   .Select(TileDto.From).ToList(),
+                TileCounts  = Enumerable.Range(0, MaxPlayers)
+                                   .Select(s => _game.Players[s].Hand.ClosedTiles.Count)
+                                   .ToArray(),
+                Scores      = Enumerable.Range(0, MaxPlayers)
+                                   .Select(s => _game.Players[s].Points)
+                                   .ToArray(),
+                Names       = _names,
+                DealerSeat  = _game.DealerIndex,
+                RoundWind   = _game.RoundWind.ToString(),
+                Counters    = _game.Counters,
+                CurrentTurn = _game.CurrentPlayerIndex,
+                Discards    = Enumerable.Range(0, MaxPlayers)
+                                   .Select(s => _game.Players[s].Discards
+                                                     .Select(TileDto.From).ToList())
+                                   .ToList(),
+                Melds       = Enumerable.Range(0, MaxPlayers)
+                                   .Select(s => _game.Players[s].Hand.OpenMelds
+                                                     .Select(MeldDto.From).ToList())
+                                   .ToList(),
+                RiichiSeats = Enumerable.Range(0, MaxPlayers)
+                                   .Where(s => _game.Players[s].Hand.IsRiichi)
+                                   .ToArray(),
+            };
+        }
 
         public List<PlayerInfoDto> GetPlayerList()
         {
