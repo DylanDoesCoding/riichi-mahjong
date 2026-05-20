@@ -19,6 +19,12 @@ namespace RiichiMahjong.UI
         /// <summary>Sound-effects volume (0 = silent, 1 = full). Persists across scene changes.</summary>
         public static float SfxVolume { get; set; } = 1.0f;
 
+        /// <summary>Display name used in multiplayer lobbies.</summary>
+        public static string PlayerName { get; set; } = "";
+
+        /// <summary>WebSocket server URL for multiplayer (e.g. ws://localhost:5000/ws).</summary>
+        public static string ServerUrl { get; set; } = "ws://localhost:5000/ws";
+
         /// <summary>Convert a linear 0–1 volume to decibels, clamping near-zero to −80 dB.</summary>
         public static float LinearToDb(float linear)
             => linear < 0.01f ? -80f : Godot.Mathf.LinearToDb(linear);
