@@ -18,6 +18,10 @@ boot_splash/image="res://Assets/splash.png"
 config/icon="res://icon.svg"
 boot_splash/minimum_display_time=5000
 
+[autoload]
+
+NetworkManager="*res://src/UI/NetworkManager.cs"
+
 [display]
 
 window/size/viewport_width=1920
@@ -27,10 +31,6 @@ window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/size/width=1024
 window/size/height=576
-
-[autoload]
-
-NetworkManager="*res://src/UI/NetworkManager.cs"
 
 [dotnet]
 
