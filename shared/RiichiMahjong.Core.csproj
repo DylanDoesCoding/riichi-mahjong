@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>RiichiMahjong.Core</AssemblyName>
+    <RootNamespace>RiichiMahjong</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Include Core and AI source directly from src/ — no files are duplicated -->
+  <ItemGroup>
+    <Compile Include="../src/Core/**/*.cs" />
+    <Compile Include="../src/AI/**/*.cs" />
+  </ItemGroup>
+</Project>

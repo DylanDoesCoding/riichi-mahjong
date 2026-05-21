@@ -1,0 +1,30 @@
+# Godot project files (not needed for server build)
+*.import
+*.uid
+*.tscn
+*.tres
+*.gdshader
+*.gdextension
+Scenes/
+addons/
+assets/
+export_presets.cfg
+project.godot
+
+# Build outputs
+**/bin/
+**/obj/
+**/export/
+
+# Godot .NET project
+RiichiMahjong.csproj
+src/UI/
+
+# Tests
+tests/
+
+# Docs / tooling
+*.md
+.git/
+.github/
+.godot/

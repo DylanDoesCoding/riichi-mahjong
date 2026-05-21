@@ -10,4 +10,17 @@
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
+
+  <!-- Core/AI live in the shared lib; server is a separate ASP.NET project.
+       Exclude both to avoid duplicate type definitions and missing ASP.NET refs. -->
+  <ItemGroup>
+    <Compile Remove="src/Core/**/*.cs" />
+    <Compile Remove="src/AI/**/*.cs" />
+    <Compile Remove="server/**/*.cs" />
+    <Compile Remove="shared/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="shared/RiichiMahjong.Core.csproj" />
+  </ItemGroup>
 </Project>

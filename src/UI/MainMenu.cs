@@ -42,17 +42,19 @@ namespace RiichiMahjong.UI
         {
             // ---- Wire existing scene buttons ---------------------------------
             _centrePanel = GetNode<Control>("CentrePanel");
-            var playBtn    = GetNode<Button>("CentrePanel/PlayButton");
-            var optionsBtn = GetNode<Button>("CentrePanel/OptionsButton");
-            var quitBtn    = GetNode<Button>("CentrePanel/QuitButton");
-            _regularBtn    = GetNode<Button>("CentrePanel/ThemeRow/RegularButton");
-            _blackBtn      = GetNode<Button>("CentrePanel/ThemeRow/BlackButton");
+            var playBtn         = GetNode<Button>("CentrePanel/PlayButton");
+            var multiplayerBtn  = GetNode<Button>("CentrePanel/MultiplayerButton");
+            var optionsBtn      = GetNode<Button>("CentrePanel/OptionsButton");
+            var quitBtn         = GetNode<Button>("CentrePanel/QuitButton");
+            _regularBtn         = GetNode<Button>("CentrePanel/ThemeRow/RegularButton");
+            _blackBtn           = GetNode<Button>("CentrePanel/ThemeRow/BlackButton");
 
-            playBtn.Pressed    += OnPlayPressed;
-            optionsBtn.Pressed += OnOptionsPressed;
-            quitBtn.Pressed    += OnQuitPressed;
-            _regularBtn.Pressed += OnRegularPressed;
-            _blackBtn.Pressed   += OnBlackPressed;
+            playBtn.Pressed        += OnPlayPressed;
+            multiplayerBtn.Pressed += OnMultiplayerPressed;
+            optionsBtn.Pressed     += OnOptionsPressed;
+            quitBtn.Pressed        += OnQuitPressed;
+            _regularBtn.Pressed    += OnRegularPressed;
+            _blackBtn.Pressed      += OnBlackPressed;
 
             RefreshThemeButtons();
 
@@ -91,6 +93,12 @@ namespace RiichiMahjong.UI
         {
             _musicPlayer.Stop();
             GetTree().ChangeSceneToFile("res://Scenes/GameTable.tscn");
+        }
+
+        private void OnMultiplayerPressed()
+        {
+            _musicPlayer.Stop();
+            GetTree().ChangeSceneToFile("res://Scenes/Lobby.tscn");
         }
 
         private void OnQuitPressed() => GetTree().Quit();
