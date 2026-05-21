@@ -29,8 +29,8 @@ namespace RiichiMahjong.UI
         /// <summary>Display name used in multiplayer lobbies.</summary>
         public static string PlayerName { get; set; } = "";
 
-        /// <summary>WebSocket server URL for multiplayer. Defaults to the live Fly.io server.</summary>
-        public static string ServerUrl { get; set; } = "wss://riichi-mahjong-server.fly.dev/ws";
+        /// <summary>WebSocket server URL for multiplayer. Defaults to the live Render server.</summary>
+        public static string ServerUrl { get; set; } = "wss://riichi-mahjong-server.onrender.com/ws";
 
         /// <summary>Convert a linear 0–1 volume to decibels, clamping near-zero to −80 dB.</summary>
         public static float LinearToDb(float linear)

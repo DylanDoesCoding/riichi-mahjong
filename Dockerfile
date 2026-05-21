@@ -32,8 +32,7 @@ WORKDIR /app
 
 COPY --from=build /app/publish .
 
-# Fly.io sets PORT env var; ASP.NET Core reads ASPNETCORE_URLS
-ENV ASPNETCORE_URLS=http://+:8080
+# Render (and other platforms) inject PORT at runtime; fall back to 8080 locally.
+# Use shell form so the variable is expanded at container start, not build time.
 EXPOSE 8080
-
-ENTRYPOINT ["dotnet", "RiichiServer.dll"]
+CMD ["sh", "-c", "ASPNETCORE_URLS=http://+:${PORT:-8080} dotnet RiichiServer.dll"]
