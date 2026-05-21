@@ -14,7 +14,7 @@ No player can see another player's hand. Any player can disconnect and reconnect
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│              ASP.NET Core Server (Fly.io)                 │
+│           ASP.NET Core Server (Render.com)                │
 │                                                           │
 │  /ws  WebSocket endpoint                                  │
 │    └── RoomManager  — creates / finds rooms by code       │
@@ -42,6 +42,7 @@ No player can see another player's hand. Any player can disconnect and reconnect
 | CPU fill | Server runs AIPlayer for any empty seats | Up to 3 CPU opponents if fewer than 4 humans join |
 | Claim window | Server waits up to 8 seconds for human action, then auto-resolves | Prevents game stalling |
 | Identity | Display name + client-generated UUID stored locally | No login required; real accounts can be added later |
+| Reconnection | Server holds full game state; client sends UUID to reclaim seat | Mid-game disconnects don't end the game |
 
 ---
 
@@ -61,12 +62,17 @@ riichi-mahjong/
 │   └── Messages/
 │       ├── TileDto.cs               # Tile, Meld, PlayerInfo, ScoreEntry DTOs
 │       ├── ClientMessage.cs         # Client → server message types
-│       └── ServerMessage.cs         # Server → client message types
+│       └── ServerMessage.cs        # Server → client message types
 ├── src/
 │   └── UI/
-│       └── NetworkManager.cs        # Godot WebSocketPeer client
-│                                     # Fires same events as GameState
-└── ...existing single-player files
+│       ├── NetworkManager.cs        # Godot WebSocketPeer client
+│       │                             # Fires C# events for each server message
+│       ├── GameController.cs        # Dual-mode: local vs network
+│       ├── LobbyController.cs       # Lobby UI — create/join room, player list
+│       └── GameSettings.cs          # PlayerName, ServerUrl, PlayerUuid
+├── Dockerfile                        # Multi-stage .NET 8 build (repo-root context)
+├── .dockerignore                     # Excludes Godot assets from build context
+└── render.yaml                       # Render.com IaC — free plan, Docker runtime
 ```
 
 ---
@@ -79,8 +85,9 @@ All messages are JSON over WebSocket. The `type` field is the discriminator.
 
 | type | Fields | When |
 |---|---|---|
-| `createRoom` | `displayName` | Host creates a new room |
-| `joinRoom` | `code`, `displayName` | Guest joins by room code |
+| `createRoom` | `displayName`, `uuid` | Host creates a new room |
+| `joinRoom` | `code`, `displayName`, `uuid` | Guest joins by room code |
+| `rejoinRoom` | `code`, `uuid` | Player reconnects mid-game |
 | `startGame` | — | Host starts (CPU fills empty seats) |
 | `discard` | `tile` | Player discards a tile |
 | `riichi` | `tile` | Player declares riichi and discards |
@@ -109,6 +116,7 @@ All messages are JSON over WebSocket. The `type` field is the discriminator.
 | `claimWindowOpened` | `discarderSeat`, `tile`, `canRon/Pon/Chi/Kan` | Only to eligible players |
 | `handEnded` | `reason`, `winners`, `scoreBoard`, `yakuNames` | All players |
 | `gameOver` | `scoreBoard` | All players |
+| `gameStateSnapshot` | `yourTiles`, `tileCounts`, `scores`, `discards`, `melds`, `riichiSeats`, `currentTurn` | Sent on successful rejoin |
 | `error` | `error` | Sent to the relevant player |
 
 ---
@@ -136,6 +144,29 @@ All messages are JSON over WebSocket. The `type` field is the discriminator.
 
 ---
 
+## Reconnection Flow
+
+```
+1. Player disconnects (network drop, app crash, etc.)
+   Server keeps their seat and game state intact
+
+2. On reconnect, client detects socket closure → shows reconnect overlay
+   Attempts to re-open WebSocket and sends:
+     { type: "rejoinRoom", code: "<roomCode>", uuid: "<playerUuid>" }
+
+3. Server finds the seat by UUID, swaps in the new connection,
+   and replies with a gameStateSnapshot containing the full board state:
+     - Player's current hand tiles
+     - All seat discard rivers
+     - All seat melds
+     - Riichi flags
+     - Current turn
+
+4. Client replays the snapshot to restore the full visual board state
+```
+
+---
+
 ## Running the Server Locally
 
 ```bash
@@ -145,35 +176,43 @@ dotnet run
 # WebSocket endpoint: ws://localhost:5000/ws
 ```
 
-Connect the Godot client to `ws://localhost:5000/ws` for local testing.
+In the Lobby UI, change the server URL field to `ws://localhost:5000/ws` for local testing.
 
 ---
 
-## Deploying to Fly.io (Free Tier)
+## Deploying to Render
 
-```bash
-# Install Fly CLI (once)
-winget install Fly.flyctl
+The server is hosted on [Render](https://render.com) (free tier, no credit card required).
 
-# Login
-fly auth login
+**Live server:** `wss://riichi-mahjong-server.onrender.com/ws`  
+**Health check:** `https://riichi-mahjong-server.onrender.com/health`
 
-# From the server/ directory
-cd server
-fly launch          # Creates fly.toml, provisions a free VM
-fly deploy          # Builds Docker image and deploys
-```
+> **Note:** Render's free tier spins down after 15 minutes of inactivity.  
+> The first connection after idle takes ~30 seconds to cold-start.
 
-The server uses less than 1 MB/month of bandwidth per active game.  
-Fly.io's free tier (3 shared VMs) is sufficient for development and small-scale play.
+### Redeployment
+
+Render auto-deploys on every push to `feature/multiplayer` via the Blueprint sync — no manual steps needed.
+
+### Setting up from scratch
+
+1. Go to [render.com](https://render.com) → sign up (free, no card)
+2. **New → Blueprint** → connect `DylanDoesCoding/riichi-mahjong`
+3. Select branch `feature/multiplayer` → **Apply**
+4. Render reads `render.yaml` and deploys automatically
 
 ---
 
-## What's Next
+## What's Done
 
-- [ ] **Lobby UI scene** — room code entry, player list, Copy Code button, Start button
-- [ ] **`GameController` network mode** — subscribe to `NetworkManager` events instead of local `GameState`
-- [ ] **Player seat rotation** — each client sees themselves at the bottom
-- [ ] **Reconnection** — server holds state; client can rejoin mid-game
-- [ ] **Deploy to Fly.io** — public server URL
-- [ ] **Matchmaking** (Phase 2) — server auto-creates rooms for solo queue players
+- [x] **Lobby UI** — room code entry, player list, Copy Code button, Start button
+- [x] **`GameController` network mode** — subscribes to `NetworkManager` events instead of local `GameState`
+- [x] **Player seat rotation** — each client sees themselves at the bottom
+- [x] **Reconnection** — server holds state; client rejoins mid-game via UUID
+- [x] **Deploy to Render** — public server, auto-deploys on push
+
+## What's Next (Phase 2)
+
+- [ ] **Matchmaking** — server auto-creates rooms for solo queue players
+- [ ] **Dora indicators** — server doesn't currently send dora tiles in `handDealt`
+- [ ] **Persistent accounts** — replace session UUIDs with real logins
