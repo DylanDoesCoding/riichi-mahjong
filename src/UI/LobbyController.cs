@@ -330,9 +330,10 @@ namespace RiichiMahjong.UI
             var url = _serverInput.Text.Trim();
             if (url.Length == 0) url = "ws://localhost:5000/ws";
 
-            // Save to settings
+            // Save to settings (persisted to disk so name is remembered next session)
             GameSettings.PlayerName = name;
             GameSettings.ServerUrl  = url;
+            GameSettings.Save();
 
             var nm = NetworkManager.Instance;
             if (nm == null) return false;

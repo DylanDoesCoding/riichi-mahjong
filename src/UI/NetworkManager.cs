@@ -154,6 +154,7 @@ namespace RiichiMahjong.UI
         public override void _Ready()
         {
             Instance = this;
+            GameSettings.Load();   // restore saved name, server URL, volumes, etc.
         }
 
         public override void _Process(double delta)
