@@ -1027,8 +1027,9 @@ namespace RiichiMahjong.UI
         }
 
         /// <summary>
-        /// Show the game-over screen using the scoring panel.
-        /// Displays final player rankings and a reason string; hides the "Next Hand" button.
+        /// Show the final game-over screen using the scoring panel.
+        /// Displays ranked standings with score deltas and uma-adjusted net scores.
+        /// Uma: 1st +30 / 2nd +10 / 3rd −10 / 4th −30 (in thousands).
         /// </summary>
         public void ShowGameOverPanel(string reason, string[] playerNames, int[] playerPoints, int dealerSeat, bool showPlayAgain = false)
         {
@@ -1038,26 +1039,36 @@ namespace RiichiMahjong.UI
             foreach (var child in _scoringAllScores.GetChildren()) child.QueueFree();
 
             // ── Title ──
-            _scoringTitle.Text = "★  GAME OVER  ★";
+            _scoringTitle.Text = "★  FINAL RESULTS  ★";
             _scoringTitle.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.20f));
 
-            // ── Reason row (shown in the yaku area) ──
-            var reasonLbl = new Label { Text = $"  {reason}" };
+            // ── Reason subtitle (yaku rows area) ──
+            var reasonLbl = new Label { Text = reason };
             reasonLbl.HorizontalAlignment = HorizontalAlignment.Center;
-            reasonLbl.AddThemeFontSizeOverride("font_size", 15);
-            reasonLbl.AddThemeColorOverride("font_color", new Color(1f, 0.60f, 0.60f));
+            reasonLbl.AddThemeFontSizeOverride("font_size", 14);
+            reasonLbl.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.85f));
             _scoringYakuRows.AddChild(reasonLbl);
 
-            // ── Clear han/fu / limit labels (not relevant here) ──
+            // ── Clear han/fu / limit labels (not applicable here) ──
             _scoringHanFuLabel.Text = "";
             _scoringLimitLabel.Text = "";
 
-            // ── Final standings header (shown in total-won area) ──
+            // ── "Final Standings" header ──
             _scoringTotalWon.Text = "— Final Standings —";
             _scoringTotalWon.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 1f));
 
-            // ── All-player ranking ──
+            // ── Column header ──
+            var headerColor = new Color(0.60f, 0.60f, 0.72f);
+            _scoringAllScores.AddChild(MakeGameOverRow(
+                "", "  Player (Wind)", "Score", "Net",
+                headerColor, headerColor, headerColor));
+
+            // ── Ranked player rows ──
+            // medals[0..2] are Unicode medal emojis; rank 4 just uses "4."
+            string[] medals      = { "🥇", "🥈", "🥉", "4." };
+            int[]    umaTable    = { 30, 10, -10, -30 };
             string[] windLetters = { "E", "S", "W", "N" };
+
             var order = Enumerable.Range(0, 4)
                 .OrderByDescending(i => playerPoints[i])
                 .ToList();
@@ -1067,19 +1078,44 @@ namespace RiichiMahjong.UI
                 int    i       = order[rank];
                 int    windOff = (i - dealerSeat + 4) % 4;
                 string wind    = windLetters[windOff];
-                bool   isFirst = rank == 0;
+                int    pts     = playerPoints[i];
 
-                string prefix = isFirst ? "  🏆 " : $"  {rank + 1}. ";
-                string label  = $"{prefix}{playerNames[i]}  ({wind})";
+                // Net score: (score − oka) ÷ 1000 (integer, truncated) + uma
+                int netK   = (pts - GameState.StartingPoints) / 1_000 + umaTable[rank];
+                string net = netK >= 0 ? $"+{netK}" : $"{netK}";
 
-                Color valueColor = playerPoints[i] < 0
-                    ? new Color(1f, 0.40f, 0.40f)   // Red for bankrupt
-                    : (isFirst ? new Color(1f, 0.85f, 0.20f) : Colors.White);
+                // Medal / rank colours
+                Color nameColor = rank switch
+                {
+                    0 => new Color(1.00f, 0.85f, 0.20f),   // gold
+                    1 => new Color(0.82f, 0.82f, 0.88f),   // silver
+                    2 => new Color(0.85f, 0.60f, 0.30f),   // bronze
+                    _ => new Color(0.65f, 0.65f, 0.70f),   // grey
+                };
+                Color scoreColor = pts < 0
+                    ? new Color(1f, 0.40f, 0.40f)          // red — bankrupt
+                    : Colors.White;
+                Color netColor = netK > 0
+                    ? new Color(0.35f, 1f, 0.45f)           // green — positive
+                    : netK < 0
+                        ? new Color(1f, 0.50f, 0.50f)       // red — negative
+                        : Colors.White;
 
-                _scoringAllScores.AddChild(MakeScoringRow(label, $"{playerPoints[i]:N0}", valueColor));
+                _scoringAllScores.AddChild(MakeGameOverRow(
+                    medals[rank],
+                    $"  {playerNames[i]}  ({wind})",
+                    $"{pts:N0}",
+                    net,
+                    nameColor, scoreColor, netColor));
             }
 
-            // ── Buttons: "Play Again" for local mode, hidden in network ──
+            // ── Uma note (pay rows area) ──
+            var umaNote = new Label { Text = "  Uma: 1st +30 / 2nd +10 / 3rd −10 / 4th −30  (Net = (score−30k)÷1k + uma)" };
+            umaNote.AddThemeFontSizeOverride("font_size", 11);
+            umaNote.AddThemeColorOverride("font_color", new Color(0.50f, 0.50f, 0.60f));
+            _scoringPayRows.AddChild(umaNote);
+
+            // ── Buttons: "Play Again" for local, hidden in network ──
             if (showPlayAgain)
             {
                 _scoringNextBtn.Text    = "▶  Play Again";
@@ -1106,6 +1142,50 @@ namespace RiichiMahjong.UI
             val.AddThemeColorOverride("font_color", rightColor);
             row.AddChild(lbl);
             row.AddChild(val);
+            return row;
+        }
+
+        /// <summary>
+        /// Four-column row used in the game-over standings table.
+        /// Columns: medal/rank icon | player name + wind | final score | net (uma-adj) score.
+        /// </summary>
+        private static HBoxContainer MakeGameOverRow(
+            string medal, string name, string score, string net,
+            Color nameColor, Color scoreColor, Color netColor)
+        {
+            var row = new HBoxContainer();
+            row.AddThemeConstantOverride("separation", 4);
+
+            // Medal / rank icon — fixed width so columns stay aligned
+            var medalLbl = new Label { Text = medal };
+            medalLbl.CustomMinimumSize = new Vector2(44, 0);
+            medalLbl.AddThemeFontSizeOverride("font_size", 15);
+            medalLbl.AddThemeColorOverride("font_color", nameColor);
+
+            // Player name + wind indicator — fills remaining horizontal space
+            var nameLbl = new Label { Text = name };
+            nameLbl.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            nameLbl.AddThemeFontSizeOverride("font_size", 14);
+            nameLbl.AddThemeColorOverride("font_color", nameColor);
+
+            // Raw final score — right-aligned, fixed width
+            var scoreLbl = new Label { Text = score };
+            scoreLbl.CustomMinimumSize   = new Vector2(90, 0);
+            scoreLbl.HorizontalAlignment = HorizontalAlignment.Right;
+            scoreLbl.AddThemeFontSizeOverride("font_size", 14);
+            scoreLbl.AddThemeColorOverride("font_color", scoreColor);
+
+            // Net (uma-adjusted) score in thousands — right-aligned, fixed width
+            var netLbl = new Label { Text = net };
+            netLbl.CustomMinimumSize   = new Vector2(62, 0);
+            netLbl.HorizontalAlignment = HorizontalAlignment.Right;
+            netLbl.AddThemeFontSizeOverride("font_size", 14);
+            netLbl.AddThemeColorOverride("font_color", netColor);
+
+            row.AddChild(medalLbl);
+            row.AddChild(nameLbl);
+            row.AddChild(scoreLbl);
+            row.AddChild(netLbl);
             return row;
         }
 
