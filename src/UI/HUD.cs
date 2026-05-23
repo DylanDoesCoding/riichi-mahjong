@@ -77,6 +77,9 @@ namespace RiichiMahjong.UI
         private ColorRect _countdownFill     = null!;
         private Label    _countdownLabel     = null!;
 
+        // Furiten warning — human player panel only
+        private Label _furitenLabel = null!;
+
         // Scoring overlay — shown after a Tsumo or Ron win, and reused for Game Over
         private ColorRect     _scoringBackdrop   = null!;
         private Panel         _scoringPanel      = null!;
@@ -340,6 +343,23 @@ namespace RiichiMahjong.UI
             _statusLabel.Text = message;
         }
 
+        /// <summary>
+        /// Show or hide the FURITEN warning badge on the human player's score panel.
+        /// <paramref name="isPermanent"/> = true → red (own-discard / riichi miss);
+        /// false → orange (temporary — clears on next draw).
+        /// </summary>
+        public void SetFuriten(bool isFuriten, bool isPermanent)
+        {
+            _furitenLabel.Visible = isFuriten;
+            if (!isFuriten) return;
+
+            _furitenLabel.Text = isPermanent ? "⚠ FURITEN" : "⚠ FURITEN (temp)";
+            _furitenLabel.AddThemeColorOverride("font_color",
+                isPermanent
+                    ? new Color(1.00f, 0.25f, 0.25f)   // bright red  — permanent
+                    : new Color(1.00f, 0.58f, 0.08f));  // orange      — temporary
+        }
+
         public void ShowFinalScores(GameState game)
         {
             string msg = "Final Scores:\n";
@@ -443,6 +463,18 @@ namespace RiichiMahjong.UI
                 vbox.AddChild(_nameLabels[i]);
                 vbox.AddChild(_scoreLabels[i]);
                 vbox.AddChild(stick);
+
+                // Furiten badge — only on the human's own panel (index 0)
+                if (i == 0)
+                {
+                    _furitenLabel = new Label { Text = "⚠ FURITEN" };
+                    _furitenLabel.HorizontalAlignment = HorizontalAlignment.Center;
+                    _furitenLabel.AddThemeFontSizeOverride("font_size", 12);
+                    _furitenLabel.AddThemeColorOverride("font_color", new Color(1f, 0.25f, 0.25f));
+                    _furitenLabel.Visible = false;
+                    vbox.AddChild(_furitenLabel);
+                }
+
                 panel.AddChild(vbox);
                 AddChild(panel);
             }

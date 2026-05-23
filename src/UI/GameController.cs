@@ -64,8 +64,11 @@ namespace RiichiMahjong.UI
             { new(), new(), new(), new() };
 
         // Human's own closed tiles (updated on handDealt / tileDrawn / meldDeclared)
-        private readonly List<Tile> _netMyTiles   = new();
-        private Tile?                _netDrawnTile = null;
+        private readonly List<Tile> _netMyTiles    = new();
+        private Tile?                _netDrawnTile  = null;
+
+        // Human's own discard history — used to compute permanent furiten in network mode
+        private readonly List<Tile> _netMyDiscards = new();
 
         // Last discard info — used to remove the correct tile when a meld is claimed
         private int   _netLastDiscarderSeat   = -1;
@@ -298,6 +301,7 @@ namespace RiichiMahjong.UI
             _netMyTiles.Clear();
             _netMyTiles.AddRange(yourTiles);
             _netDrawnTile = null;
+            _netMyDiscards.Clear();
             foreach (var ml in _netMelds) ml.Clear();
 
             _playerHand.FaceDown = false;
@@ -307,6 +311,7 @@ namespace RiichiMahjong.UI
 
             _hud.ClearAllDiscards();
             _hud.HideActionButtons();
+            _hud.SetFuriten(false, false);
             _btnNextVisible(false);
 
             NetRebuildMyHand();
@@ -385,6 +390,7 @@ namespace RiichiMahjong.UI
                 {
                     if (_netMyTiles[i] == tile) { _netMyTiles.RemoveAt(i); break; }
                 }
+                _netMyDiscards.Add(tile);
                 _netDrawnTile = null;
                 _netTileCounts[seat] = _netMyTiles.Count;
                 GetHandDisplay(seat).RemoveTile(tile);
@@ -655,6 +661,7 @@ namespace RiichiMahjong.UI
             _netMyTiles.Clear();
             _netMyTiles.AddRange(yourTiles);
             _netDrawnTile = null;
+            _netMyDiscards.Clear();
             foreach (var ml in _netMelds) ml.Clear();
 
             // Apply riichi flags
@@ -839,6 +846,23 @@ namespace RiichiMahjong.UI
                 rotScores[vs] = _netScores[i];
             }
             _hud.UpdateAll(rotNames, rotScores, ToVisualSeat(_netDealerSeat), _netRoundWind, _netCounters);
+
+            // Furiten indicator — only meaningful when waiting (no drawn tile, 13 tiles in hand).
+            // We can only detect permanent furiten client-side (own discard matches a current wait).
+            // Temporary furiten (missed opponent discard) requires server co-operation; skip for now.
+            bool showFuriten = false;
+            bool isPermanent = false;
+            if (_netDrawnTile == null && _netMyTiles.Count == 13)
+            {
+                var h = NetBuildHand();
+                if (h.IsTenpai())
+                {
+                    var waits = h.GetWaitingTiles();
+                    isPermanent = waits.Any(w => _netMyDiscards.Any(d => d == w));
+                    showFuriten = isPermanent;
+                }
+            }
+            _hud.SetFuriten(showFuriten, isPermanent);
         }
 
         private void ShowHumanActionButtonsNet()
@@ -1027,7 +1051,7 @@ namespace RiichiMahjong.UI
             _topHand   .StartDealAnimation();
             _leftHand  .StartDealAnimation();
             _rightHand .StartDealAnimation();
-            _hud.UpdateAll(_game);
+            HudUpdateLocal();
             _hud.SetStatus("");
             _hud.HideActionButtons();
             _btnNextVisible(false);
@@ -1062,7 +1086,7 @@ namespace RiichiMahjong.UI
             var hand    = _game.Players[playerIndex].Hand;
             hand.Sort();
             GetHandDisplay(playerIndex).Rebuild(hand.ClosedTiles, hand.OpenMelds, hand.DrawnTile);
-            _hud.UpdateAll(_game);
+            HudUpdateLocal();
 
             if (playerIndex == _humanSeat)
             {
@@ -1118,7 +1142,7 @@ namespace RiichiMahjong.UI
             if (isRiichiDiscard) { _nextDiscardIsRiichi = false; _riichiDiscardSeat = -1; }
 
             _hud.AddDiscard(ToVisualSeat(playerIndex), tile, isRiichiDiscard);
-            _hud.UpdateAll(_game);
+            HudUpdateLocal();
 
             OpenClaimWindow(playerIndex, tile);
         }
@@ -1129,7 +1153,7 @@ namespace RiichiMahjong.UI
                 _hud.RemoveLastDiscard(ToVisualSeat(_game.DiscarderIndex));
 
             RebuildHand(playerIndex);
-            _hud.UpdateAll(_game);
+            HudUpdateLocal();
         }
 
         private void OnRiichiDeclared(int playerIndex)
@@ -1138,7 +1162,7 @@ namespace RiichiMahjong.UI
             _nextDiscardIsRiichi = true;
             _riichiDiscardSeat   = playerIndex;
             _hud.ShowRiichiStick(ToVisualSeat(playerIndex));
-            _hud.UpdateAll(_game);
+            HudUpdateLocal();
             _hud.SetStatus($"{_game.Players[playerIndex].Name} declares Riichi!");
         }
 
@@ -1161,7 +1185,8 @@ namespace RiichiMahjong.UI
             }
 
             _hud.HideActionButtons();
-            _hud.UpdateAll(_game);
+            _hud.SetFuriten(false, false);
+            HudUpdateLocal();
 
             string msg = reason switch
             {
@@ -1743,6 +1768,23 @@ namespace RiichiMahjong.UI
 
             return hand.OpenMelds.Any(m => m.Type == MeldType.Pon
                                            && hand.ClosedTiles.Any(t => t == m.Lead));
+        }
+
+        /// <summary>
+        /// Refresh all local-mode HUD panels and update the furiten badge.
+        /// Replaces bare _hud.UpdateAll(_game) throughout local mode so the
+        /// furiten indicator stays in sync without extra call sites.
+        /// </summary>
+        private void HudUpdateLocal()
+        {
+            HudUpdateLocal();
+            var player = _game.Players[_humanSeat];
+            // Show furiten only while waiting (no drawn tile) and in tenpai —
+            // that's the only phase where it can actually block a ron claim.
+            bool waiting = player.Hand.DrawnTile == null && player.Hand.IsTenpai();
+            _hud.SetFuriten(
+                waiting && player.Furiten.IsFuriten,
+                player.Furiten.IsPermanentFuriten);
         }
 
         private void RebuildAllHands()
