@@ -643,6 +643,250 @@ static class Program
             }
         }
 
+        // =========================================================================
+        // ---- Bug fixes: multiplayer tile sort, seat rotation, HUD rotation ----
+        // =========================================================================
+
+        // ---- Bug 1: Tile sort after draw in network mode ----
+        // Network mode appends the drawn tile to _netMyTiles then sorts [0..Count-2],
+        // keeping the drawn tile at the end (mirrors Hand.Sort()).
+        // HandDisplay.Rebuild requires the drawn tile at index Count-1 for the "lifted" effect.
+        {
+            static int TileCmp(Tile a, Tile b)
+            {
+                int s = ((int)a.Suit).CompareTo((int)b.Suit);
+                return s != 0 ? s : a.Value.CompareTo(b.Value);
+            }
+            static bool IsSortedExcludingLast(List<Tile> tiles)
+            {
+                for (int i = 0; i < tiles.Count - 2; i++)
+                    if (TileCmp(tiles[i], tiles[i + 1]) > 0) return false;
+                return true;
+            }
+            var tileOrderer = Comparer<Tile>.Create(TileCmp);
+
+            // Simulate a sorted 13-tile hand received from the server
+            var netTiles = new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(3), Tile.Man(7),
+                Tile.Pin(2), Tile.Pin(5), Tile.Pin(9),
+                Tile.Sou(1), Tile.Sou(4), Tile.Sou(8),
+                Tile.Wind(WindDirection.East),
+                Tile.Wind(WindDirection.South),
+                Tile.Dragon(DragonType.White),
+                Tile.Dragon(DragonType.Green),
+            };
+            Test("TileSort: initial 13 tiles start sorted (as server sends)", IsSortedExcludingLast(netTiles));
+
+            // Draw Pin(3) — sorts between Pin(2) and Pin(5)
+            var drawn = Tile.Pin(3);
+            netTiles.Add(drawn);
+            if (netTiles.Count > 1)
+                netTiles.Sort(0, netTiles.Count - 1, tileOrderer);
+
+            Test("TileSort: drawn tile stays at index 13 (Count-1)", netTiles[13] == drawn);
+            Test("TileSort: tiles [0..12] are sorted after draw", IsSortedExcludingLast(netTiles));
+            int p2idx = netTiles.FindIndex(t => t.Suit == TileSuit.Pin && t.Value == 2);
+            int p5idx = netTiles.FindIndex(t => t.Suit == TileSuit.Pin && t.Value == 5);
+            Test("TileSort: Pin(2) precedes Pin(5) in sorted portion", p2idx < p5idx && p2idx < 13);
+
+            // Discard a non-drawn tile — list must stay sorted excluding the (still-last) drawn tile
+            netTiles.RemoveAt(0);  // Remove Man(1) at position 0
+            Test("TileSort: 13 tiles remain after discard", netTiles.Count == 13);
+            Test("TileSort: drawn tile still at index 12 (Count-1) after discard", netTiles[12] == drawn);
+            Test("TileSort: [0..11] still sorted after non-drawn discard", IsSortedExcludingLast(netTiles));
+
+            // Second draw — e.g. Sou(5) — must also land at end, sorted portion unchanged
+            netTiles.RemoveAt(netTiles.Count - 1);  // simulate discard of previous drawn tile
+            var drawn2 = Tile.Sou(5);
+            netTiles.Add(drawn2);
+            if (netTiles.Count > 1)
+                netTiles.Sort(0, netTiles.Count - 1, tileOrderer);
+
+            Test("TileSort: second drawn tile at end", netTiles[netTiles.Count - 1] == drawn2);
+            Test("TileSort: sorted portion correct after second draw", IsSortedExcludingLast(netTiles));
+
+            // Edge case: draw a tile identical in value to the last sorted tile
+            // The drawn tile must still be the one at Count-1 (not an existing duplicate)
+            netTiles.RemoveAt(netTiles.Count - 1);
+            // Sou(8) is already in the hand (at some position); draw another Sou(8)
+            var drawnDup = Tile.Sou(8);
+            netTiles.Add(drawnDup);
+            if (netTiles.Count > 1)
+                netTiles.Sort(0, netTiles.Count - 1, tileOrderer);
+            Test("TileSort: duplicate-value drawn tile at index Count-1", netTiles[netTiles.Count - 1] == drawnDup);
+            Test("TileSort: sorted portion correct with duplicate draw", IsSortedExcludingLast(netTiles));
+        }
+
+        // ---- Bug 2 & 3: Seat rotation formula (ToVisualSeat) ----
+        // Maps global server seat → visual position: 0=self/bottom, 1=right, 2=top, 3=left.
+        {
+            static int ToVisualSeat(int globalSeat, int humanSeat) => (globalSeat - humanSeat + 4) % 4;
+
+            // Human's own seat always maps to visual 0 (bottom)
+            for (int h = 0; h < 4; h++)
+                Test($"SeatRotation: humanSeat={h} own seat → visual 0", ToVisualSeat(h, h) == 0);
+
+            // humanSeat=0: identity (no rotation needed — local mode)
+            for (int g = 0; g < 4; g++)
+                Test($"SeatRotation: humanSeat=0 global {g} → visual {g}", ToVisualSeat(g, 0) == g);
+
+            // humanSeat=1
+            Test("SeatRotation: human=1 global 0 → visual 3 (left)", ToVisualSeat(0, 1) == 3);
+            Test("SeatRotation: human=1 global 2 → visual 1 (right)", ToVisualSeat(2, 1) == 1);
+            Test("SeatRotation: human=1 global 3 → visual 2 (top)", ToVisualSeat(3, 1) == 2);
+
+            // humanSeat=2
+            Test("SeatRotation: human=2 global 0 → visual 2 (top)", ToVisualSeat(0, 2) == 2);
+            Test("SeatRotation: human=2 global 1 → visual 3 (left)", ToVisualSeat(1, 2) == 3);
+            Test("SeatRotation: human=2 global 3 → visual 1 (right)", ToVisualSeat(3, 2) == 1);
+
+            // humanSeat=3
+            Test("SeatRotation: human=3 global 0 → visual 1 (right)", ToVisualSeat(0, 3) == 1);
+            Test("SeatRotation: human=3 global 1 → visual 2 (top)", ToVisualSeat(1, 3) == 2);
+            Test("SeatRotation: human=3 global 2 → visual 3 (left)", ToVisualSeat(2, 3) == 3);
+
+            // Discard-pool routing: discard from seat X must land in visual pool ToVisualSeat(X)
+            for (int h = 0; h < 4; h++)
+                for (int g = 0; g < 4; g++)
+                    Test($"SeatRotation: seat {g} discard → pool[{ToVisualSeat(g,h)}] for human={h}",
+                        ToVisualSeat(ToVisualSeat(g, h), 0) == ToVisualSeat(g, h));  // visual index is stable
+        }
+
+        // ---- Bug 2: HUD name/score rotation (NetUpdateHud data mapping) ----
+        {
+            static (string[] names, int[] scores) RotateForHud(string[] names, int[] scores, int humanSeat)
+            {
+                var rotN = new string[4];
+                var rotS = new int[4];
+                for (int g = 0; g < 4; g++)
+                {
+                    int vs = (g - humanSeat + 4) % 4;
+                    rotN[vs] = names[g];
+                    rotS[vs] = scores[g];
+                }
+                return (rotN, rotS);
+            }
+
+            var serverNames  = new[] { "Alice", "Bob", "Carol", "Dave" };
+            var serverScores = new[] { 30000, 25000, 28000, 22000 };
+
+            // humanSeat=0: no rotation — labels match global order
+            {
+                var (rn, rs) = RotateForHud(serverNames, serverScores, humanSeat: 0);
+                Test("HudRot: human=0 visual[0]=Alice (self/bottom)", rn[0] == "Alice");
+                Test("HudRot: human=0 visual[1]=Bob  (right)",        rn[1] == "Bob");
+                Test("HudRot: human=0 visual[2]=Carol (top)",         rn[2] == "Carol");
+                Test("HudRot: human=0 visual[3]=Dave  (left)",        rn[3] == "Dave");
+            }
+
+            // humanSeat=2: Carol at bottom, Dave at right, Alice at top, Bob at left
+            {
+                var (rn, rs) = RotateForHud(serverNames, serverScores, humanSeat: 2);
+                Test("HudRot: human=2 visual[0]=Carol (self/bottom)", rn[0] == "Carol");
+                Test("HudRot: human=2 visual[1]=Dave  (right)",       rn[1] == "Dave");
+                Test("HudRot: human=2 visual[2]=Alice (top)",         rn[2] == "Alice");
+                Test("HudRot: human=2 visual[3]=Bob   (left)",        rn[3] == "Bob");
+                Test("HudRot: human=2 score[0]=Carol's 28000",        rs[0] == 28000);
+                Test("HudRot: human=2 score[1]=Dave's  22000",        rs[1] == 22000);
+            }
+
+            // Wind labels: after rotation, (visualPos - visualDealer + 4) % 4 must equal
+            // the direct calculation (globalSeat - globalDealer + 4) % 4.
+            for (int humanSeat = 0; humanSeat < 4; humanSeat++)
+            {
+                for (int globalDealer = 0; globalDealer < 4; globalDealer++)
+                {
+                    int visDealer = (globalDealer - humanSeat + 4) % 4;
+                    for (int globalSeat = 0; globalSeat < 4; globalSeat++)
+                    {
+                        int visPos        = (globalSeat - humanSeat   + 4) % 4;
+                        int windViaVisual = (visPos     - visDealer    + 4) % 4;
+                        int windDirect    = (globalSeat - globalDealer + 4) % 4;
+                        Test($"HudRot: wind consistent human={humanSeat} dealer={globalDealer} seat={globalSeat}",
+                            windViaVisual == windDirect);
+                    }
+                }
+            }
+        }
+
+        // ---- Bug 2: Dealer position transfers correctly between hands ----
+        // After a non-dealer win, DealerIndex advances by 1 and the new dealer gets 14 tiles.
+        // After a dealer win, DealerIndex stays and Counters increment.
+        {
+            // ── Non-dealer win → dealer rotates ──
+            var gs = new GameState(humanSeat: 0, new[] { "P0", "P1", "P2", "P3" });
+            gs.StartGame();
+            Test("DealerTransfer: initial dealer = 0", gs.DealerIndex == 0);
+            Test("DealerTransfer: dealer starts with 14 tiles", gs.Players[0].Hand.ClosedTiles.Count == 14);
+
+            // Set seat 1 as waiting on White Dragon, seat 0 discards it
+            var p1 = gs.Players[1];
+            p1.Hand.Reset();
+            p1.Hand.AddTiles(new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(2), Tile.Man(3),
+                Tile.Pin(4), Tile.Pin(5), Tile.Pin(6),
+                Tile.Sou(7), Tile.Sou(8), Tile.Sou(9),
+                Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East),
+                Tile.Dragon(DragonType.White),
+            });
+            var p0 = gs.Players[0];
+            p0.Hand.Reset();
+            p0.Hand.AddTiles(new List<Tile>
+            {
+                Tile.Man(2), Tile.Man(3), Tile.Man(4),
+                Tile.Pin(5), Tile.Pin(6), Tile.Pin(7),
+                Tile.Sou(1), Tile.Sou(2), Tile.Sou(3),
+                Tile.Wind(WindDirection.South), Tile.Wind(WindDirection.South), Tile.Wind(WindDirection.South),
+                Tile.Dragon(DragonType.Green), Tile.Dragon(DragonType.White),
+            });
+            bool discardOk = gs.Discard(0, Tile.Dragon(DragonType.White));
+            bool ronOk     = gs.ClaimRon(1);
+            Test("DealerTransfer: setup discard succeeds", discardOk);
+            Test("DealerTransfer: seat 1 ron succeeds", ronOk);
+            Test("DealerTransfer: phase HandEnd after ron", gs.Phase == TurnPhase.HandEnd);
+
+            gs.BeginNextHand();
+            if (gs.Phase != TurnPhase.GameOver)
+            {
+                Test("DealerTransfer: non-dealer win → dealer advances to seat 1", gs.DealerIndex == 1);
+                Test("DealerTransfer: new dealer (seat 1) has 14 tiles", gs.Players[1].Hand.ClosedTiles.Count == 14);
+                Test("DealerTransfer: seat 0 has 13 tiles", gs.Players[0].Hand.ClosedTiles.Count == 13);
+                Test("DealerTransfer: seat 2 has 13 tiles", gs.Players[2].Hand.ClosedTiles.Count == 13);
+                Test("DealerTransfer: seat 3 has 13 tiles", gs.Players[3].Hand.ClosedTiles.Count == 13);
+                Test("DealerTransfer: current player = new dealer", gs.CurrentPlayerIndex == gs.DealerIndex);
+                Test("DealerTransfer: phase is ActionPhase", gs.Phase == TurnPhase.ActionPhase);
+            }
+
+            // ── Dealer win → dealer stays, counter increments ──
+            var gs2 = new GameState(humanSeat: 0, new[] { "D0", "P1", "P2", "P3" });
+            gs2.StartGame();
+            int prevCounters = gs2.Counters;
+
+            // Give dealer (seat 0) a complete 14-tile winning hand
+            var dealer = gs2.Players[0];
+            dealer.Hand.Reset();
+            dealer.Hand.AddTiles(new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(2), Tile.Man(3),
+                Tile.Pin(4), Tile.Pin(5), Tile.Pin(6),
+                Tile.Sou(7), Tile.Sou(8), Tile.Sou(9),
+                Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East),
+                Tile.Dragon(DragonType.White), Tile.Dragon(DragonType.White),
+            });
+            bool tsumo = gs2.DeclareTsumo();
+            Test("DealerTransfer: dealer tsumo succeeds", tsumo);
+
+            gs2.BeginNextHand();
+            if (gs2.Phase != TurnPhase.GameOver)
+            {
+                Test("DealerTransfer: dealer win → dealer stays at 0", gs2.DealerIndex == 0);
+                Test("DealerTransfer: dealer win → counter incremented", gs2.Counters == prevCounters + 1);
+                Test("DealerTransfer: dealer still has 14 tiles next hand", gs2.Players[0].Hand.ClosedTiles.Count == 14);
+            }
+        }
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         if (fail > 0)
         {

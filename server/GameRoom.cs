@@ -119,6 +119,32 @@ namespace RiichiServer
         public bool IsHost(PlayerConnection conn) => conn.Seat == _hostSeat;
 
         /// <summary>
+        /// Reconnect a player who dropped during the lobby phase (before game started).
+        /// Finds seat by UUID, restores the connection, returns true on success.
+        /// Caller should send roomJoined + broadcast playerJoined after this returns true.
+        /// </summary>
+        public bool RejoinLobby(string uuid, PlayerConnection newConn)
+        {
+            if (GameStarted) return false;
+
+            int seat = Array.IndexOf(_playerUuids, uuid);
+            if (seat < 0) return false;
+
+            // Only reclaim if the slot is genuinely empty (player fully disconnected)
+            if (_connections[seat] != null) return false;
+
+            newConn.Seat        = seat;
+            newConn.DisplayName = _names[seat];
+            _connections[seat]  = newConn;
+            _playerCount++;
+
+            // Restore host if this was the host seat and no-one else claimed it
+            if (_playerCount == 1) _hostSeat = seat;
+
+            return true;
+        }
+
+        /// <summary>
         /// Attempt to reconnect a player mid-game using their client-generated UUID.
         /// Replaces the dead connection, sends a full state snapshot, returns true on success.
         /// </summary>
@@ -184,9 +210,10 @@ namespace RiichiServer
                                    .Select(s => _game.Players[s].Hand.OpenMelds
                                                      .Select(MeldDto.From).ToList())
                                    .ToList(),
-                RiichiSeats = Enumerable.Range(0, MaxPlayers)
+                RiichiSeats    = Enumerable.Range(0, MaxPlayers)
                                    .Where(s => _game.Players[s].Hand.IsRiichi)
                                    .ToArray(),
+                DoraIndicators = _game.Wall.DoraIndicators.Select(TileDto.From).ToList(),
             };
         }
 
@@ -765,15 +792,16 @@ namespace RiichiServer
 
                 _outbox.Add((s, new ServerMessage
                 {
-                    Type        = ServerMessageType.HandDealt,
-                    YourSeat    = s,
-                    YourTiles   = tiles,
-                    TileCounts  = tileCounts,
-                    Scores      = scores,
-                    DealerSeat  = _game.DealerIndex,
-                    RoundWind   = _game.RoundWind.ToString(),
-                    Counters    = _game.Counters,
-                    Names       = _names,
+                    Type           = ServerMessageType.HandDealt,
+                    YourSeat       = s,
+                    YourTiles      = tiles,
+                    TileCounts     = tileCounts,
+                    Scores         = scores,
+                    DealerSeat     = _game.DealerIndex,
+                    RoundWind      = _game.RoundWind.ToString(),
+                    Counters       = _game.Counters,
+                    Names          = _names,
+                    DoraIndicators = _game.Wall.DoraIndicators.Select(TileDto.From).ToList(),
                 }));
             }
         }
@@ -832,13 +860,17 @@ namespace RiichiServer
 
         private void OnMeldDeclared_Handler(int seat, Meld meld)
         {
+            // Always include current dora indicators — a kan reveals a new one,
+            // so the client must update its display after every meld.
+            var doraIndicators = _game!.Wall.DoraIndicators.Select(TileDto.From).ToList();
             for (int s = 0; s < MaxPlayers; s++)
             {
                 _outbox.Add((s, new ServerMessage
                 {
-                    Type = ServerMessageType.MeldDeclared,
-                    Seat = seat,
-                    Meld = MeldDto.From(meld),
+                    Type           = ServerMessageType.MeldDeclared,
+                    Seat           = seat,
+                    Meld           = MeldDto.From(meld),
+                    DoraIndicators = doraIndicators,
                 }));
             }
         }
@@ -898,7 +930,8 @@ namespace RiichiServer
                 }
                 if (_game.LastWinContext != null)
                 {
-                    msg.DoraCount = _game.LastWinContext.DoraCount;
+                    msg.DoraCount    = _game.LastWinContext.DoraCount;
+                    msg.UraDoraCount = _game.LastWinContext.UraDoraCount;
                 }
 
                 _outbox.Add((s, msg));

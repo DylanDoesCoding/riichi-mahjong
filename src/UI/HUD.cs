@@ -114,8 +114,25 @@ namespace RiichiMahjong.UI
             }
             _roundWindLabel.Text = $"{roundWind} Round";
             _counterLabel.Text   = counters > 0 ? $"×{counters}" : "";
-            // Dora indicators not sent in current network protocol — hide them
-            foreach (var node in _doraTileNodes) node.Visible = false;
+        }
+
+        /// <summary>
+        /// Display dora indicator tiles (network mode). Called on hand start and after kans.
+        /// </summary>
+        public void UpdateDoraIndicators(IReadOnlyList<Tile> indicators)
+        {
+            for (int i = 0; i < _doraTileNodes.Length; i++)
+            {
+                if (i < indicators.Count)
+                {
+                    _doraTileNodes[i].SetTile(indicators[i], faceDown: false);
+                    _doraTileNodes[i].Visible = true;
+                }
+                else
+                {
+                    _doraTileNodes[i].Visible = false;
+                }
+            }
         }
 
         /// <summary>Refresh all score/wind/round info from current game state.</summary>
@@ -942,6 +959,7 @@ namespace RiichiMahjong.UI
             int      han,
             int      fu,
             int      doraCount,
+            int      uraDoraCount,
             int      totalPointsWon)
         {
             // ── Title ──
@@ -957,6 +975,9 @@ namespace RiichiMahjong.UI
             if (doraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Dora", $"{doraCount} han", new Color(1f, 0.80f, 0.30f)));
+            if (uraDoraCount > 0)
+                _scoringYakuRows.AddChild(MakeScoringRow(
+                    "  Ura Dora", $"{uraDoraCount} han", new Color(1f, 0.70f, 0.20f)));
 
             // ── Han / Fu ──
             _scoringHanFuLabel.Text = $"  {han} han  {fu} fu";
@@ -998,7 +1019,8 @@ namespace RiichiMahjong.UI
         public void HideScoringPanel()
         {
             _scoringBackdrop.Visible = false;
-            _scoringNextBtn.Visible  = true;   // Restore for next win overlay
+            _scoringNextBtn.Text    = "▶  Next Hand";  // Restore from any "Play Again" state
+            _scoringNextBtn.Visible  = true;
             foreach (var child in _scoringYakuRows.GetChildren())  child.QueueFree();
             foreach (var child in _scoringPayRows.GetChildren())   child.QueueFree();
             foreach (var child in _scoringAllScores.GetChildren()) child.QueueFree();
@@ -1008,7 +1030,7 @@ namespace RiichiMahjong.UI
         /// Show the game-over screen using the scoring panel.
         /// Displays final player rankings and a reason string; hides the "Next Hand" button.
         /// </summary>
-        public void ShowGameOverPanel(string reason, string[] playerNames, int[] playerPoints, int dealerSeat)
+        public void ShowGameOverPanel(string reason, string[] playerNames, int[] playerPoints, int dealerSeat, bool showPlayAgain = false)
         {
             // Clear any leftover content from a previous hand's scoring panel
             foreach (var child in _scoringYakuRows.GetChildren())  child.QueueFree();
@@ -1057,8 +1079,16 @@ namespace RiichiMahjong.UI
                 _scoringAllScores.AddChild(MakeScoringRow(label, $"{playerPoints[i]:N0}", valueColor));
             }
 
-            // ── Buttons: hide "Next Hand", show only "Menu" ──
-            _scoringNextBtn.Visible = false;
+            // ── Buttons: "Play Again" for local mode, hidden in network ──
+            if (showPlayAgain)
+            {
+                _scoringNextBtn.Text    = "▶  Play Again";
+                _scoringNextBtn.Visible = true;
+            }
+            else
+            {
+                _scoringNextBtn.Visible = false;
+            }
 
             _scoringBackdrop.Visible = true;
         }

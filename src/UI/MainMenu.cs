@@ -7,20 +7,25 @@
 // =============================================================================
 
 using Godot;
+using System.Collections.Generic;
 
 namespace RiichiMahjong.UI
 {
     public partial class MainMenu : Control
     {
         // ---- Scene nodes (from .tscn) ----------------------------------------
-        private Button _regularBtn  = null!;
-        private Button _blackBtn    = null!;
-        private Control _centrePanel = null!;
+        private Button _regularBtn    = null!;
+        private Button _blackBtn      = null!;
+        private Button _quickPlayBtn  = null!;
+        private Control _centrePanel  = null!;
 
         // ---- Options overlay (built in code) ---------------------------------
         private Control _optionsPanel   = null!;
         private Label   _musicPctLabel  = null!;
         private Label   _sfxPctLabel    = null!;
+
+        // ---- Quick Play state -----------------------------------------------
+        private bool _quickPlayActive = false;
 
         // ---- Audio -----------------------------------------------------------
         private AudioStreamPlayer _musicPlayer = null!;
@@ -48,6 +53,7 @@ namespace RiichiMahjong.UI
             var quitBtn         = GetNode<Button>("CentrePanel/QuitButton");
             _regularBtn         = GetNode<Button>("CentrePanel/ThemeRow/RegularButton");
             _blackBtn           = GetNode<Button>("CentrePanel/ThemeRow/BlackButton");
+            _quickPlayBtn       = GetNode<Button>("CentrePanel/QuickPlayButton");
 
             playBtn.Pressed        += OnPlayPressed;
             multiplayerBtn.Pressed += OnMultiplayerPressed;
@@ -55,6 +61,7 @@ namespace RiichiMahjong.UI
             quitBtn.Pressed        += OnQuitPressed;
             _regularBtn.Pressed    += OnRegularPressed;
             _blackBtn.Pressed      += OnBlackPressed;
+            _quickPlayBtn.Pressed  += OnQuickPlayPressed;
 
             RefreshThemeButtons();
 
@@ -85,6 +92,11 @@ namespace RiichiMahjong.UI
                 _sfxPreview.Stream = clack;
         }
 
+        public override void _ExitTree()
+        {
+            UnwireQuickPlay();
+        }
+
         // =====================================================================
         // Scene-button handlers
         // =====================================================================
@@ -99,6 +111,64 @@ namespace RiichiMahjong.UI
         {
             _musicPlayer.Stop();
             GetTree().ChangeSceneToFile("res://Scenes/Lobby.tscn");
+        }
+
+        private void OnQuickPlayPressed()
+        {
+            if (_quickPlayActive) return;
+
+            var nm = NetworkManager.Instance;
+            if (nm == null) return;
+
+            var url = GameSettings.ServerUrl.Length > 0 ? GameSettings.ServerUrl : "ws://localhost:5000/ws";
+            if (GameSettings.PlayerName.Length == 0) GameSettings.PlayerName = "Player";
+
+            _quickPlayActive       = true;
+            _quickPlayBtn.Disabled = true;
+            _quickPlayBtn.Text     = "Connecting…";
+
+            nm.OnConnected   += OnQuickPlayConnected;
+            nm.OnRoomCreated += OnQuickPlayRoomCreated;
+            nm.OnGameStarted += OnQuickPlayGameStarted;
+            nm.OnError       += OnQuickPlayError;
+
+            nm.Connect(url);
+        }
+
+        private void OnQuickPlayConnected()
+        {
+            NetworkManager.Instance?.CreateRoom(GameSettings.PlayerName);
+        }
+
+        private void OnQuickPlayRoomCreated(string code, int seat, List<NetPlayerInfo> players)
+        {
+            NetworkManager.Instance?.StartGame();
+        }
+
+        private void OnQuickPlayGameStarted(int seat, string[] names)
+        {
+            UnwireQuickPlay();
+            _musicPlayer.Stop();
+            GetTree().ChangeSceneToFile("res://Scenes/GameTable.tscn");
+        }
+
+        private void OnQuickPlayError(string error)
+        {
+            _quickPlayActive       = false;
+            _quickPlayBtn.Disabled = false;
+            _quickPlayBtn.Text     = "⚡  Quick Play";
+            UnwireQuickPlay();
+            NetworkManager.Instance?.ResetSession();
+        }
+
+        private void UnwireQuickPlay()
+        {
+            var nm = NetworkManager.Instance;
+            if (nm == null) return;
+            nm.OnConnected   -= OnQuickPlayConnected;
+            nm.OnRoomCreated -= OnQuickPlayRoomCreated;
+            nm.OnGameStarted -= OnQuickPlayGameStarted;
+            nm.OnError       -= OnQuickPlayError;
         }
 
         private void OnQuitPressed() => GetTree().Quit();

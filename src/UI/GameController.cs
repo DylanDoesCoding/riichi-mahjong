@@ -26,6 +26,7 @@ namespace RiichiMahjong.UI
         // ---- Mode -----------------------------------------------------------
 
         private bool _isNetworkMode;
+        private bool _isGameOver;          // true after OnGameOver / Net_OnGameOver fires
         private int  _humanSeat;           // 0 in local mode; server-assigned in network mode
 
         // ---- Local (single-player) objects ----------------------------------
@@ -75,6 +76,14 @@ namespace RiichiMahjong.UI
 
         // Minimal AI helper used only for chi-combo / riichi-candidate checks in network mode
         private readonly AIPlayer _helperAi = new(AIDifficulty.Medium);
+
+        // ---- Tile sort comparer (used in network mode to sort _netMyTiles) -----
+
+        private static readonly IComparer<Tile> _tileOrder = Comparer<Tile>.Create((a, b) =>
+        {
+            int s = ((int)a.Suit).CompareTo((int)b.Suit);
+            return s != 0 ? s : a.Value.CompareTo(b.Value);
+        });
 
         // ---- AI turn delay (seconds — local mode only) ----------------------
 
@@ -153,6 +162,7 @@ namespace RiichiMahjong.UI
 
             // ---- Background music -------------------------------------------
             _bgMusic = new AudioStreamPlayer { Bus = "Master" };
+            AddChild(_bgMusic);  // must be in the tree before Play() is called
             var music = GD.Load<AudioStream>(
                 "res://Assets/Sounds/Whispering_Bamboo_Garden_2026-05-18T203144.wav");
             if (music != null)
@@ -162,7 +172,6 @@ namespace RiichiMahjong.UI
                 _bgMusic.Finished += () => _bgMusic.Play();
                 _bgMusic.Play();
             }
-            AddChild(_bgMusic);
 
             _sfxTileClack = MakeSfxPlayer(
                 "res://Assets/Sounds/mahjong_tile_clack_#1-1779136185604.wav");
@@ -170,8 +179,12 @@ namespace RiichiMahjong.UI
                 "res://Assets/Sounds/richii_bet.wav");
 
             // ---- Detect and initialise mode ---------------------------------
+            // Require both a valid seat AND an open socket so that a stale
+            // LocalSeat from a previous multiplayer session doesn't accidentally
+            // pull single-player into network mode.
             _isNetworkMode = NetworkManager.Instance != null
-                             && NetworkManager.Instance.LocalSeat >= 0;
+                             && NetworkManager.Instance.LocalSeat >= 0
+                             && NetworkManager.Instance.IsSocketConnected;
 
             if (_isNetworkMode) InitNetworkMode();
             else                InitLocalMode();
@@ -236,6 +249,7 @@ namespace RiichiMahjong.UI
             nm.OnDisconnected       += Net_OnDisconnected;
             nm.OnGameStateSnapshot  += Net_OnGameStateSnapshot;
             nm.OnRejoinSuccess      += Net_OnRejoinSuccess;
+            nm.OnDoraUpdated        += Net_OnDoraUpdated;
         }
 
         private void UnsubscribeNetworkEvents()
@@ -249,6 +263,7 @@ namespace RiichiMahjong.UI
             nm.OnRiichiDeclared    -= Net_OnRiichiDeclared;
             nm.OnClaimWindowOpened -= Net_OnClaimWindowOpened;
             nm.OnHandEnded         -= Net_OnHandEnded;
+            nm.OnDoraUpdated       -= Net_OnDoraUpdated;
             nm.OnGameOver          -= Net_OnGameOver;
             nm.OnDisconnected      -= Net_OnDisconnected;
             nm.OnGameStateSnapshot -= Net_OnGameStateSnapshot;
@@ -310,6 +325,10 @@ namespace RiichiMahjong.UI
                 {
                     _netMyTiles.Add(tile);
                     _netDrawnTile = tile;
+                    // Sort all tiles except the drawn tile so it stays at the end
+                    // (mirrors Hand.Sort() behaviour — drawn tile is always shown lifted at right)
+                    if (_netMyTiles.Count > 1)
+                        _netMyTiles.Sort(0, _netMyTiles.Count - 1, _tileOrder);
                 }
                 _netTileCounts[seat] = _netMyTiles.Count;
                 NetRebuildMyHand();
@@ -370,8 +389,13 @@ namespace RiichiMahjong.UI
             bool isRiichiDiscard = isRiichi && _nextDiscardIsRiichi && seat == _riichiDiscardSeat;
             if (isRiichiDiscard) { _nextDiscardIsRiichi = false; _riichiDiscardSeat = -1; }
 
-            _hud.AddDiscard(seat, tile, isRiichiDiscard);
+            _hud.AddDiscard(ToVisualSeat(seat), tile, isRiichiDiscard);
             NetUpdateHud();
+        }
+
+        private void Net_OnDoraUpdated(List<Tile> indicators)
+        {
+            _hud.UpdateDoraIndicators(indicators);
         }
 
         private void Net_OnMeldDeclared(int seat, NetMeldDto dto)
@@ -382,7 +406,7 @@ namespace RiichiMahjong.UI
             // Remove the claimed tile from the discarder's pool
             if (type is "chi" or "pon" or "kanopen")
                 if (_netLastDiscarderSeat >= 0)
-                    _hud.RemoveLastDiscard(_netLastDiscarderSeat);
+                    _hud.RemoveLastDiscard(ToVisualSeat(_netLastDiscarderSeat));
 
             _netMelds[seat].Add(meld);
 
@@ -461,7 +485,7 @@ namespace RiichiMahjong.UI
             _nextDiscardIsRiichi = true;
             _riichiDiscardSeat   = seat;
             if (seat == _humanSeat) _netIsInRiichi = true;
-            _hud.ShowRiichiStick(seat);
+            _hud.ShowRiichiStick(ToVisualSeat(seat));
             NetUpdateHud();
             _hud.SetStatus($"{_netNames[seat]} declares Riichi!");
         }
@@ -470,7 +494,7 @@ namespace RiichiMahjong.UI
             bool canRon, bool canPon, bool canChi, bool canKan)
         {
             _hud.ShowClaimButtons(canRon: canRon, canPon: canPon, canChi: canChi, canKan: canKan);
-            _hud.HighlightLastDiscard(discarderSeat);
+            _hud.HighlightLastDiscard(ToVisualSeat(discarderSeat));
 
             // Pre-compute best chi combo so CHI button just sends it
             _netChiCombo = null;
@@ -493,7 +517,7 @@ namespace RiichiMahjong.UI
         }
 
         private void Net_OnHandEnded(string reason, int[] winners, List<NetScoreEntry> scoreBoard,
-            int han, int fu, int basePoints, string[] yakuNames, int doraCount,
+            int han, int fu, int basePoints, string[] yakuNames, int doraCount, int uraDoraCount,
             int winnerSeat, int payerSeat)
         {
             ExitRiichiMode();
@@ -502,7 +526,7 @@ namespace RiichiMahjong.UI
             _netIsInRiichi       = false;
 
             if (_netLastDiscarderSeat >= 0)
-                _hud.ClearLastDiscardHighlight(_netLastDiscarderSeat);
+                _hud.ClearLastDiscardHighlight(ToVisualSeat(_netLastDiscarderSeat));
             _playerHand.ClearClaimTileHighlights();
 
             // Reveal hands — in network mode opponents just flip their face-down tiles
@@ -542,6 +566,7 @@ namespace RiichiMahjong.UI
                     han:            han,
                     fu:             fu,
                     doraCount:      doraCount,
+                    uraDoraCount:   uraDoraCount,
                     totalPointsWon: basePoints);
             }
             else
@@ -552,16 +577,18 @@ namespace RiichiMahjong.UI
 
         private void Net_OnGameOver(List<NetScoreEntry> scoreBoard)
         {
+            _isGameOver = true;
             _hud.SetStatus("");
             var points = new int[4];
             foreach (var e in scoreBoard)
                 if (e.Seat >= 0 && e.Seat < 4) points[e.Seat] = e.Points;
 
             _hud.ShowGameOverPanel(
-                reason:       "Game over",
-                playerNames:  _netNames,
-                playerPoints: points,
-                dealerSeat:   _netDealerSeat);
+                reason:        "Game over",
+                playerNames:   _netNames,
+                playerPoints:  points,
+                dealerSeat:    _netDealerSeat,
+                showPlayAgain: false);
         }
 
         private void Net_OnDisconnected()
@@ -615,7 +642,7 @@ namespace RiichiMahjong.UI
             // Apply riichi flags
             foreach (int rs in riichiSeats)
             {
-                _hud.ShowRiichiStick(rs);
+                _hud.ShowRiichiStick(ToVisualSeat(rs));
                 if (rs == _humanSeat) _netIsInRiichi = true;
             }
 
@@ -640,7 +667,7 @@ namespace RiichiMahjong.UI
             // Replay discards for each seat (including riichi rotations)
             for (int s = 0; s < 4 && s < discardDtos.Count; s++)
                 foreach (var tDto in discardDtos[s])
-                    _hud.AddDiscard(s, tDto.ToTile());
+                    _hud.AddDiscard(ToVisualSeat(s), tDto.ToTile());
 
             NetUpdateHud();
 
@@ -778,7 +805,20 @@ namespace RiichiMahjong.UI
         }
 
         private void NetUpdateHud()
-            => _hud.UpdateAll(_netNames, _netScores, _netDealerSeat, _netRoundWind, _netCounters);
+        {
+            // HUD panels are indexed by VISUAL position (0=self/bottom, 1=right, 2=top, 3=left)
+            // but _netNames/_netScores/_netDealerSeat are indexed by global server seat.
+            // Rotate them so each visual slot shows the correct player.
+            var rotNames  = new string[4];
+            var rotScores = new int[4];
+            for (int i = 0; i < 4; i++)
+            {
+                int vs = ToVisualSeat(i);
+                rotNames[vs]  = _netNames[i];
+                rotScores[vs] = _netScores[i];
+            }
+            _hud.UpdateAll(rotNames, rotScores, ToVisualSeat(_netDealerSeat), _netRoundWind, _netCounters);
+        }
 
         private void ShowHumanActionButtonsNet()
         {
@@ -959,6 +999,15 @@ namespace RiichiMahjong.UI
 
         private void OnNextHand()
         {
+            if (_isGameOver)
+            {
+                // Reload the scene for a fresh game (local) or return to menu (network)
+                _bgMusic?.Stop();
+                if (_isNetworkMode) ReturnToMenu();
+                else                GetTree().ChangeSceneToFile("res://Scenes/GameTable.tscn");
+                return;
+            }
+
             _hud.HideScoringPanel();
             _btnNextVisible(false);
 
@@ -1030,7 +1079,7 @@ namespace RiichiMahjong.UI
             bool isRiichiDiscard = _nextDiscardIsRiichi && playerIndex == _riichiDiscardSeat;
             if (isRiichiDiscard) { _nextDiscardIsRiichi = false; _riichiDiscardSeat = -1; }
 
-            _hud.AddDiscard(playerIndex, tile, isRiichiDiscard);
+            _hud.AddDiscard(ToVisualSeat(playerIndex), tile, isRiichiDiscard);
             _hud.UpdateAll(_game);
 
             OpenClaimWindow(playerIndex, tile);
@@ -1039,7 +1088,7 @@ namespace RiichiMahjong.UI
         private void OnMeldDeclared(int playerIndex, Meld meld)
         {
             if (meld.Type is MeldType.Chi or MeldType.Pon or MeldType.KanOpen)
-                _hud.RemoveLastDiscard(_game.DiscarderIndex);
+                _hud.RemoveLastDiscard(ToVisualSeat(_game.DiscarderIndex));
 
             RebuildHand(playerIndex);
             _hud.UpdateAll(_game);
@@ -1050,7 +1099,7 @@ namespace RiichiMahjong.UI
             PlaySfx(_sfxRiichi);
             _nextDiscardIsRiichi = true;
             _riichiDiscardSeat   = playerIndex;
-            _hud.ShowRiichiStick(playerIndex);
+            _hud.ShowRiichiStick(ToVisualSeat(playerIndex));
             _hud.UpdateAll(_game);
             _hud.SetStatus($"{_game.Players[playerIndex].Name} declares Riichi!");
         }
@@ -1061,14 +1110,14 @@ namespace RiichiMahjong.UI
             _claimWindowActive  = false;
             _aiTimerActive      = false;
             _autoDiscardPending = false;
-            if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(_game.DiscarderIndex);
+            if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(ToVisualSeat(_game.DiscarderIndex));
             _playerHand.ClearClaimTileHighlights();
 
             for (int i = 0; i < 4; i++) GetHandDisplay(i).RevealAll();
 
             if (reason == HandEndReason.Ron && winners.Length > 0)
             {
-                if (_game.LastDiscarderSeat >= 0) _hud.RemoveLastDiscard(_game.LastDiscarderSeat);
+                if (_game.LastDiscarderSeat >= 0) _hud.RemoveLastDiscard(ToVisualSeat(_game.LastDiscarderSeat));
                 RebuildHand(winners[0]);
                 GetHandDisplay(winners[0]).DrawnTileNode?.SetClaimHighlight(true);
             }
@@ -1113,16 +1162,18 @@ namespace RiichiMahjong.UI
 
         private void OnGameOver()
         {
+            _isGameOver         = true;
             _claimWindowActive  = false;
             _aiTimerActive      = false;
             _autoDiscardPending = false;
 
             _hud.SetStatus("");
             _hud.ShowGameOverPanel(
-                reason:       _game.GameOverReason,
-                playerNames:  _game.Players.Select(p => p.Name).ToArray(),
-                playerPoints: _game.Players.Select(p => p.Points).ToArray(),
-                dealerSeat:   _game.DealerIndex);
+                reason:        _game.GameOverReason,
+                playerNames:   _game.Players.Select(p => p.Name).ToArray(),
+                playerPoints:  _game.Players.Select(p => p.Points).ToArray(),
+                dealerSeat:    _game.DealerIndex,
+                showPlayAgain: true);
         }
 
         // =====================================================================
@@ -1355,7 +1406,7 @@ namespace RiichiMahjong.UI
             }
 
             _claimWindowActive = false;
-            if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(_game.DiscarderIndex);
+            if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(ToVisualSeat(_game.DiscarderIndex));
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
             ResolveAIClaims();
@@ -1459,7 +1510,7 @@ namespace RiichiMahjong.UI
             {
                 _hud.ShowClaimButtons(canRon: humanRon, canPon: humanPon,
                                       canChi: humanChi, canKan: humanKan);
-                _hud.HighlightLastDiscard(discarderIndex);
+                _hud.HighlightLastDiscard(ToVisualSeat(discarderIndex));
 
                 if (humanPon)
                     _playerHand.HighlightClaimTiles(new[] { tile, tile });
@@ -1483,7 +1534,7 @@ namespace RiichiMahjong.UI
 
         private void AutoResolveClaimWindow()
         {
-            if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(_game.DiscarderIndex);
+            if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(ToVisualSeat(_game.DiscarderIndex));
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
             ResolveAIClaims();
@@ -1664,6 +1715,13 @@ namespace RiichiMahjong.UI
             if (_isNetworkMode) NetworkManager.Instance?.Disconnect();
             GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
         }
+
+        /// <summary>
+        /// Convert a global server seat (0-3) to the visual position index used by HUD and
+        /// discard-pool arrays: 0=bottom (self), 1=right, 2=top, 3=left.
+        /// For local mode (_humanSeat == 0) this is an identity function.
+        /// </summary>
+        private int ToVisualSeat(int globalSeat) => (globalSeat - _humanSeat + 4) % 4;
 
         /// <summary>Map a global seat number to the correct HandDisplay using seat rotation.</summary>
         private HandDisplay GetHandDisplay(int seat)
