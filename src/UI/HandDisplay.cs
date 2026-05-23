@@ -152,6 +152,18 @@ namespace RiichiMahjong.UI
             if (isDrawnTile) { _lifted = node; node.SetLifted(true); }
             _inner.AddChild(node);
             _tileNodes.Add(node);
+
+            // Brief pop-in for the drawn tile — faster than the deal animation
+            node.PivotOffset = new Vector2(TileW * 0.5f, TileH * 0.5f);
+            node.Scale       = new Vector2(0.70f, 0.70f);
+            node.Modulate    = Colors.Transparent;
+            var tween = node.CreateTween();
+            tween.TweenProperty(node, "scale", Vector2.One, 0.10f)
+                 .SetTrans(Tween.TransitionType.Quart)
+                 .SetEase(Tween.EaseType.Out);
+            tween.Parallel()
+                 .TweenProperty(node, "modulate", Colors.White, 0.07f)
+                 .SetTrans(Tween.TransitionType.Linear);
         }
 
         public void RemoveTile(Tile tile)
@@ -243,6 +255,39 @@ namespace RiichiMahjong.UI
 
         public Tile? GetSelectedTile() => _selected?.TileData;
         public int   TileCount         => _tileNodes.Count;
+
+        /// <summary>
+        /// Play the staggered deal-in animation on all current tile nodes.
+        /// Call immediately after Rebuild().  Each tile scales and fades in
+        /// from 75 % to 100 % with <paramref name="staggerSec"/> seconds of
+        /// delay between consecutive tiles.
+        /// </summary>
+        public void StartDealAnimation(float staggerSec = 0.065f, float duration = 0.12f)
+        {
+            for (int i = 0; i < _tileNodes.Count; i++)
+            {
+                var   node = _tileNodes[i];
+                float delay = i * staggerSec;
+
+                // Start small and transparent; pivot at the visual centre of the tile
+                node.PivotOffset = new Vector2(TileW * 0.5f, TileH * 0.5f);
+                node.Scale       = new Vector2(0.75f, 0.75f);
+                node.Modulate    = Colors.Transparent;
+
+                var tween = node.CreateTween();
+                tween.TweenInterval(delay);
+
+                // Scale to full size — Quart-Out gives a smooth snap-into-place feel
+                tween.TweenProperty(node, "scale", Vector2.One, duration)
+                     .SetTrans(Tween.TransitionType.Quart)
+                     .SetEase(Tween.EaseType.Out);
+
+                // Fade in simultaneously, completing before the scale finishes
+                tween.Parallel()
+                     .TweenProperty(node, "modulate", Colors.White, duration * 0.75f)
+                     .SetTrans(Tween.TransitionType.Linear);
+            }
+        }
 
         // =====================================================================
         // Private helpers

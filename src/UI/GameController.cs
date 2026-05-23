@@ -304,6 +304,11 @@ namespace RiichiMahjong.UI
             for (int s = 0; s < 4; s++)
                 if (s != _humanSeat) NetRebuildOpponentHand(s);
 
+            _playerHand.StartDealAnimation();
+            _topHand   .StartDealAnimation();
+            _leftHand  .StartDealAnimation();
+            _rightHand .StartDealAnimation();
+
             NetUpdateHud();
             _hud.SetStatus("Hand dealt — waiting for your turn…");
         }
@@ -985,6 +990,10 @@ namespace RiichiMahjong.UI
 
             _hud.ClearAllDiscards();
             RebuildAllHands();
+            _playerHand.StartDealAnimation();
+            _topHand   .StartDealAnimation();
+            _leftHand  .StartDealAnimation();
+            _rightHand .StartDealAnimation();
             _hud.UpdateAll(_game);
             _hud.SetStatus("");
             _hud.HideActionButtons();
