@@ -19,13 +19,14 @@ namespace RiichiServer.Messages
         public string?           Error      { get; set; }
 
         // ---- Game start --------------------------------------------------
-        public int               DealerSeat   { get; set; }
-        public string?           RoundWind    { get; set; }
-        public int               Counters     { get; set; }
-        public List<TileDto>?    YourTiles    { get; set; }
-        public int[]?            TileCounts   { get; set; }  // face-down counts per seat
-        public int[]?            Scores       { get; set; }  // per seat
-        public string[]?         Names        { get; set; }  // per seat
+        public int               DealerSeat      { get; set; }
+        public string?           RoundWind       { get; set; }
+        public int               Counters        { get; set; }
+        public List<TileDto>?    YourTiles       { get; set; }
+        public int[]?            TileCounts      { get; set; }  // face-down counts per seat
+        public int[]?            Scores          { get; set; }  // per seat
+        public string[]?         Names           { get; set; }  // per seat
+        public List<TileDto>?    DoraIndicators  { get; set; }  // current revealed indicators
 
         // ---- Per-turn events --------------------------------------------
         public int               Seat         { get; set; }
@@ -51,6 +52,7 @@ namespace RiichiServer.Messages
         public int               BasePoints    { get; set; }
         public string[]?         YakuNames     { get; set; }
         public int               DoraCount     { get; set; }
+        public int               UraDoraCount  { get; set; }
         public int               WinnerSeat    { get; set; }
         public int               PayerSeat     { get; set; }  // -1 for tsumo
 

@@ -608,7 +608,7 @@ namespace RiichiMahjong.Core
 			// Counter management
 			bool dealerWon = winner == DealerIndex;
 			if (dealerWon) Counters++;
-			else           Counters = 0;
+			else           { Counters = 0; AdvanceDealer(); }
 
 			Phase = TurnPhase.HandEnd;
 			OnHandEnd?.Invoke(HandEndReason.Ron, new[] { winner });
@@ -641,7 +641,7 @@ namespace RiichiMahjong.Core
 			RiichiBetsOnTable       = 0;
 
 			if (dealerWon) Counters++;
-			else           Counters = 0;
+			else           { Counters = 0; AdvanceDealer(); }
 
 			Phase = TurnPhase.HandEnd;
 			OnHandEnd?.Invoke(HandEndReason.Tsumo, new[] { winner });

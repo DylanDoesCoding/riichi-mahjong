@@ -72,6 +72,14 @@ namespace RiichiMahjong.UI
         private Label        _waitsTitle = null!;
         private HBoxContainer _waitsRow  = null!;
 
+        // Countdown bar (network mode — shown above action buttons when it's the player's turn)
+        private Control  _countdownContainer = null!;
+        private ColorRect _countdownFill     = null!;
+        private Label    _countdownLabel     = null!;
+
+        // Furiten warning — human player panel only
+        private Label _furitenLabel = null!;
+
         // Scoring overlay — shown after a Tsumo or Ron win, and reused for Game Over
         private ColorRect     _scoringBackdrop   = null!;
         private Panel         _scoringPanel      = null!;
@@ -114,8 +122,25 @@ namespace RiichiMahjong.UI
             }
             _roundWindLabel.Text = $"{roundWind} Round";
             _counterLabel.Text   = counters > 0 ? $"×{counters}" : "";
-            // Dora indicators not sent in current network protocol — hide them
-            foreach (var node in _doraTileNodes) node.Visible = false;
+        }
+
+        /// <summary>
+        /// Display dora indicator tiles (network mode). Called on hand start and after kans.
+        /// </summary>
+        public void UpdateDoraIndicators(IReadOnlyList<Tile> indicators)
+        {
+            for (int i = 0; i < _doraTileNodes.Length; i++)
+            {
+                if (i < indicators.Count)
+                {
+                    _doraTileNodes[i].SetTile(indicators[i], faceDown: false);
+                    _doraTileNodes[i].Visible = true;
+                }
+                else
+                {
+                    _doraTileNodes[i].Visible = false;
+                }
+            }
         }
 
         /// <summary>Refresh all score/wind/round info from current game state.</summary>
@@ -318,6 +343,23 @@ namespace RiichiMahjong.UI
             _statusLabel.Text = message;
         }
 
+        /// <summary>
+        /// Show or hide the FURITEN warning badge on the human player's score panel.
+        /// <paramref name="isPermanent"/> = true → red (own-discard / riichi miss);
+        /// false → orange (temporary — clears on next draw).
+        /// </summary>
+        public void SetFuriten(bool isFuriten, bool isPermanent)
+        {
+            _furitenLabel.Visible = isFuriten;
+            if (!isFuriten) return;
+
+            _furitenLabel.Text = isPermanent ? "⚠ FURITEN" : "⚠ FURITEN (temp)";
+            _furitenLabel.AddThemeColorOverride("font_color",
+                isPermanent
+                    ? new Color(1.00f, 0.25f, 0.25f)   // bright red  — permanent
+                    : new Color(1.00f, 0.58f, 0.08f));  // orange      — temporary
+        }
+
         public void ShowFinalScores(GameState game)
         {
             string msg = "Final Scores:\n";
@@ -371,6 +413,9 @@ namespace RiichiMahjong.UI
             _statusLabel.AddThemeFontSizeOverride("font_size", 16);
             AddChild(_statusLabel);
 
+            // ---- Countdown bar (above action buttons, hidden until network turn) ----
+            BuildCountdownBar();
+
             // ---- Win scoring overlay — MUST be added last so it renders on top ----
             BuildScoringPanel();
         }
@@ -418,6 +463,18 @@ namespace RiichiMahjong.UI
                 vbox.AddChild(_nameLabels[i]);
                 vbox.AddChild(_scoreLabels[i]);
                 vbox.AddChild(stick);
+
+                // Furiten badge — only on the human's own panel (index 0)
+                if (i == 0)
+                {
+                    _furitenLabel = new Label { Text = "⚠ FURITEN" };
+                    _furitenLabel.HorizontalAlignment = HorizontalAlignment.Center;
+                    _furitenLabel.AddThemeFontSizeOverride("font_size", 12);
+                    _furitenLabel.AddThemeColorOverride("font_color", new Color(1f, 0.25f, 0.25f));
+                    _furitenLabel.Visible = false;
+                    vbox.AddChild(_furitenLabel);
+                }
+
                 panel.AddChild(vbox);
                 AddChild(panel);
             }
@@ -514,6 +571,99 @@ namespace RiichiMahjong.UI
 
                 _discardPools[i] = pool;
             }
+        }
+
+        // =====================================================================
+        // Countdown bar — public API
+        // =====================================================================
+
+        /// <summary>Show the countdown bar and reset it to full.</summary>
+        public void StartCountdown(float totalSecs)
+        {
+            _countdownContainer.Visible = true;
+            UpdateCountdown(totalSecs, totalSecs);
+        }
+
+        /// <summary>Hide the countdown bar.</summary>
+        public void StopCountdown()
+        {
+            _countdownContainer.Visible = false;
+        }
+
+        /// <summary>
+        /// Update the fill width and colour. Call every frame from GameController._Process.
+        /// <paramref name="remainingSecs"/> counts down to zero;
+        /// <paramref name="totalSecs"/> is the original duration used to compute the fraction.
+        /// </summary>
+        public void UpdateCountdown(float remainingSecs, float totalSecs)
+        {
+            float fraction = totalSecs > 0f
+                ? Mathf.Clamp(remainingSecs / totalSecs, 0f, 1f)
+                : 0f;
+
+            _countdownFill.AnchorRight = fraction;
+            _countdownFill.OffsetRight = 0f;    // ensure no residual pixel offset
+
+            // green → yellow → red as time runs out
+            Color fillColor;
+            if (fraction >= 0.5f)
+                fillColor = new Color(0.20f, 0.78f, 0.30f)
+                    .Lerp(new Color(0.92f, 0.78f, 0.10f), (1f - fraction) * 2f);
+            else
+                fillColor = new Color(0.92f, 0.78f, 0.10f)
+                    .Lerp(new Color(0.92f, 0.22f, 0.22f), (0.5f - fraction) * 2f);
+            _countdownFill.Color = fillColor;
+
+            int secs = (int)MathF.Ceiling(remainingSecs);
+            _countdownLabel.Text = $"Auto in {secs}s";
+        }
+
+        // =====================================================================
+        // Countdown bar — layout construction
+        // =====================================================================
+
+        private void BuildCountdownBar()
+        {
+            // Thin bar positioned just above the action button row.
+            // Action buttons:  OffsetTop=-148  OffsetBottom=-90  (from BottomWide)
+            // Countdown bar:   OffsetTop=-167  OffsetBottom=-151  (16px, 3px gap above)
+            _countdownContainer = new Control();
+            _countdownContainer.SetAnchorsAndOffsetsPreset(LayoutPreset.BottomWide);
+            _countdownContainer.OffsetLeft   =  180;
+            _countdownContainer.OffsetRight  =  -10;
+            _countdownContainer.OffsetTop    = -167;
+            _countdownContainer.OffsetBottom = -151;
+            _countdownContainer.MouseFilter  = MouseFilterEnum.Ignore;
+            _countdownContainer.Visible      = false;
+
+            // Dark trough background
+            var bg = new ColorRect();
+            bg.AnchorRight  = 1f;
+            bg.AnchorBottom = 1f;
+            bg.Color        = new Color(0.07f, 0.07f, 0.10f, 0.92f);
+            bg.MouseFilter  = MouseFilterEnum.Ignore;
+            _countdownContainer.AddChild(bg);
+
+            // Coloured fill — AnchorRight is updated each frame to animate the drain
+            _countdownFill = new ColorRect();
+            _countdownFill.AnchorRight  = 1f;
+            _countdownFill.AnchorBottom = 1f;
+            _countdownFill.Color        = new Color(0.20f, 0.78f, 0.30f);
+            _countdownFill.MouseFilter  = MouseFilterEnum.Ignore;
+            _countdownContainer.AddChild(_countdownFill);
+
+            // Seconds label centred over the bar
+            _countdownLabel = new Label();
+            _countdownLabel.AnchorRight         = 1f;
+            _countdownLabel.AnchorBottom        = 1f;
+            _countdownLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _countdownLabel.VerticalAlignment   = VerticalAlignment.Center;
+            _countdownLabel.AddThemeFontSizeOverride("font_size", 11);
+            _countdownLabel.AddThemeColorOverride("font_color", Colors.White);
+            _countdownLabel.MouseFilter = MouseFilterEnum.Ignore;
+            _countdownContainer.AddChild(_countdownLabel);
+
+            AddChild(_countdownContainer);
         }
 
         private void BuildActionButtons()
@@ -942,6 +1092,7 @@ namespace RiichiMahjong.UI
             int      han,
             int      fu,
             int      doraCount,
+            int      uraDoraCount,
             int      totalPointsWon)
         {
             // ── Title ──
@@ -957,6 +1108,9 @@ namespace RiichiMahjong.UI
             if (doraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Dora", $"{doraCount} han", new Color(1f, 0.80f, 0.30f)));
+            if (uraDoraCount > 0)
+                _scoringYakuRows.AddChild(MakeScoringRow(
+                    "  Ura Dora", $"{uraDoraCount} han", new Color(1f, 0.70f, 0.20f)));
 
             // ── Han / Fu ──
             _scoringHanFuLabel.Text = $"  {han} han  {fu} fu";
@@ -998,17 +1152,19 @@ namespace RiichiMahjong.UI
         public void HideScoringPanel()
         {
             _scoringBackdrop.Visible = false;
-            _scoringNextBtn.Visible  = true;   // Restore for next win overlay
+            _scoringNextBtn.Text    = "▶  Next Hand";  // Restore from any "Play Again" state
+            _scoringNextBtn.Visible  = true;
             foreach (var child in _scoringYakuRows.GetChildren())  child.QueueFree();
             foreach (var child in _scoringPayRows.GetChildren())   child.QueueFree();
             foreach (var child in _scoringAllScores.GetChildren()) child.QueueFree();
         }
 
         /// <summary>
-        /// Show the game-over screen using the scoring panel.
-        /// Displays final player rankings and a reason string; hides the "Next Hand" button.
+        /// Show the final game-over screen using the scoring panel.
+        /// Displays ranked standings with score deltas and uma-adjusted net scores.
+        /// Uma: 1st +30 / 2nd +10 / 3rd −10 / 4th −30 (in thousands).
         /// </summary>
-        public void ShowGameOverPanel(string reason, string[] playerNames, int[] playerPoints, int dealerSeat)
+        public void ShowGameOverPanel(string reason, string[] playerNames, int[] playerPoints, int dealerSeat, bool showPlayAgain = false)
         {
             // Clear any leftover content from a previous hand's scoring panel
             foreach (var child in _scoringYakuRows.GetChildren())  child.QueueFree();
@@ -1016,26 +1172,36 @@ namespace RiichiMahjong.UI
             foreach (var child in _scoringAllScores.GetChildren()) child.QueueFree();
 
             // ── Title ──
-            _scoringTitle.Text = "★  GAME OVER  ★";
+            _scoringTitle.Text = "★  FINAL RESULTS  ★";
             _scoringTitle.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.20f));
 
-            // ── Reason row (shown in the yaku area) ──
-            var reasonLbl = new Label { Text = $"  {reason}" };
+            // ── Reason subtitle (yaku rows area) ──
+            var reasonLbl = new Label { Text = reason };
             reasonLbl.HorizontalAlignment = HorizontalAlignment.Center;
-            reasonLbl.AddThemeFontSizeOverride("font_size", 15);
-            reasonLbl.AddThemeColorOverride("font_color", new Color(1f, 0.60f, 0.60f));
+            reasonLbl.AddThemeFontSizeOverride("font_size", 14);
+            reasonLbl.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.85f));
             _scoringYakuRows.AddChild(reasonLbl);
 
-            // ── Clear han/fu / limit labels (not relevant here) ──
+            // ── Clear han/fu / limit labels (not applicable here) ──
             _scoringHanFuLabel.Text = "";
             _scoringLimitLabel.Text = "";
 
-            // ── Final standings header (shown in total-won area) ──
+            // ── "Final Standings" header ──
             _scoringTotalWon.Text = "— Final Standings —";
             _scoringTotalWon.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 1f));
 
-            // ── All-player ranking ──
+            // ── Column header ──
+            var headerColor = new Color(0.60f, 0.60f, 0.72f);
+            _scoringAllScores.AddChild(MakeGameOverRow(
+                "", "  Player (Wind)", "Score", "Net",
+                headerColor, headerColor, headerColor));
+
+            // ── Ranked player rows ──
+            // medals[0..2] are Unicode medal emojis; rank 4 just uses "4."
+            string[] medals      = { "🥇", "🥈", "🥉", "4." };
+            int[]    umaTable    = { 30, 10, -10, -30 };
             string[] windLetters = { "E", "S", "W", "N" };
+
             var order = Enumerable.Range(0, 4)
                 .OrderByDescending(i => playerPoints[i])
                 .ToList();
@@ -1045,20 +1211,53 @@ namespace RiichiMahjong.UI
                 int    i       = order[rank];
                 int    windOff = (i - dealerSeat + 4) % 4;
                 string wind    = windLetters[windOff];
-                bool   isFirst = rank == 0;
+                int    pts     = playerPoints[i];
 
-                string prefix = isFirst ? "  🏆 " : $"  {rank + 1}. ";
-                string label  = $"{prefix}{playerNames[i]}  ({wind})";
+                // Net score: (score − oka) ÷ 1000 (integer, truncated) + uma
+                int netK   = (pts - GameState.StartingPoints) / 1_000 + umaTable[rank];
+                string net = netK >= 0 ? $"+{netK}" : $"{netK}";
 
-                Color valueColor = playerPoints[i] < 0
-                    ? new Color(1f, 0.40f, 0.40f)   // Red for bankrupt
-                    : (isFirst ? new Color(1f, 0.85f, 0.20f) : Colors.White);
+                // Medal / rank colours
+                Color nameColor = rank switch
+                {
+                    0 => new Color(1.00f, 0.85f, 0.20f),   // gold
+                    1 => new Color(0.82f, 0.82f, 0.88f),   // silver
+                    2 => new Color(0.85f, 0.60f, 0.30f),   // bronze
+                    _ => new Color(0.65f, 0.65f, 0.70f),   // grey
+                };
+                Color scoreColor = pts < 0
+                    ? new Color(1f, 0.40f, 0.40f)          // red — bankrupt
+                    : Colors.White;
+                Color netColor = netK > 0
+                    ? new Color(0.35f, 1f, 0.45f)           // green — positive
+                    : netK < 0
+                        ? new Color(1f, 0.50f, 0.50f)       // red — negative
+                        : Colors.White;
 
-                _scoringAllScores.AddChild(MakeScoringRow(label, $"{playerPoints[i]:N0}", valueColor));
+                _scoringAllScores.AddChild(MakeGameOverRow(
+                    medals[rank],
+                    $"  {playerNames[i]}  ({wind})",
+                    $"{pts:N0}",
+                    net,
+                    nameColor, scoreColor, netColor));
             }
 
-            // ── Buttons: hide "Next Hand", show only "Menu" ──
-            _scoringNextBtn.Visible = false;
+            // ── Uma note (pay rows area) ──
+            var umaNote = new Label { Text = "  Uma: 1st +30 / 2nd +10 / 3rd −10 / 4th −30  (Net = (score−30k)÷1k + uma)" };
+            umaNote.AddThemeFontSizeOverride("font_size", 11);
+            umaNote.AddThemeColorOverride("font_color", new Color(0.50f, 0.50f, 0.60f));
+            _scoringPayRows.AddChild(umaNote);
+
+            // ── Buttons: "Play Again" for local, hidden in network ──
+            if (showPlayAgain)
+            {
+                _scoringNextBtn.Text    = "▶  Play Again";
+                _scoringNextBtn.Visible = true;
+            }
+            else
+            {
+                _scoringNextBtn.Visible = false;
+            }
 
             _scoringBackdrop.Visible = true;
         }
@@ -1076,6 +1275,50 @@ namespace RiichiMahjong.UI
             val.AddThemeColorOverride("font_color", rightColor);
             row.AddChild(lbl);
             row.AddChild(val);
+            return row;
+        }
+
+        /// <summary>
+        /// Four-column row used in the game-over standings table.
+        /// Columns: medal/rank icon | player name + wind | final score | net (uma-adj) score.
+        /// </summary>
+        private static HBoxContainer MakeGameOverRow(
+            string medal, string name, string score, string net,
+            Color nameColor, Color scoreColor, Color netColor)
+        {
+            var row = new HBoxContainer();
+            row.AddThemeConstantOverride("separation", 4);
+
+            // Medal / rank icon — fixed width so columns stay aligned
+            var medalLbl = new Label { Text = medal };
+            medalLbl.CustomMinimumSize = new Vector2(44, 0);
+            medalLbl.AddThemeFontSizeOverride("font_size", 15);
+            medalLbl.AddThemeColorOverride("font_color", nameColor);
+
+            // Player name + wind indicator — fills remaining horizontal space
+            var nameLbl = new Label { Text = name };
+            nameLbl.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            nameLbl.AddThemeFontSizeOverride("font_size", 14);
+            nameLbl.AddThemeColorOverride("font_color", nameColor);
+
+            // Raw final score — right-aligned, fixed width
+            var scoreLbl = new Label { Text = score };
+            scoreLbl.CustomMinimumSize   = new Vector2(90, 0);
+            scoreLbl.HorizontalAlignment = HorizontalAlignment.Right;
+            scoreLbl.AddThemeFontSizeOverride("font_size", 14);
+            scoreLbl.AddThemeColorOverride("font_color", scoreColor);
+
+            // Net (uma-adjusted) score in thousands — right-aligned, fixed width
+            var netLbl = new Label { Text = net };
+            netLbl.CustomMinimumSize   = new Vector2(62, 0);
+            netLbl.HorizontalAlignment = HorizontalAlignment.Right;
+            netLbl.AddThemeFontSizeOverride("font_size", 14);
+            netLbl.AddThemeColorOverride("font_color", netColor);
+
+            row.AddChild(medalLbl);
+            row.AddChild(nameLbl);
+            row.AddChild(scoreLbl);
+            row.AddChild(netLbl);
             return row;
         }
 

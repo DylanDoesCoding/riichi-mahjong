@@ -35,8 +35,13 @@ namespace RiichiMahjong.UI
         private Button          _startBtn         = null!;
         private Button          _copyBtn          = null!;
 
+        // ---- Audio -----------------------------------------------------------
+        private AudioStreamPlayer _lobbyMusic = null!;
+
         // ---- State -----------------------------------------------------------
-        private bool _isHost = false;
+        private bool   _isHost             = false;
+        private string _reconnectCode      = "";  // room code to rejoin after disconnect
+        private string _reconnectServerUrl = "";
 
         // ---- Style colours ---------------------------------------------------
         private static readonly Color BgColor      = new(0.08f, 0.10f, 0.15f, 1f);
@@ -60,6 +65,19 @@ namespace RiichiMahjong.UI
             bg.Color = BgColor;
             AddChild(bg);
 
+            // Background music (same track as menu, loops)
+            _lobbyMusic = new AudioStreamPlayer { Bus = "Master" };
+            AddChild(_lobbyMusic);
+            var music = GD.Load<AudioStream>(
+                "res://Assets/Sounds/Whispering_Bamboo_Garden_2026-05-18T203144.wav");
+            if (music != null)
+            {
+                _lobbyMusic.Stream   = music;
+                _lobbyMusic.VolumeDb = GameSettings.LinearToDb(GameSettings.MusicVolume);
+                _lobbyMusic.Finished += () => _lobbyMusic.Play();
+                _lobbyMusic.Play();
+            }
+
             BuildConnectPanel();
             BuildWaitingPanel();
 
@@ -75,11 +93,14 @@ namespace RiichiMahjong.UI
             nm.OnPlayerLeft   += HandlePlayerLeft;
             nm.OnError        += HandleError;
             nm.OnGameStarted  += HandleGameStarted;
+            nm.OnConnected    += HandleConnected;
             nm.OnDisconnected += HandleDisconnected;
         }
 
         public override void _ExitTree()
         {
+            _lobbyMusic?.Stop();
+
             var nm = NetworkManager.Instance;
             if (nm == null) return;
 
@@ -89,6 +110,7 @@ namespace RiichiMahjong.UI
             nm.OnPlayerLeft   -= HandlePlayerLeft;
             nm.OnError        -= HandleError;
             nm.OnGameStarted  -= HandleGameStarted;
+            nm.OnConnected    -= HandleConnected;
             nm.OnDisconnected -= HandleDisconnected;
         }
 
@@ -158,7 +180,11 @@ namespace RiichiMahjong.UI
 
             // Back to menu
             var backBtn = MakeButton("← Back to Menu", new Color(0.18f, 0.22f, 0.35f));
-            backBtn.Pressed += () => GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
+            backBtn.Pressed += () =>
+            {
+                NetworkManager.Instance?.ResetSession();
+                GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
+            };
             vbox.AddChild(backBtn);
         }
 
@@ -366,7 +392,8 @@ namespace RiichiMahjong.UI
 
         private void OnLeaveRoom()
         {
-            NetworkManager.Instance?.Disconnect();
+            _reconnectCode = "";
+            NetworkManager.Instance?.ResetSession();
             ShowConnect();
             SetConnectStatus("");
         }
@@ -377,9 +404,10 @@ namespace RiichiMahjong.UI
 
         private void HandleRoomCreated(string code, int seat, List<NetPlayerInfo> players)
         {
+            _reconnectCode      = "";
             _roomCodeLabel.Text = code;
-            _isHost = true;
-            _startBtn.Visible = true;
+            _isHost             = true;
+            _startBtn.Visible   = true;
             SetWaitingStatus("Share the code with friends. Start when ready.");
             UpdatePlayerSlots(players);
             ShowWaiting();
@@ -387,9 +415,10 @@ namespace RiichiMahjong.UI
 
         private void HandleRoomJoined(string code, int seat, List<NetPlayerInfo> players)
         {
+            _reconnectCode      = "";  // clear any pending reconnect attempt
             _roomCodeLabel.Text = code;
-            _isHost = false;
-            _startBtn.Visible = false;
+            _isHost             = false;
+            _startBtn.Visible   = false;
             SetWaitingStatus("Waiting for the host to start the game...");
             UpdatePlayerSlots(players);
             ShowWaiting();
@@ -410,8 +439,36 @@ namespace RiichiMahjong.UI
             GetTree().ChangeSceneToFile("res://Scenes/GameTable.tscn");
         }
 
+        private void HandleConnected()
+        {
+            // If we're reconnecting to a lobby, send the rejoin immediately
+            if (_reconnectCode.Length > 0)
+                NetworkManager.Instance?.SendRejoinRoom(_reconnectCode);
+        }
+
         private void HandleDisconnected()
         {
+            var nm = NetworkManager.Instance;
+
+            // If we were in a room (lobby or game), try to reconnect automatically
+            string code = nm?.RoomCode ?? "";
+            if (code.Length > 0)
+            {
+                _reconnectCode      = code;
+                _reconnectServerUrl = GameSettings.ServerUrl;
+                ShowWaiting();
+                SetWaitingStatus("Connection lost. Reconnecting...");
+                var err = nm!.Connect(_reconnectServerUrl);
+                if (err != Error.Ok)
+                {
+                    // Can't even initiate — fall back to connect panel
+                    _reconnectCode = "";
+                    ShowConnect();
+                    SetConnectStatus("Disconnected. Could not reconnect.");
+                }
+                return;
+            }
+
             ShowConnect();
             SetConnectStatus("Disconnected from server.");
         }

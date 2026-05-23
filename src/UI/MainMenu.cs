@@ -7,32 +7,37 @@
 // =============================================================================
 
 using Godot;
+using System.Collections.Generic;
 
 namespace RiichiMahjong.UI
 {
     public partial class MainMenu : Control
     {
         // ---- Scene nodes (from .tscn) ----------------------------------------
-        private Button _regularBtn  = null!;
-        private Button _blackBtn    = null!;
-        private Control _centrePanel = null!;
+        private Button _regularBtn    = null!;
+        private Button _blackBtn      = null!;
+        private Button _quickPlayBtn  = null!;
+        private Control _centrePanel  = null!;
 
         // ---- Options overlay (built in code) ---------------------------------
-        private Control _optionsPanel   = null!;
-        private Label   _musicPctLabel  = null!;
-        private Label   _sfxPctLabel    = null!;
+        private Control  _optionsPanel   = null!;
+        private Label    _musicPctLabel  = null!;
+        private Label    _sfxPctLabel    = null!;
+        private LineEdit _nameEdit       = null!;
+        private LineEdit _urlEdit        = null!;
+
+        // ---- Quick Play state -----------------------------------------------
+        private bool _quickPlayActive = false;
 
         // ---- Audio -----------------------------------------------------------
         private AudioStreamPlayer _musicPlayer = null!;
-        private AudioStreamPlayer _sfxPreview  = null!;   // Plays a clack on SFX slider change
 
         // ---- Theme colours ---------------------------------------------------
         private static readonly Color ActiveBg   = new(0.20f, 0.55f, 0.90f);
         private static readonly Color InactiveBg = new(0.25f, 0.25f, 0.30f);
 
         // ---- Paths -----------------------------------------------------------
-        private const string MusicPath    = "res://Assets/Sounds/Whispering_Bamboo_Garden_2026-05-18T203144.wav";
-        private const string ClackPath    = "res://Assets/Sounds/mahjong_tile_clack_#1-1779136185604.wav";
+        private const string MusicPath = "res://Assets/Sounds/Whispering_Bamboo_Garden_2026-05-18T203144.wav";
 
         // =====================================================================
         // Lifecycle
@@ -48,6 +53,7 @@ namespace RiichiMahjong.UI
             var quitBtn         = GetNode<Button>("CentrePanel/QuitButton");
             _regularBtn         = GetNode<Button>("CentrePanel/ThemeRow/RegularButton");
             _blackBtn           = GetNode<Button>("CentrePanel/ThemeRow/BlackButton");
+            _quickPlayBtn       = GetNode<Button>("CentrePanel/QuickPlayButton");
 
             playBtn.Pressed        += OnPlayPressed;
             multiplayerBtn.Pressed += OnMultiplayerPressed;
@@ -55,6 +61,7 @@ namespace RiichiMahjong.UI
             quitBtn.Pressed        += OnQuitPressed;
             _regularBtn.Pressed    += OnRegularPressed;
             _blackBtn.Pressed      += OnBlackPressed;
+            _quickPlayBtn.Pressed  += OnQuickPlayPressed;
 
             RefreshThemeButtons();
 
@@ -76,13 +83,11 @@ namespace RiichiMahjong.UI
                 _musicPlayer.Play();
             }
 
-            // SFX preview player (one-shot, for slider feedback)
-            _sfxPreview = new AudioStreamPlayer();
-            _sfxPreview.Bus = "Master";
-            AddChild(_sfxPreview);
-            var clack = GD.Load<AudioStream>(ClackPath);
-            if (clack != null)
-                _sfxPreview.Stream = clack;
+        }
+
+        public override void _ExitTree()
+        {
+            UnwireQuickPlay();
         }
 
         // =====================================================================
@@ -101,6 +106,64 @@ namespace RiichiMahjong.UI
             GetTree().ChangeSceneToFile("res://Scenes/Lobby.tscn");
         }
 
+        private void OnQuickPlayPressed()
+        {
+            if (_quickPlayActive) return;
+
+            var nm = NetworkManager.Instance;
+            if (nm == null) return;
+
+            var url = GameSettings.ServerUrl.Length > 0 ? GameSettings.ServerUrl : "ws://localhost:5000/ws";
+            if (GameSettings.PlayerName.Length == 0) GameSettings.PlayerName = "Player";
+
+            _quickPlayActive       = true;
+            _quickPlayBtn.Disabled = true;
+            _quickPlayBtn.Text     = "Connecting…";
+
+            nm.OnConnected   += OnQuickPlayConnected;
+            nm.OnRoomCreated += OnQuickPlayRoomCreated;
+            nm.OnGameStarted += OnQuickPlayGameStarted;
+            nm.OnError       += OnQuickPlayError;
+
+            nm.Connect(url);
+        }
+
+        private void OnQuickPlayConnected()
+        {
+            NetworkManager.Instance?.CreateRoom(GameSettings.PlayerName);
+        }
+
+        private void OnQuickPlayRoomCreated(string code, int seat, List<NetPlayerInfo> players)
+        {
+            NetworkManager.Instance?.StartGame();
+        }
+
+        private void OnQuickPlayGameStarted(int seat, string[] names)
+        {
+            UnwireQuickPlay();
+            _musicPlayer.Stop();
+            GetTree().ChangeSceneToFile("res://Scenes/GameTable.tscn");
+        }
+
+        private void OnQuickPlayError(string error)
+        {
+            _quickPlayActive       = false;
+            _quickPlayBtn.Disabled = false;
+            _quickPlayBtn.Text     = "⚡  Quick Play";
+            UnwireQuickPlay();
+            NetworkManager.Instance?.ResetSession();
+        }
+
+        private void UnwireQuickPlay()
+        {
+            var nm = NetworkManager.Instance;
+            if (nm == null) return;
+            nm.OnConnected   -= OnQuickPlayConnected;
+            nm.OnRoomCreated -= OnQuickPlayRoomCreated;
+            nm.OnGameStarted -= OnQuickPlayGameStarted;
+            nm.OnError       -= OnQuickPlayError;
+        }
+
         private void OnQuitPressed() => GetTree().Quit();
 
         private void OnRegularPressed() { GameSettings.UseBlackTiles = false; RefreshThemeButtons(); }
@@ -108,6 +171,10 @@ namespace RiichiMahjong.UI
 
         private void OnOptionsPressed()
         {
+            // Refresh text fields from saved settings each time the panel opens
+            _nameEdit.Text = GameSettings.PlayerName;
+            _urlEdit.Text  = GameSettings.ServerUrl;
+
             _centrePanel.Visible  = false;
             _optionsPanel.Visible = true;
         }
@@ -118,7 +185,7 @@ namespace RiichiMahjong.UI
 
         private void BuildOptionsPanel()
         {
-            // Full-screen overlay — same dark background as the menu
+            // Full-screen overlay
             _optionsPanel = new Control();
             _optionsPanel.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
             _optionsPanel.Visible = false;
@@ -128,13 +195,13 @@ namespace RiichiMahjong.UI
             bg.Color = new Color(0.08f, 0.10f, 0.15f, 1f);
             _optionsPanel.AddChild(bg);
 
-            // Centred card
+            // Centred card — wider and taller to fit name + URL fields
             var card = new PanelContainer();
             card.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-            card.OffsetLeft   = -240;
-            card.OffsetTop    = -220;
-            card.OffsetRight  =  240;
-            card.OffsetBottom =  220;
+            card.OffsetLeft   = -265;
+            card.OffsetTop    = -295;
+            card.OffsetRight  =  265;
+            card.OffsetBottom =  295;
 
             var cardStyle = new StyleBoxFlat();
             cardStyle.BgColor     = new Color(0.10f, 0.12f, 0.18f, 1f);
@@ -148,20 +215,20 @@ namespace RiichiMahjong.UI
             var vbox = new VBoxContainer();
             vbox.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
             vbox.OffsetLeft   = 28;
-            vbox.OffsetTop    = 24;
+            vbox.OffsetTop    = 20;
             vbox.OffsetRight  = -28;
-            vbox.OffsetBottom = -24;
-            vbox.AddThemeConstantOverride("separation", 12);
+            vbox.OffsetBottom = -20;
+            vbox.AddThemeConstantOverride("separation", 10);
 
-            // Title
-            var title = new Label { Text = "⚙  Options" };
+            // ── Title ──
+            var title = new Label { Text = "⚙  Settings" };
             title.HorizontalAlignment = HorizontalAlignment.Center;
             title.AddThemeFontSizeOverride("font_size", 26);
             title.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1f));
             vbox.AddChild(title);
             vbox.AddChild(new HSeparator());
 
-            // Music volume row
+            // ── Music volume ──
             vbox.AddChild(MakeSliderSection(
                 "🎵  Music Volume",
                 GameSettings.MusicVolume,
@@ -170,14 +237,14 @@ namespace RiichiMahjong.UI
 
             musicSlider.ValueChanged += v =>
             {
-                GameSettings.MusicVolume   = (float)v;
-                _musicPlayer.VolumeDb      = GameSettings.LinearToDb(GameSettings.MusicVolume);
-                _musicPctLabel.Text        = $"{(int)(v * 100)} %";
+                GameSettings.MusicVolume = (float)v;
+                _musicPlayer.VolumeDb    = GameSettings.LinearToDb(GameSettings.MusicVolume);
+                _musicPctLabel.Text      = $"{(int)(v * 100)} %";
             };
 
-            vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 6) });
+            vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 4) });
 
-            // SFX volume row
+            // ── SFX volume ──
             vbox.AddChild(MakeSliderSection(
                 "🔊  SFX Volume",
                 GameSettings.SfxVolume,
@@ -186,34 +253,58 @@ namespace RiichiMahjong.UI
 
             sfxSlider.ValueChanged += v =>
             {
-                GameSettings.SfxVolume  = (float)v;
-                _sfxPctLabel.Text       = $"{(int)(v * 100)} %";
-
-                // Play a clack preview so the player can hear the new level
-                if (_sfxPreview.Stream != null)
-                {
-                    _sfxPreview.VolumeDb = GameSettings.LinearToDb(GameSettings.SfxVolume);
-                    if (!_sfxPreview.Playing)
-                        _sfxPreview.Play();
-                }
+                GameSettings.SfxVolume = (float)v;
+                _sfxPctLabel.Text      = $"{(int)(v * 100)} %";
+                // Play a tile-clack preview so the player can hear the new level
+                SoundManager.Instance?.Play(Sound.TileDiscard);
             };
 
-            vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 16) });
             vbox.AddChild(new HSeparator());
+
+            // ── Player name ──
+            vbox.AddChild(MakeFieldSection(
+                "👤  Player Name",
+                placeholder: "e.g. Player1",
+                initial:     GameSettings.PlayerName,
+                maxLength:   24,
+                out _nameEdit));
+
             vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 4) });
 
-            // Back button
-            var backBtn = MakeOptionButton("← Back to Menu", new Color(0.22f, 0.35f, 0.55f));
-            backBtn.Pressed += () =>
-            {
-                _optionsPanel.Visible = false;
-                _centrePanel.Visible  = true;
-            };
+            // ── Server URL ──
+            vbox.AddChild(MakeFieldSection(
+                "🌐  Server URL",
+                placeholder: "wss://host/ws",
+                initial:     GameSettings.ServerUrl,
+                maxLength:   200,
+                out _urlEdit));
+
+            vbox.AddChild(new HSeparator());
+
+            // ── Back button — saves everything on close ──
+            var backBtn = MakeOptionButton("✓  Save & Back", new Color(0.18f, 0.42f, 0.25f));
+            backBtn.Pressed += CloseAndSave;
             vbox.AddChild(backBtn);
 
             card.AddChild(vbox);
             _optionsPanel.AddChild(card);
             AddChild(_optionsPanel);
+        }
+
+        private void CloseAndSave()
+        {
+            // Apply text-field values before saving
+            string name = _nameEdit.Text.Trim();
+            if (name.Length == 0) name = "Player";
+            GameSettings.PlayerName = name;
+
+            string url = _urlEdit.Text.Trim();
+            if (url.Length > 0) GameSettings.ServerUrl = url;
+
+            GameSettings.Save();
+
+            _optionsPanel.Visible = false;
+            _centrePanel.Visible  = true;
         }
 
         /// <summary>Build a label + slider + percentage label row and return the slider.</summary>
@@ -271,6 +362,51 @@ namespace RiichiMahjong.UI
 
             btn.AddThemeColorOverride("font_color", Colors.White);
             return btn;
+        }
+
+        /// <summary>Build a label + styled LineEdit row and return the edit control.</summary>
+        private static Control MakeFieldSection(string labelText, string placeholder,
+            string initial, int maxLength, out LineEdit edit)
+        {
+            var section = new VBoxContainer();
+            section.AddThemeConstantOverride("separation", 6);
+
+            var lbl = new Label { Text = labelText };
+            lbl.AddThemeFontSizeOverride("font_size", 15);
+            lbl.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1f));
+            section.AddChild(lbl);
+
+            edit = new LineEdit();
+            edit.Text              = initial;
+            edit.PlaceholderText   = placeholder;
+            edit.MaxLength         = maxLength;
+            edit.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            edit.CustomMinimumSize   = new Vector2(0, 36);
+            edit.AddThemeFontSizeOverride("font_size", 15);
+            edit.AddThemeColorOverride("font_color",             new Color(0.92f, 0.95f, 1.00f));
+            edit.AddThemeColorOverride("font_placeholder_color", new Color(0.50f, 0.55f, 0.65f));
+
+            // Normal background
+            var normalStyle = new StyleBoxFlat();
+            normalStyle.BgColor           = new Color(0.06f, 0.08f, 0.13f, 1f);
+            normalStyle.BorderColor       = new Color(0.25f, 0.35f, 0.55f, 1f);
+            normalStyle.BorderWidthTop    = normalStyle.BorderWidthBottom =
+            normalStyle.BorderWidthLeft   = normalStyle.BorderWidthRight  = 1;
+            normalStyle.CornerRadiusTopLeft    = normalStyle.CornerRadiusTopRight    =
+            normalStyle.CornerRadiusBottomLeft = normalStyle.CornerRadiusBottomRight = 5;
+            normalStyle.ContentMarginLeft  = normalStyle.ContentMarginRight  = 8;
+            normalStyle.ContentMarginTop   = normalStyle.ContentMarginBottom = 6;
+            edit.AddThemeStyleboxOverride("normal", normalStyle);
+
+            // Focus background — brighter border
+            var focusStyle = (StyleBoxFlat)normalStyle.Duplicate();
+            focusStyle.BorderColor  = new Color(0.40f, 0.65f, 1.00f, 1f);
+            focusStyle.BorderWidthTop    = focusStyle.BorderWidthBottom =
+            focusStyle.BorderWidthLeft   = focusStyle.BorderWidthRight  = 2;
+            edit.AddThemeStyleboxOverride("focus", focusStyle);
+
+            section.AddChild(edit);
+            return section;
         }
 
         // =====================================================================

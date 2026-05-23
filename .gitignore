@@ -27,3 +27,6 @@ android/
 # OS metadata
 Thumbs.db
 .DS_Store
+
+# Claude session context (local dev aid, not part of the project)
+CLAUDE_CONTEXT.md

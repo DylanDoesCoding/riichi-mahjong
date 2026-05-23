@@ -85,6 +85,7 @@ namespace RiichiMahjong.UI
         public int                     BasePoints     { get; set; }
         public string[]?               YakuNames      { get; set; }
         public int                     DoraCount      { get; set; }
+        public int                     UraDoraCount   { get; set; }
         public int                     WinnerSeat     { get; set; }
         public int                     PayerSeat      { get; set; }
 
@@ -93,6 +94,9 @@ namespace RiichiMahjong.UI
         public List<List<NetMeldDto>>? Melds          { get; set; }  // [seat][meld]
         public int[]?                  RiichiSeats    { get; set; }
         public int                     CurrentTurn    { get; set; }
+
+        // ---- Dora -----------------------------------------------------------
+        public List<NetTileDto>?       DoraIndicators { get; set; }
     }
 
     // =========================================================================
@@ -113,8 +117,10 @@ namespace RiichiMahjong.UI
         public event Action<List<NetPlayerInfo>>?               OnPlayerJoined; // updated list
         public event Action<int, List<NetPlayerInfo>>?          OnPlayerLeft;   // seat, updated list
         public event Action<string>?                            OnError;
+        public event Action?                                    OnConnected;    // WebSocket handshake complete
         public event Action?                                    OnDisconnected;
         public event Action?                                    OnRejoinSuccess; // server accepted rejoin
+        public event Action<List<Tile>>?                        OnDoraUpdated;  // indicators changed (hand start or kan)
 
         // ---- Game events (mirror GameState events so GameController is unaware) --
         public event Action<int, string[]>?          OnGameStarted;     // yourSeat, names
@@ -126,8 +132,8 @@ namespace RiichiMahjong.UI
         public event Action<int>?                    OnRiichiDeclared;  // seat
         public event Action<int, Tile, bool, bool, bool, bool>? OnClaimWindowOpened;
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
-        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int, int, int>? OnHandEnded;
-        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, doraCount, winnerSeat, payerSeat
+        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int, int, int, int>? OnHandEnded;
+        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, doraCount, uraDoraCount, winnerSeat, payerSeat
         public event Action<List<NetScoreEntry>>?    OnGameOver;        // scoreBoard
 
         // Fired when a mid-game rejoin succeeds — carries same payload as OnHandDealt
@@ -139,7 +145,8 @@ namespace RiichiMahjong.UI
         // discards[seat][tile], melds[seat][meld], riichiSeats, currentTurn
 
         // ---- Internal --------------------------------------------------------
-        private WebSocketPeer _ws = new();
+        private WebSocketPeer _ws         = new();
+        private bool          _socketOpen = false;  // true only while WS is actually Open
         private static readonly JsonSerializerOptions _jsonOpts = new()
         {
             PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
@@ -159,9 +166,19 @@ namespace RiichiMahjong.UI
 
         public override void _Process(double delta)
         {
-            if (_ws.GetReadyState() == WebSocketPeer.State.Closed) return;
+            var state = _ws.GetReadyState();
+            if (state == WebSocketPeer.State.Closed && !_socketOpen) return;
 
             _ws.Poll();
+            state = _ws.GetReadyState();
+
+            // Detect socket becoming Open (handshake complete)
+            if (!_socketOpen && state == WebSocketPeer.State.Open)
+            {
+                _socketOpen       = true;
+                IsSocketConnected = true;
+                OnConnected?.Invoke();
+            }
 
             while (_ws.GetAvailablePacketCount() > 0)
             {
@@ -178,8 +195,9 @@ namespace RiichiMahjong.UI
             }
 
             // Detect disconnection
-            if (IsSocketConnected && _ws.GetReadyState() == WebSocketPeer.State.Closed)
+            if (_socketOpen && _ws.GetReadyState() == WebSocketPeer.State.Closed)
             {
+                _socketOpen       = false;
                 IsSocketConnected = false;
                 OnDisconnected?.Invoke();
             }
@@ -191,8 +209,9 @@ namespace RiichiMahjong.UI
 
         public Error Connect(string url)
         {
-            _ws    = new WebSocketPeer();
-            var err = _ws.ConnectToUrl(url);
+            _ws         = new WebSocketPeer();
+            _socketOpen = false;
+            var err     = _ws.ConnectToUrl(url);
             if (err == Error.Ok) IsSocketConnected = true;
             return err;
         }
@@ -200,7 +219,19 @@ namespace RiichiMahjong.UI
         public void Disconnect()
         {
             _ws.Close();
+            _socketOpen       = false;
             IsSocketConnected = false;
+        }
+
+        /// <summary>
+        /// Clear session state (seat, room code) without closing the socket.
+        /// Call this when navigating away from multiplayer so local mode starts clean.
+        /// </summary>
+        public void ResetSession()
+        {
+            LocalSeat = -1;
+            RoomCode  = "";
+            Disconnect();
         }
 
         // =====================================================================
@@ -295,6 +326,8 @@ namespace RiichiMahjong.UI
                         msg.RoundWind   ?? "East",
                         msg.Counters,
                         msg.Names       ?? Array.Empty<string>());
+                    if (msg.DoraIndicators != null)
+                        OnDoraUpdated?.Invoke(msg.DoraIndicators.Select(d => d.ToTile()).ToList());
                     break;
 
                 case "tileDrawn":
@@ -309,6 +342,8 @@ namespace RiichiMahjong.UI
                 case "meldDeclared":
                     if (msg.Meld != null)
                         OnMeldDeclared?.Invoke(msg.Seat, msg.Meld);
+                    if (msg.DoraIndicators != null)
+                        OnDoraUpdated?.Invoke(msg.DoraIndicators.Select(d => d.ToTile()).ToList());
                     break;
 
                 case "riichiDeclared":
@@ -330,6 +365,7 @@ namespace RiichiMahjong.UI
                         msg.Han, msg.Fu, msg.BasePoints,
                         msg.YakuNames  ?? Array.Empty<string>(),
                         msg.DoraCount,
+                        msg.UraDoraCount,
                         msg.WinnerSeat,
                         msg.PayerSeat);
                     break;
@@ -352,6 +388,8 @@ namespace RiichiMahjong.UI
                         msg.Melds       ?? new(),
                         msg.RiichiSeats ?? Array.Empty<int>(),
                         msg.CurrentTurn);
+                    if (msg.DoraIndicators != null)
+                        OnDoraUpdated?.Invoke(msg.DoraIndicators.Select(d => d.ToTile()).ToList());
                     OnRejoinSuccess?.Invoke();
                     break;
             }

@@ -11,16 +11,17 @@ config_version=5
 [application]
 
 config/name="RiichiMahjong"
-run/main_scene="res://Scenes/MainMenu.tscn"
+run/main_scene="res://Scenes/IntroScreen.tscn"
 config/features=PackedStringArray("4.6", "C#", "GL Compatibility")
 boot_splash/bg_color=Color(0, 0, 0, 1)
 boot_splash/image="res://Assets/splash.png"
 config/icon="res://icon.svg"
-boot_splash/minimum_display_time=5000
+boot_splash/minimum_display_time=0
 
 [autoload]
 
 NetworkManager="*res://src/UI/NetworkManager.cs"
+SoundManager="*res://src/UI/SoundManager.cs"
 
 [display]
 
