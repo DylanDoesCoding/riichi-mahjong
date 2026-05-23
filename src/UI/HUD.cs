@@ -72,6 +72,11 @@ namespace RiichiMahjong.UI
         private Label        _waitsTitle = null!;
         private HBoxContainer _waitsRow  = null!;
 
+        // Countdown bar (network mode — shown above action buttons when it's the player's turn)
+        private Control  _countdownContainer = null!;
+        private ColorRect _countdownFill     = null!;
+        private Label    _countdownLabel     = null!;
+
         // Scoring overlay — shown after a Tsumo or Ron win, and reused for Game Over
         private ColorRect     _scoringBackdrop   = null!;
         private Panel         _scoringPanel      = null!;
@@ -388,6 +393,9 @@ namespace RiichiMahjong.UI
             _statusLabel.AddThemeFontSizeOverride("font_size", 16);
             AddChild(_statusLabel);
 
+            // ---- Countdown bar (above action buttons, hidden until network turn) ----
+            BuildCountdownBar();
+
             // ---- Win scoring overlay — MUST be added last so it renders on top ----
             BuildScoringPanel();
         }
@@ -531,6 +539,99 @@ namespace RiichiMahjong.UI
 
                 _discardPools[i] = pool;
             }
+        }
+
+        // =====================================================================
+        // Countdown bar — public API
+        // =====================================================================
+
+        /// <summary>Show the countdown bar and reset it to full.</summary>
+        public void StartCountdown(float totalSecs)
+        {
+            _countdownContainer.Visible = true;
+            UpdateCountdown(totalSecs, totalSecs);
+        }
+
+        /// <summary>Hide the countdown bar.</summary>
+        public void StopCountdown()
+        {
+            _countdownContainer.Visible = false;
+        }
+
+        /// <summary>
+        /// Update the fill width and colour. Call every frame from GameController._Process.
+        /// <paramref name="remainingSecs"/> counts down to zero;
+        /// <paramref name="totalSecs"/> is the original duration used to compute the fraction.
+        /// </summary>
+        public void UpdateCountdown(float remainingSecs, float totalSecs)
+        {
+            float fraction = totalSecs > 0f
+                ? Mathf.Clamp(remainingSecs / totalSecs, 0f, 1f)
+                : 0f;
+
+            _countdownFill.AnchorRight = fraction;
+            _countdownFill.OffsetRight = 0f;    // ensure no residual pixel offset
+
+            // green → yellow → red as time runs out
+            Color fillColor;
+            if (fraction >= 0.5f)
+                fillColor = new Color(0.20f, 0.78f, 0.30f)
+                    .Lerp(new Color(0.92f, 0.78f, 0.10f), (1f - fraction) * 2f);
+            else
+                fillColor = new Color(0.92f, 0.78f, 0.10f)
+                    .Lerp(new Color(0.92f, 0.22f, 0.22f), (0.5f - fraction) * 2f);
+            _countdownFill.Color = fillColor;
+
+            int secs = (int)MathF.Ceiling(remainingSecs);
+            _countdownLabel.Text = $"Auto in {secs}s";
+        }
+
+        // =====================================================================
+        // Countdown bar — layout construction
+        // =====================================================================
+
+        private void BuildCountdownBar()
+        {
+            // Thin bar positioned just above the action button row.
+            // Action buttons:  OffsetTop=-148  OffsetBottom=-90  (from BottomWide)
+            // Countdown bar:   OffsetTop=-167  OffsetBottom=-151  (16px, 3px gap above)
+            _countdownContainer = new Control();
+            _countdownContainer.SetAnchorsAndOffsetsPreset(LayoutPreset.BottomWide);
+            _countdownContainer.OffsetLeft   =  180;
+            _countdownContainer.OffsetRight  =  -10;
+            _countdownContainer.OffsetTop    = -167;
+            _countdownContainer.OffsetBottom = -151;
+            _countdownContainer.MouseFilter  = MouseFilterEnum.Ignore;
+            _countdownContainer.Visible      = false;
+
+            // Dark trough background
+            var bg = new ColorRect();
+            bg.AnchorRight  = 1f;
+            bg.AnchorBottom = 1f;
+            bg.Color        = new Color(0.07f, 0.07f, 0.10f, 0.92f);
+            bg.MouseFilter  = MouseFilterEnum.Ignore;
+            _countdownContainer.AddChild(bg);
+
+            // Coloured fill — AnchorRight is updated each frame to animate the drain
+            _countdownFill = new ColorRect();
+            _countdownFill.AnchorRight  = 1f;
+            _countdownFill.AnchorBottom = 1f;
+            _countdownFill.Color        = new Color(0.20f, 0.78f, 0.30f);
+            _countdownFill.MouseFilter  = MouseFilterEnum.Ignore;
+            _countdownContainer.AddChild(_countdownFill);
+
+            // Seconds label centred over the bar
+            _countdownLabel = new Label();
+            _countdownLabel.AnchorRight         = 1f;
+            _countdownLabel.AnchorBottom        = 1f;
+            _countdownLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _countdownLabel.VerticalAlignment   = VerticalAlignment.Center;
+            _countdownLabel.AddThemeFontSizeOverride("font_size", 11);
+            _countdownLabel.AddThemeColorOverride("font_color", Colors.White);
+            _countdownLabel.MouseFilter = MouseFilterEnum.Ignore;
+            _countdownContainer.AddChild(_countdownLabel);
+
+            AddChild(_countdownContainer);
         }
 
         private void BuildActionButtons()

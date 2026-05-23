@@ -116,6 +116,14 @@ namespace RiichiMahjong.UI
         private float _autoDiscardTimer   = 0f;
         private const float AutoDiscardDelay = 0.9f;
 
+        // ---- Action countdown (network mode only) ----------------------------
+        // Fires an auto-pass or auto-discard when the player takes too long.
+
+        private bool  _countdownActive  = false;
+        private float _countdownTimer   = 0f;
+        private bool  _countdownIsClaim = false;   // true = claim window, false = discard turn
+        private const float ActionCountdownDuration = 20f;
+
         // ---- Child node references ------------------------------------------
 
         private HandDisplay _playerHand = null!;
@@ -270,6 +278,7 @@ namespace RiichiMahjong.UI
         private void Net_OnHandDealt(List<Tile> yourTiles, int[] tileCounts, int[] scores,
             int dealerSeat, string roundWind, int counters, string[] names)
         {
+            StopActionCountdown();
             ExitRiichiMode();
             _autoDiscardPending  = false;
             _nextDiscardIsRiichi = false;
@@ -346,10 +355,12 @@ namespace RiichiMahjong.UI
                         _hud.HideActionButtons();
                         _hud.SetStatus("In Riichi — discard your drawn tile.");
                     }
+                    StartActionCountdown(isClaim: false);
                 }
                 else
                 {
                     ShowHumanActionButtonsNet();
+                    StartActionCountdown(isClaim: false);
                 }
             }
             else
@@ -455,7 +466,10 @@ namespace RiichiMahjong.UI
 
                 // After pon/chi the player must discard; after kan, a rinshan draw will arrive
                 if (type is "chi" or "pon")
+                {
                     ShowHumanActionButtonsNet();
+                    StartActionCountdown(isClaim: false);
+                }
                 else
                     _hud.SetStatus("Kan declared — waiting for rinshan draw…");
             }
@@ -512,12 +526,14 @@ namespace RiichiMahjong.UI
                 _playerHand.HighlightClaimTiles(new[] { tile, tile, tile });
 
             _hud.SetStatus(canRon ? "RON available! Click RON or PASS." : "Claim window — act or PASS.");
+            StartActionCountdown(isClaim: true);
         }
 
         private void Net_OnHandEnded(string reason, int[] winners, List<NetScoreEntry> scoreBoard,
             int han, int fu, int basePoints, string[] yakuNames, int doraCount, int uraDoraCount,
             int winnerSeat, int payerSeat)
         {
+            StopActionCountdown();
             ExitRiichiMode();
             _nextDiscardIsRiichi = false;
             _riichiDiscardSeat   = -1;
@@ -577,6 +593,7 @@ namespace RiichiMahjong.UI
 
         private void Net_OnGameOver(List<NetScoreEntry> scoreBoard)
         {
+            StopActionCountdown();
             _isGameOver = true;
             SoundManager.Instance?.Play(Sound.GameOver);
             _hud.SetStatus("");
@@ -674,7 +691,10 @@ namespace RiichiMahjong.UI
 
             // Determine if it's our turn and show appropriate buttons
             if (currentTurn == _humanSeat)
+            {
                 ShowHumanActionButtonsNet();
+                StartActionCountdown(isClaim: false);
+            }
             else
                 _hud.SetStatus("Reconnected — waiting for your turn…");
         }
@@ -950,6 +970,19 @@ namespace RiichiMahjong.UI
                 return;   // skip AI timers while reconnecting
             }
 
+            // Network-mode: action countdown (auto-pass / auto-discard)
+            if (_isNetworkMode && _countdownActive)
+            {
+                _countdownTimer -= (float)delta;
+                _hud.UpdateCountdown(_countdownTimer, ActionCountdownDuration);
+                if (_countdownTimer <= 0f)
+                {
+                    _countdownActive = false;
+                    if (_countdownIsClaim) AutoPassClaim();
+                    else                   AutoDiscardTurn();
+                }
+            }
+
             // AI and claim-window timers only run in local mode
             if (_isNetworkMode) return;
 
@@ -1223,6 +1256,7 @@ namespace RiichiMahjong.UI
                         return;
                     }
                     var candidate = tile.TileData;
+                    StopActionCountdown();
                     ExitRiichiMode();
                     NetworkManager.Instance?.SendRiichi(candidate);
                     _hud.HideActionButtons();
@@ -1230,6 +1264,7 @@ namespace RiichiMahjong.UI
                     return;
                 }
 
+                StopActionCountdown();
                 NetworkManager.Instance?.SendDiscard(tile.TileData);
                 _hud.HideActionButtons();
                 return;
@@ -1305,6 +1340,7 @@ namespace RiichiMahjong.UI
         {
             if (_isNetworkMode)
             {
+                StopActionCountdown();
                 NetworkManager.Instance?.SendTsumo();
                 _hud.HideActionButtons();
                 return;
@@ -1316,6 +1352,7 @@ namespace RiichiMahjong.UI
         {
             if (_isNetworkMode)
             {
+                StopActionCountdown();
                 NetworkManager.Instance?.SendRon();
                 _playerHand.ClearClaimTileHighlights();
                 _hud.HideClaimButtons();
@@ -1328,6 +1365,7 @@ namespace RiichiMahjong.UI
         {
             if (_isNetworkMode)
             {
+                StopActionCountdown();
                 NetworkManager.Instance?.SendPon();
                 _playerHand.ClearClaimTileHighlights();
                 _hud.HideClaimButtons();
@@ -1348,6 +1386,7 @@ namespace RiichiMahjong.UI
             if (_isNetworkMode)
             {
                 if (_netChiCombo == null) { _hud.SetStatus("No valid chi."); return; }
+                StopActionCountdown();
                 NetworkManager.Instance?.SendChi(_netChiCombo.Value.t1, _netChiCombo.Value.t2);
                 _netChiCombo = null;
                 _playerHand.ClearClaimTileHighlights();
@@ -1372,6 +1411,7 @@ namespace RiichiMahjong.UI
         {
             if (_isNetworkMode)
             {
+                StopActionCountdown();
                 // Server validates whether it's daiminkan / ankan / kakan
                 NetworkManager.Instance?.SendKan();
                 _playerHand.ClearClaimTileHighlights();
@@ -1411,6 +1451,7 @@ namespace RiichiMahjong.UI
         {
             if (_isNetworkMode)
             {
+                StopActionCountdown();
                 NetworkManager.Instance?.SendPass();
                 _playerHand.ClearClaimTileHighlights();
                 _hud.HideClaimButtons();
@@ -1716,6 +1757,58 @@ namespace RiichiMahjong.UI
         }
 
         // =====================================================================
+        // Action countdown helpers (network mode only)
+        // =====================================================================
+
+        /// <summary>
+        /// Start the 20-second HUD countdown.
+        /// <paramref name="isClaim"/> = true during a claim window (auto-pass on expiry);
+        /// false during a discard turn (auto-discard drawn tile on expiry).
+        /// </summary>
+        private void StartActionCountdown(bool isClaim)
+        {
+            _countdownActive  = true;
+            _countdownTimer   = ActionCountdownDuration;
+            _countdownIsClaim = isClaim;
+            _hud.StartCountdown(ActionCountdownDuration);
+        }
+
+        private void StopActionCountdown()
+        {
+            if (!_countdownActive) return;
+            _countdownActive = false;
+            _hud.StopCountdown();
+        }
+
+        /// <summary>Countdown expired during a claim window — send Pass automatically.</summary>
+        private void AutoPassClaim()
+        {
+            _playerHand.ClearClaimTileHighlights();
+            _hud.HideClaimButtons();
+            _hud.StopCountdown();
+            _hud.SetStatus("⏱ Time's up — passing.");
+            NetworkManager.Instance?.SendPass();
+        }
+
+        /// <summary>
+        /// Countdown expired during a discard turn — discard the drawn tile
+        /// (or the last tile in hand as a fallback).
+        /// </summary>
+        private void AutoDiscardTurn()
+        {
+            ExitRiichiMode();
+            _hud.HideActionButtons();
+            _hud.StopCountdown();
+
+            Tile? toDiscard = _netDrawnTile
+                ?? (_netMyTiles.Count > 0 ? _netMyTiles[^1] : null);
+            if (toDiscard == null) return;
+
+            _hud.SetStatus("⏱ Time's up — auto-discarding.");
+            NetworkManager.Instance?.SendDiscard(toDiscard);
+        }
+
+        // =====================================================================
         // Shared helpers
         // =====================================================================
 
@@ -1724,6 +1817,7 @@ namespace RiichiMahjong.UI
             _aiTimerActive      = false;
             _claimWindowActive  = false;
             _autoDiscardPending = false;
+            StopActionCountdown();
             _bgMusic?.Stop();
             if (_isNetworkMode) NetworkManager.Instance?.Disconnect();
             GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
