@@ -21,6 +21,7 @@ boot_splash/minimum_display_time=0
 [autoload]
 
 NetworkManager="*res://src/UI/NetworkManager.cs"
+SoundManager="*res://src/UI/SoundManager.cs"
 
 [display]
 

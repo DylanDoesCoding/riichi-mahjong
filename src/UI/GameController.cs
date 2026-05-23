@@ -126,9 +126,7 @@ namespace RiichiMahjong.UI
 
         // ---- Audio ----------------------------------------------------------
 
-        private AudioStreamPlayer _bgMusic      = null!;
-        private AudioStreamPlayer _sfxTileClack = null!;
-        private AudioStreamPlayer _sfxRiichi    = null!;
+        private AudioStreamPlayer _bgMusic = null!;
 
         // =====================================================================
         // Godot lifecycle
@@ -172,11 +170,6 @@ namespace RiichiMahjong.UI
                 _bgMusic.Finished += () => _bgMusic.Play();
                 _bgMusic.Play();
             }
-
-            _sfxTileClack = MakeSfxPlayer(
-                "res://Assets/Sounds/mahjong_tile_clack_#1-1779136185604.wav");
-            _sfxRiichi = MakeSfxPlayer(
-                "res://Assets/Sounds/richii_bet.wav");
 
             // ---- Detect and initialise mode ---------------------------------
             // Require both a valid seat AND an open socket so that a stale
@@ -317,7 +310,7 @@ namespace RiichiMahjong.UI
 
         private void Net_OnTileDrawn(int seat, Tile? tile)
         {
-            PlaySfx(_sfxTileClack);
+            SoundManager.Instance?.Play(Sound.TileDraw);
 
             if (seat == _humanSeat)
             {
@@ -364,7 +357,7 @@ namespace RiichiMahjong.UI
 
         private void Net_OnTileDiscarded(int seat, Tile tile, bool isRiichi)
         {
-            PlaySfx(_sfxTileClack);
+            SoundManager.Instance?.Play(Sound.TileDiscard);
 
             _netLastDiscarderSeat = seat;
             _netLastDiscardedTile = tile;
@@ -481,7 +474,7 @@ namespace RiichiMahjong.UI
 
         private void Net_OnRiichiDeclared(int seat)
         {
-            PlaySfx(_sfxRiichi);
+            SoundManager.Instance?.Play(Sound.Riichi);
             _nextDiscardIsRiichi = true;
             _riichiDiscardSeat   = seat;
             if (seat == _humanSeat) _netIsInRiichi = true;
@@ -553,6 +546,7 @@ namespace RiichiMahjong.UI
             bool isWin = r is "tsumo" or "ron";
             if (isWin)
             {
+                SoundManager.Instance?.Play(r == "tsumo" ? Sound.WinTsumo : Sound.WinRon);
                 string payerName = payerSeat >= 0 && payerSeat < 4 ? _netNames[payerSeat] : "";
                 _hud.ShowScoringPanelNet(
                     winnerName:     _netNames[winnerSeat],
@@ -571,6 +565,7 @@ namespace RiichiMahjong.UI
             }
             else
             {
+                SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
                 _btnNextVisible(true);
             }
         }
@@ -578,6 +573,7 @@ namespace RiichiMahjong.UI
         private void Net_OnGameOver(List<NetScoreEntry> scoreBoard)
         {
             _isGameOver = true;
+            SoundManager.Instance?.Play(Sound.GameOver);
             _hud.SetStatus("");
             var points = new int[4];
             foreach (var e in scoreBoard)
@@ -1019,7 +1015,7 @@ namespace RiichiMahjong.UI
 
         private void OnTileDrawn(int playerIndex)
         {
-            PlaySfx(_sfxTileClack);
+            SoundManager.Instance?.Play(Sound.TileDraw);
 
             var hand    = _game.Players[playerIndex].Hand;
             hand.Sort();
@@ -1072,7 +1068,7 @@ namespace RiichiMahjong.UI
 
         private void OnTileDiscarded(int playerIndex, Tile tile)
         {
-            PlaySfx(_sfxTileClack);
+            SoundManager.Instance?.Play(Sound.TileDiscard);
 
             GetHandDisplay(playerIndex).RemoveTile(tile);
 
@@ -1096,7 +1092,7 @@ namespace RiichiMahjong.UI
 
         private void OnRiichiDeclared(int playerIndex)
         {
-            PlaySfx(_sfxRiichi);
+            SoundManager.Instance?.Play(Sound.Riichi);
             _nextDiscardIsRiichi = true;
             _riichiDiscardSeat   = playerIndex;
             _hud.ShowRiichiStick(ToVisualSeat(playerIndex));
@@ -1135,9 +1131,16 @@ namespace RiichiMahjong.UI
             _hud.SetStatus(msg);
 
             if (reason is HandEndReason.Tsumo or HandEndReason.Ron)
+            {
+                SoundManager.Instance?.Play(
+                    reason == HandEndReason.Tsumo ? Sound.WinTsumo : Sound.WinRon);
                 ShowScoringOverlay(reason, winners[0]);
+            }
             else
+            {
+                SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
                 _btnNextVisible(true);
+            }
         }
 
         private void ShowScoringOverlay(HandEndReason reason, int winnerSeat)
@@ -1167,6 +1170,7 @@ namespace RiichiMahjong.UI
             _aiTimerActive      = false;
             _autoDiscardPending = false;
 
+            SoundManager.Instance?.Play(Sound.GameOver);
             _hud.SetStatus("");
             _hud.ShowGameOverPanel(
                 reason:        _game.GameOverReason,
@@ -1736,27 +1740,7 @@ namespace RiichiMahjong.UI
             };
         }
 
-        // =====================================================================
-        // Audio helpers
-        // =====================================================================
 
-        private AudioStreamPlayer MakeSfxPlayer(string path)
-        {
-            var player = new AudioStreamPlayer { Bus = "Master" };
-            var stream = GD.Load<AudioStream>(path);
-            if (stream != null) player.Stream = stream;
-            player.VolumeDb = GameSettings.LinearToDb(GameSettings.SfxVolume);
-            AddChild(player);
-            return player;
-        }
-
-        private void PlaySfx(AudioStreamPlayer player)
-        {
-            if (player.Stream == null) return;
-            player.VolumeDb = GameSettings.LinearToDb(GameSettings.SfxVolume);
-            player.Stop();
-            player.Play();
-        }
 
         // =====================================================================
         // Debug
