@@ -74,7 +74,7 @@ riichi-mahjong/
 - Detects mode in `_Ready()` via `NetworkManager.Instance?.LocalSeat >= 0`
 - `_humanSeat`: `0` in local mode, server-assigned in network mode
 - Seat rotation: `(globalSeat - _humanSeat + 4) % 4` maps server seats to display positions
-- Network-local state: `_netNames`, `_netScores`, `_netTileCounts`, `_netMyTiles`, `_netMelds[]`, etc.
+- Network-local state: `_netNames`, `_netScores`, `_netTileCounts`, `_netMyTiles`, `_netMelds[]`, `_netMyDiscards[]`, etc.
 
 ### Reconnection
 - Client UUID (`GameSettings.PlayerUuid`) generated once per app session
@@ -86,7 +86,28 @@ riichi-mahjong/
 - `GameSettings.Load()` / `Save()` using Godot `ConfigFile` → `user://settings.cfg`
 - Saves: player name, server URL, black tiles, music/sfx volumes
 - `Load()` called in `NetworkManager._Ready()` (autoload, runs before any scene)
-- `Save()` called in `LobbyController.ValidateAndConnect()` on successful connect
+- `Save()` called from `MainMenu.CloseAndSave()` (Settings screen) and `LobbyController.ValidateAndConnect()`
+
+### Sound System
+- `SoundManager` autoload singleton (`src/UI/SoundManager.cs`)
+- All SFX synthesised as PCM in code — no audio assets required
+- Writes WAV files to `user://` on first launch, loads them as `AudioStream`
+- `AudioStreamWAV` is not exported as a C# type in GodotSharp NuGet — must use file-based workaround
+- API: `SoundManager.Instance?.Play(Sound.TileDiscard)` etc.
+- Sounds: `TileDiscard`, `TileDraw`, `Riichi`, `WinTsumo`, `WinRon`, `ExhaustiveDraw`, `GameOver`, `ButtonClick`
+
+### Furiten Indicator
+- `HUD.SetFuriten(bool isFuriten, bool isPermanent)` — badge on human's score panel
+- Red = permanent furiten (own discard / riichi miss), orange = temporary (missed opponent's discard)
+- Only shown while in tenpai with no drawn tile (the only phase where ron is actually blocked)
+- Local mode: driven directly by `FuritenTracker` state via `HudUpdateLocal()` helper
+- Network mode: permanent furiten computed client-side by comparing current waits against `_netMyDiscards`
+
+### Action Countdown Bar (Network Mode)
+- 16px bar above action buttons; drains green → yellow → red over 20 seconds
+- `HUD.StartCountdown` / `StopCountdown` / `UpdateCountdown` driven by `GameController._Process`
+- Auto-discard (drawn tile) on expiry during discard turn; auto-pass on expiry during claim window
+- Stopped immediately when the player acts (any button press or tile click)
 
 ---
 
@@ -96,7 +117,11 @@ When picking up a task, read these files for context:
 
 ```
 src/UI/GameController.cs       # Core game logic, dual-mode handling
+src/UI/HUD.cs                  # In-game HUD — scoring panels, furiten, countdown bar
 src/UI/NetworkManager.cs       # All network events and message dispatch
+src/UI/SoundManager.cs         # Procedural SFX synthesis, autoload singleton
+src/UI/HandDisplay.cs          # Tile display, deal animation, pop-in animation
+src/UI/MainMenu.cs             # Main menu + settings screen (name, URL, volumes)
 src/UI/LobbyController.cs      # Lobby UI built entirely in code
 src/UI/GameSettings.cs         # Settings with Load/Save
 server/GameRoom.cs             # Server game loop and reconnection
@@ -107,17 +132,28 @@ server/Program.cs              # WebSocket endpoint routing
 
 ## What's Done
 
+### Multiplayer & Core
 - [x] Lobby UI — name entry, create/join room, player list, copy code
 - [x] GameController network mode — full dual-mode support
 - [x] Player seat rotation — local player always at bottom
 - [x] Reconnection — UUID-based mid-game rejoin
-- [x] Persistent display name — remembered between sessions
 - [x] Deployed to Render — auto-deploys on push to `feature/multiplayer`
 
-## What's Next (Phase 2)
+### UI & Polish (Phase 2)
+- [x] Round-end summary screen — ranked standings, yaku list, uma-adjusted net scores
+- [x] Procedural SFX — 8 synthesised sounds via PCM WAV pipeline (no audio assets)
+- [x] Tile deal animation — staggered scale+fade on hand deal; pop-in on single draw
+- [x] Settings screen — player name + server URL fields, all settings persisted on save
+- [x] Action countdown bar — 20s timer above buttons (network mode), auto-pass/discard on expiry
+- [x] Furiten indicator — red/orange badge on score panel when ron is blocked
 
-- [ ] Matchmaking — auto-create rooms for solo queue
-- [ ] Dora indicators — server doesn't send dora tiles in `handDealt` yet
+## What's Next
+
+- [ ] Button click sounds — wire `Sound.ButtonClick` to HUD and main menu buttons
+- [ ] Wall counter — remaining tiles display near centre panel
+- [ ] CPU AI improvements — discard heuristics, danger tile awareness
+- [ ] Lobby polish — ready state, room code copy button, player list
+- [ ] Matchmaking — auto-create/join rooms for solo queue
 - [ ] Persistent accounts — replace session UUIDs with real logins
 
 ---
