@@ -165,6 +165,7 @@ namespace RiichiMahjong.UI
             _hud.ChiPressed             += OnHumanChi;
             _hud.KanPressed             += OnHumanKan;
             _hud.PassPressed            += OnHumanPass;
+            _hud.KyuushuPressed         += OnHumanKyuushu;
             _hud.NextHandPressed        += OnNextHand;
             _hud.MenuPressed            += ReturnToMenu;
             _hud.ScoringNextHandPressed += OnNextHand;
@@ -1350,11 +1351,14 @@ namespace RiichiMahjong.UI
             string msg = reason switch
             {
                 HandEndReason.Tsumo          => $"🀄 {_game.Players[winners[0]].Name} wins by Tsumo!",
+                HandEndReason.Ron when winners.Length == 2
+                                             => $"🀄 Double Ron! {_game.Players[winners[0]].Name} & {_game.Players[winners[1]].Name}!",
                 HandEndReason.Ron            => $"🀄 {_game.Players[winners[0]].Name} wins by Ron!",
                 HandEndReason.NagashiMangan  => winners.Length == 1
                     ? $"🀄 {_game.Players[winners[0]].Name} — Nagashi Mangan!"
                     : "Nagashi Mangan!",
                 HandEndReason.ExhaustiveDraw => "Exhaustive draw (Ryuukyoku)",
+                HandEndReason.AbortiveDraw   => "Abortive draw",
                 _                            => "Hand over"
             };
             _hud.SetStatus(msg);
@@ -1362,7 +1366,9 @@ namespace RiichiMahjong.UI
             if (reason is HandEndReason.Tsumo or HandEndReason.Ron)
             {
                 bool   isTsumo     = reason == HandEndReason.Tsumo;
-                string winnerName  = _game.Players[winners[0]].Name;
+                string winnerName  = winners.Length == 2
+                    ? $"{_game.Players[winners[0]].Name} & {_game.Players[winners[1]].Name}"
+                    : _game.Players[winners[0]].Name;
                 int    winnerSeatL = winners[0];   // capture for lambda
 
                 SoundManager.Instance?.Play(isTsumo ? Sound.WinTsumo : Sound.WinRon);
@@ -1380,6 +1386,12 @@ namespace RiichiMahjong.UI
                     HudUpdateLocal();
                     _btnNextVisible(true);
                 });
+            }
+            else if (reason == HandEndReason.AbortiveDraw)
+            {
+                // Abortive draw: show as ryuukyoku with no tenpai payments, specific message
+                SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
+                ShowAbortiveDrawPanel();
             }
             else  // ExhaustiveDraw
             {
@@ -1427,6 +1439,28 @@ namespace RiichiMahjong.UI
             _hud.ShowRyuukyokuPanel(
                 names, points, ToVisualSeat(_game.DealerIndex),
                 tenpai, waits, deltas);
+        }
+
+        /// <summary>
+        /// Show an abortive-draw panel (Kyuushu, Suufonren, Suukaikan, Sanchahou).
+        /// No tenpai payments — the hand is simply discarded. Treat it like an
+        /// all-no-ten ryuukyoku so the panel infrastructure is reused.
+        /// </summary>
+        private void ShowAbortiveDrawPanel()
+        {
+            var names  = new string[4];
+            var points = new int[4];
+            for (int gs = 0; gs < 4; gs++)
+            {
+                int vs     = ToVisualSeat(gs);
+                names[vs]  = _game.Players[gs].Name;
+                points[vs] = _game.Players[gs].Points;
+            }
+
+            // Reuse the ryuukyoku panel with no-tenpai for everyone (no payments, no waits shown)
+            _hud.ShowRyuukyokuPanel(
+                names, points, ToVisualSeat(_game.DealerIndex),
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
         }
 
         private void ShowScoringOverlay(HandEndReason reason, int winnerSeat)
@@ -1602,7 +1636,22 @@ namespace RiichiMahjong.UI
                 _hud.HideClaimButtons();
                 return;
             }
-            if (!_game.ClaimRon(_humanSeat)) _hud.SetStatus("Cannot declare ron — furiten or invalid hand.");
+
+            // Include any AI seats that also want to ron (double ron / sanchahou check)
+            var tile = _game.PendingDiscard;
+            var candidates = new List<int> { _humanSeat };
+            if (tile != null)
+            {
+                for (int i = 1; i <= 3; i++)
+                {
+                    int seat = (_game.DiscarderIndex + i) % 4;
+                    if (seat == _humanSeat) continue;
+                    if (_ai[seat].ShouldClaimRon(tile, _game.Players[seat].Hand, _game, seat))
+                        candidates.Add(seat);
+                }
+            }
+            if (!_game.ClaimRonMulti(candidates.ToArray()))
+                _hud.SetStatus("Cannot declare ron — furiten or invalid hand.");
         }
 
         private void OnHumanPon()
@@ -1742,6 +1791,13 @@ namespace RiichiMahjong.UI
             else                       ResolveAIClaims();
         }
 
+        private void OnHumanKyuushu()
+        {
+            if (_isNetworkMode) return;  // server-side implementation pending
+            if (_game.DeclareKyuushuKyuuhai(_humanSeat))
+                _hud.HideActionButtons();
+        }
+
         // =====================================================================
         // Riichi helpers (shared between modes)
         // =====================================================================
@@ -1878,14 +1934,16 @@ namespace RiichiMahjong.UI
 
             var tile = _game.PendingDiscard;
 
-            // Priority: Ron > Daiminkan > Pon > Chi
+            // Collect all AI seats that want to ron, then resolve together (double ron / sanchahou).
+            var ronCandidates = new List<int>();
             for (int i = 1; i <= 3; i++)
             {
                 int seat = (_game.DiscarderIndex + i) % 4;
                 if (seat == _humanSeat) continue;
                 if (_ai[seat].ShouldClaimRon(tile, _game.Players[seat].Hand, _game, seat))
-                    if (_game.ClaimRon(seat)) return;
+                    ronCandidates.Add(seat);
             }
+            if (ronCandidates.Count > 0 && _game.ClaimRonMulti(ronCandidates.ToArray())) return;
 
             for (int i = 1; i <= 3; i++)
             {
@@ -1944,6 +2002,9 @@ namespace RiichiMahjong.UI
             if (_game.CurrentPlayerIndex != seat) return;
 
             var hand = _game.Players[seat].Hand;
+
+            // Kyuushu Kyuuhai: AI always declares the optional abort when eligible
+            if (_game.CanDeclareKyuushu(seat) && _game.DeclareKyuushuKyuuhai(seat)) return;
 
             if (_game.DeclareTsumo()) return;
 
@@ -2004,7 +2065,8 @@ namespace RiichiMahjong.UI
                 riichi = GetRiichiCandidates().Count > 0;
             }
 
-            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: CanHumanKan());
+            bool kyuushu = _game.CanDeclareKyuushu(_humanSeat);
+            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: CanHumanKan(), canKyuushu: kyuushu);
         }
 
         private bool CanHumanKan()

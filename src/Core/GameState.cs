@@ -46,6 +46,7 @@ namespace RiichiMahjong.Core
 		Ron,              // Player(s) won by discard claim
 		ExhaustiveDraw,   // Wall ran out — ryuukyoku
 		NagashiMangan,    // (Optional rule — not in EMA base rules; placeholder)
+		AbortiveDraw,     // Mid-game abort: Suufonren da / Suukaikan / Kyuushu / Sanchahou
 	}
 
 	// -------------------------------------------------------------------------
@@ -129,6 +130,9 @@ namespace RiichiMahjong.Core
 		/// Required for Tenhou/Chiihou/Renhou — any claim breaks the uninterrupted round.
 		/// </summary>
 		private bool _firstRoundUninterrupted = true;
+
+		/// <summary>Seat index of each kan declarant this hand (in declaration order).</summary>
+		private readonly List<int> _kanDeclarants = new();
 
 		// ---- Wall -----------------------------------------------------------
 
@@ -238,6 +242,7 @@ namespace RiichiMahjong.Core
 
 			// Reset player hand state
 			_firstRoundUninterrupted = true;
+			_kanDeclarants.Clear();
 			foreach (var p in Players)
 			{
 				p.Hand.Reset();  // We'll add a Reset() to Hand
@@ -296,10 +301,23 @@ namespace RiichiMahjong.Core
             PendingDiscard = tile;
             DiscarderIndex = playerIndex;
 
+            // Ippatsu window expires on the riichi player's own next discard.
+            // (BreakAllIppatsu handles the meld-call path; this handles the draw-pass path.)
+            player.Hand.ClearIppatsu();
+
 			// Record in the discarding player's own furiten tracker.
 			// Checks whether this discard matches any of the player's own historical discards
 			// that they're currently waiting for (permanent furiten rule).
             player.Furiten.RecordOwnDiscardFast(tile, t => player.Hand.IsWaitingFor(t));
+
+            // Suukaikan: 4 kans by 2+ different players → abortive draw on the following discard.
+            // (A single player with all 4 kans plays on; mixed-player 4-kans abort here.)
+            if (Wall.KanCount >= 4 && _kanDeclarants.Distinct().Count() >= 2)
+            {
+                Phase = TurnPhase.HandEnd;
+                OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+                return true;
+            }
 
             Phase = TurnPhase.ClaimWindow;
             OnTileDiscarded?.Invoke(playerIndex, tile);
@@ -466,6 +484,72 @@ namespace RiichiMahjong.Core
         }
 
         /// <summary>
+        /// Validate multiple potential ron claimants simultaneously, then resolve:
+        ///   • 1 valid claimant → normal Ron payment
+        ///   • 2 valid claimants → Double Ron (both paid in full)
+        ///   • 3 valid claimants → Sanchahou (abortive draw — no payments)
+        /// Returns false only when no candidate can validly win.
+        /// </summary>
+        public bool ClaimRonMulti(int[] candidateSeats)
+        {
+            if (Phase != TurnPhase.ClaimWindow) return false;
+            if (PendingDiscard == null) return false;
+
+            WinMethod winMethod = IsChankanWindow    ? WinMethod.Chankan
+                                : Wall.TilesRemaining == 0 ? WinMethod.Houtei
+                                : WinMethod.Ron;
+
+            // Validate each candidate and collect successful ones
+            var valid = new List<(int winner, YakuCheckResult yaku, WinCheckResult winCheck)>();
+            foreach (int seat in candidateSeats)
+            {
+                if (seat == DiscarderIndex) continue;
+                var p = Players[seat];
+                if (p.Furiten.IsFuriten) continue;
+
+                p.Hand.AddTile(PendingDiscard);
+                var wc = WinChecker.Check(p.Hand.ClosedTiles.ToList(), p.Hand.OpenMelds.ToList());
+                if (!wc.IsWin) { p.Hand.RemoveTile(PendingDiscard); continue; }
+                var best = EvaluateBestDecomposition(seat, wc, winMethod);
+                if (!best.HasYaku) { p.Hand.RemoveTile(PendingDiscard); continue; }
+
+                // Keep the tile in-hand; winner is confirmed.
+                valid.Add((seat, best, wc));
+            }
+
+            if (valid.Count == 0) return false;
+
+            IsChankanWindow = false;
+
+            if (valid.Count >= 3)
+            {
+                // Sanchahou — remove winning tiles and abort
+                foreach (var (seat, _, _) in valid)
+                    Players[seat].Hand.RemoveTile(PendingDiscard);
+                Phase = TurnPhase.HandEnd;
+                OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+                return true;
+            }
+
+            // Sort by seating order from discarder (closest first)
+            valid.Sort((a, b) =>
+                ((a.winner - DiscarderIndex + 4) % 4)
+                    .CompareTo((b.winner - DiscarderIndex + 4) % 4));
+
+            if (valid.Count == 1)
+            {
+                var (winner, yaku, wc) = valid[0];
+                ResolveRon(winner, DiscarderIndex, yaku, wc);
+            }
+            else
+            {
+                ResolveDoubleRon(valid, winMethod);
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// Current player wins by tsumo (self-draw).
         /// </summary>
         public bool DeclareTsumo()
@@ -504,6 +588,7 @@ namespace RiichiMahjong.Core
             if (player.Hand.ClosedTiles.Count(t => t == tile) < 4) return false;
 
             player.Hand.ApplyKanClosed(tile);
+            _kanDeclarants.Add(playerIndex);
 
             // Fire meld event before drawing so dora can be broadcast with meld
             var meld = player.Hand.OpenMelds.Last();
@@ -538,6 +623,7 @@ namespace RiichiMahjong.Core
             if (!player.Hand.ClosedTiles.Any(t => t == tile)) return false;
 
             if (!player.Hand.ApplyKanExtended(tile)) return false;
+            _kanDeclarants.Add(playerIndex);
 
             BreakAllIppatsu();
 
@@ -597,6 +683,7 @@ namespace RiichiMahjong.Core
 
             var source = GetClaimSource(DiscarderIndex, claimingPlayerIndex);
             player.Hand.ApplyKanOpen(PendingDiscard, PendingDiscard, source);
+            _kanDeclarants.Add(claimingPlayerIndex);
 
             BreakAllIppatsu();
             Players[DiscarderIndex].HasDiscardBeenClaimed = true;
@@ -674,6 +761,19 @@ namespace RiichiMahjong.Core
 			CurrentPlayerIndex = (discarder + 1) % 4;
 			TurnNumber++;
 			Phase = TurnPhase.DrawPhase;
+
+			// Suufonren da: all 4 players discarded the same wind as their FIRST tile,
+			// with no calls interrupting the round.
+			if (_firstRoundUninterrupted && Players.All(p => p.Discards.Count == 1))
+			{
+				var d0 = Players[0].Discards[0];
+				if (d0.Suit == TileSuit.Wind && Players.All(p => p.Discards[0] == d0))
+				{
+					Phase = TurnPhase.HandEnd;
+					OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+					return;
+				}
+			}
 		}
 
 		// =====================================================================
@@ -705,6 +805,52 @@ namespace RiichiMahjong.Core
 
 			Phase = TurnPhase.HandEnd;
 			OnHandEnd?.Invoke(HandEndReason.Ron, new[] { winner });
+		}
+
+		/// <summary>
+		/// Two players win by ron on the same discard. Each receives full payment from
+		/// the discarder. Riichi bets go to the first winner (closest in seating order).
+		/// </summary>
+		private void ResolveDoubleRon(
+			List<(int winner, YakuCheckResult yaku, WinCheckResult winCheck)> winners,
+			WinMethod winMethod)
+		{
+			int discarder = DiscarderIndex;
+
+			// Calculate both scores BEFORE modifying state
+			var scores = new List<(int winner, YakuCheckResult yaku, YakuContext ctx, ScoreResult score)>();
+			for (int i = 0; i < winners.Count; i++)
+			{
+				var (seat, yaku, wc) = winners[i];
+				var ctx   = BuildContext(seat, winMethod);
+				int bets  = i == 0 ? RiichiBetsOnTable : 0;  // first winner takes riichi bets
+				var score = ScoreCalculator.Calculate(wc.Decompositions[0], yaku, ctx, Counters, bets);
+				scores.Add((seat, yaku, ctx, score));
+			}
+
+			// Apply payments
+			foreach (var (seat, _, _, score) in scores)
+			{
+				Players[discarder].Points -= score.RonPayment + score.CounterBonus;
+				Players[seat].Points      += score.TotalPointsWon;
+			}
+			RiichiBetsOnTable = 0;
+
+			// Counter management — dealer wins if either winner is the dealer
+			bool dealerWon = winners.Any(w => w.winner == DealerIndex);
+			if (dealerWon) Counters++;
+			else           { Counters = 0; AdvanceDealer(); }
+
+			// Store first winner's data for the scoring panel
+			var (firstSeat, firstYaku, firstCtx, firstScore) = scores[0];
+			LastScoreResult   = firstScore;
+			LastYakuResult    = firstYaku;
+			LastWinContext    = firstCtx;
+			LastWinnerSeat    = firstSeat;
+			LastDiscarderSeat = discarder;
+
+			Phase = TurnPhase.HandEnd;
+			OnHandEnd?.Invoke(HandEndReason.Ron, winners.Select(w => w.winner).ToArray());
 		}
 
 		private void ResolveTsumo(int winner, YakuCheckResult yakuResult, WinCheckResult winCheck)
@@ -979,6 +1125,39 @@ namespace RiichiMahjong.Core
 		{
 			foreach (var p in Players)
 				p.Hand.BreakIppatsu();
+		}
+
+		// ---- Abortive draw declarations -------------------------------------
+
+		/// <summary>
+		/// Returns true when the current player is eligible to declare Kyuushu Kyuuhai
+		/// (nine different terminal/honour types in their opening hand).
+		/// Valid only before their first discard, with no calls made this hand.
+		/// </summary>
+		public bool CanDeclareKyuushu(int playerIndex)
+		{
+			if (Phase != TurnPhase.ActionPhase) return false;
+			if (playerIndex != CurrentPlayerIndex) return false;
+			if (!_firstRoundUninterrupted) return false;
+			var player = Players[playerIndex];
+			if (player.Discards.Count > 0) return false;  // must be before their first discard
+			int distinctCount = player.Hand.ClosedTiles
+				.Where(t => t.IsTerminalOrHonour)
+				.Select(t => (t.Suit, t.Value))
+				.Distinct()
+				.Count();
+			return distinctCount >= 9;
+		}
+
+		/// <summary>
+		/// Player declares Kyuushu Kyuuhai — optional abortive draw.
+		/// </summary>
+		public bool DeclareKyuushuKyuuhai(int playerIndex)
+		{
+			if (!CanDeclareKyuushu(playerIndex)) return false;
+			Phase = TurnPhase.HandEnd;
+			OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+			return true;
 		}
 
 		// ---- Public accessors -----------------------------------------------

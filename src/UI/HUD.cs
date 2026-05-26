@@ -30,6 +30,7 @@ namespace RiichiMahjong.UI
         [Signal] public delegate void ChiPressedEventHandler();
         [Signal] public delegate void KanPressedEventHandler();
         [Signal] public delegate void PassPressedEventHandler();
+        [Signal] public delegate void KyuushuPressedEventHandler();
         [Signal] public delegate void NextHandPressedEventHandler();
         [Signal] public delegate void MenuPressedEventHandler();
         [Signal] public delegate void ScoringContinuePressedEventHandler();   // kept for compat
@@ -52,14 +53,15 @@ namespace RiichiMahjong.UI
         private Control[] _discardPools = null!;
 
         // Action buttons
-        private Button _btnRiichi = null!;
-        private Button _btnTsumo  = null!;
-        private Button _btnRon    = null!;
-        private Button _btnPon    = null!;
-        private Button _btnChi    = null!;
-        private Button _btnKan    = null!;
-        private Button _btnPass   = null!;
-        private Button _btnNext   = null!;
+        private Button _btnRiichi   = null!;
+        private Button _btnTsumo    = null!;
+        private Button _btnRon      = null!;
+        private Button _btnPon      = null!;
+        private Button _btnChi      = null!;
+        private Button _btnKan      = null!;
+        private Button _btnPass     = null!;
+        private Button _btnNext     = null!;
+        private Button _btnKyuushu  = null!;
 
         // Status bar
         private Label _statusLabel = null!;
@@ -303,15 +305,16 @@ namespace RiichiMahjong.UI
 
         // ---- Button visibility ----------------------------------------------
 
-        public void ShowActionButtons(bool canTsumo, bool canRiichi, bool canKan = false)
+        public void ShowActionButtons(bool canTsumo, bool canRiichi, bool canKan = false, bool canKyuushu = false)
         {
-            _btnRiichi.Visible = canRiichi;
-            _btnTsumo.Visible  = canTsumo;
-            _btnKan.Visible    = canKan;
-            _btnRon.Visible    = false;
-            _btnPon.Visible    = false;
-            _btnChi.Visible    = false;
-            _btnPass.Visible   = false;
+            _btnRiichi.Visible   = canRiichi;
+            _btnTsumo.Visible    = canTsumo;
+            _btnKan.Visible      = canKan;
+            _btnKyuushu.Visible  = canKyuushu;
+            _btnRon.Visible      = false;
+            _btnPon.Visible      = false;
+            _btnChi.Visible      = false;
+            _btnPass.Visible     = false;
         }
 
         public void ShowClaimButtons(bool canRon, bool canPon, bool canChi, bool canKan = false)
@@ -327,13 +330,14 @@ namespace RiichiMahjong.UI
 
         public void HideActionButtons()
         {
-            _btnRiichi.Visible = false;
-            _btnTsumo.Visible  = false;
-            _btnRon.Visible    = false;
-            _btnPon.Visible    = false;
-            _btnChi.Visible    = false;
-            _btnKan.Visible    = false;
-            _btnPass.Visible   = false;
+            _btnRiichi.Visible  = false;
+            _btnTsumo.Visible   = false;
+            _btnRon.Visible     = false;
+            _btnPon.Visible     = false;
+            _btnChi.Visible     = false;
+            _btnKan.Visible     = false;
+            _btnPass.Visible    = false;
+            _btnKyuushu.Visible = false;
         }
 
         public void HideClaimButtons()
@@ -693,23 +697,25 @@ namespace RiichiMahjong.UI
             bar.Alignment    = BoxContainer.AlignmentMode.Center;
             bar.AddThemeConstantOverride("separation", 8);
 
-            _btnRiichi = MakeButton("RIICHI", new Color(0.8f, 0.2f, 0.2f));
-            _btnTsumo  = MakeButton("TSUMO",  new Color(0.2f, 0.6f, 0.2f));
-            _btnRon    = MakeButton("RON",    new Color(0.8f, 0.4f, 0.1f));
-            _btnPon    = MakeButton("PON",    new Color(0.2f, 0.4f, 0.8f));
-            _btnChi    = MakeButton("CHI",    new Color(0.5f, 0.2f, 0.7f));
-            _btnKan    = MakeButton("KAN",    new Color(0.6f, 0.3f, 0.0f));
-            _btnPass   = MakeButton("PASS",   new Color(0.4f, 0.4f, 0.4f));
-            _btnNext   = MakeButton("NEXT HAND →", new Color(0.2f, 0.6f, 0.4f));
+            _btnRiichi  = MakeButton("RIICHI",    new Color(0.8f, 0.2f, 0.2f));
+            _btnTsumo   = MakeButton("TSUMO",     new Color(0.2f, 0.6f, 0.2f));
+            _btnRon     = MakeButton("RON",       new Color(0.8f, 0.4f, 0.1f));
+            _btnPon     = MakeButton("PON",       new Color(0.2f, 0.4f, 0.8f));
+            _btnChi     = MakeButton("CHI",       new Color(0.5f, 0.2f, 0.7f));
+            _btnKan     = MakeButton("KAN",       new Color(0.6f, 0.3f, 0.0f));
+            _btnPass    = MakeButton("PASS",      new Color(0.4f, 0.4f, 0.4f));
+            _btnNext    = MakeButton("NEXT HAND →", new Color(0.2f, 0.6f, 0.4f));
+            _btnKyuushu = MakeButton("KYUUSHU",   new Color(0.3f, 0.5f, 0.6f));
 
-            _btnRiichi.Pressed += () => EmitSignal(SignalName.RiichiPressed);
-            _btnTsumo.Pressed  += () => EmitSignal(SignalName.TsumoPressed);
-            _btnRon.Pressed    += () => EmitSignal(SignalName.RonPressed);
-            _btnPon.Pressed    += () => EmitSignal(SignalName.PonPressed);
-            _btnChi.Pressed    += () => EmitSignal(SignalName.ChiPressed);
-            _btnKan.Pressed    += () => EmitSignal(SignalName.KanPressed);
-            _btnPass.Pressed   += () => EmitSignal(SignalName.PassPressed);
-            _btnNext.Pressed   += () => EmitSignal(SignalName.NextHandPressed);
+            _btnRiichi.Pressed   += () => EmitSignal(SignalName.RiichiPressed);
+            _btnTsumo.Pressed    += () => EmitSignal(SignalName.TsumoPressed);
+            _btnRon.Pressed      += () => EmitSignal(SignalName.RonPressed);
+            _btnPon.Pressed      += () => EmitSignal(SignalName.PonPressed);
+            _btnChi.Pressed      += () => EmitSignal(SignalName.ChiPressed);
+            _btnKan.Pressed      += () => EmitSignal(SignalName.KanPressed);
+            _btnPass.Pressed     += () => EmitSignal(SignalName.PassPressed);
+            _btnNext.Pressed     += () => EmitSignal(SignalName.NextHandPressed);
+            _btnKyuushu.Pressed  += () => EmitSignal(SignalName.KyuushuPressed);
 
             bar.AddChild(_btnRiichi);
             bar.AddChild(_btnTsumo);
@@ -718,6 +724,7 @@ namespace RiichiMahjong.UI
             bar.AddChild(_btnChi);
             bar.AddChild(_btnKan);
             bar.AddChild(_btnPass);
+            bar.AddChild(_btnKyuushu);
             bar.AddChild(_btnNext);
 
             HideActionButtons();
