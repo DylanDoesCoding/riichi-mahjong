@@ -69,6 +69,12 @@ namespace RiichiMahjong.Core
 		// Win/tenpai status at end of hand
 		public bool           IsTenpaiAtDraw  { get; set; }
 
+		// Nagashi Mangan tracking — cleared each hand
+		/// <summary>Number of times this player has drawn a tile from the wall this hand.</summary>
+		public int            WallDrawCount         { get; set; } = 0;
+		/// <summary>True if any opponent has claimed (pon/chi/kan) from this player's discards.</summary>
+		public bool           HasDiscardBeenClaimed { get; set; } = false;
+
 		public PlayerState(int seatIndex, bool isHuman, string name)
 		{
 			SeatIndex = seatIndex;
@@ -118,6 +124,12 @@ namespace RiichiMahjong.Core
 		/// <summary>Current turn number within this hand (0-based, increments each full cycle).</summary>
 		public int           TurnNumber    { get; private set; } = 0;
 
+		/// <summary>
+		/// True until the first pon/chi/kan claim is made this hand.
+		/// Required for Tenhou/Chiihou/Renhou — any claim breaks the uninterrupted round.
+		/// </summary>
+		private bool _firstRoundUninterrupted = true;
+
 		// ---- Wall -----------------------------------------------------------
 
 		public TileWall      Wall          { get; private set; } = null!;
@@ -144,6 +156,12 @@ namespace RiichiMahjong.Core
 		public event Action<HandEndReason, int[]>?       OnHandEnd;              // reason, winner indices
 		public event Action?                             OnNewHand;
 		public event Action?                             OnGameOver;
+		/// <summary>
+		/// Fired when a kakan opens a chankan claim window.
+		/// Subscribers must call <see cref="ResolveChankan"/> (no rob) or
+		/// <see cref="ClaimRon"/> (rob) to advance the game.
+		/// </summary>
+		public event Action<int, Tile>?                  OnChankanOpened;        // kakanPlayerIndex, tile
 
 		// ---- Last-win scoring data (for scoring overlay display) ------------
 
@@ -157,6 +175,22 @@ namespace RiichiMahjong.Core
 		public int             LastWinnerSeat    { get; private set; } = -1;
 		/// <summary>Seat index of the last discarder for a Ron win (-1 = Tsumo or no win).</summary>
 		public int             LastDiscarderSeat { get; private set; } = -1;
+
+		// ---- Special-win flags (cleared at hand start / on discard) ----------
+
+		/// <summary>
+		/// True when the current player drew their tile from the dead wall (rinshan).
+		/// Used by <see cref="GetTsumoMethod"/> to award Rinshan Kaihou.
+		/// Cleared when the player discards.
+		/// </summary>
+		public bool IsRinshanDraw { get; private set; }
+
+		/// <summary>
+		/// True while a kakan has opened a chankan claim window.
+		/// <see cref="ClaimRon"/> will use <see cref="WinMethod.Chankan"/> during this window.
+		/// Cleared by <see cref="ResolveChankan"/> or <see cref="ClaimRon"/>.
+		/// </summary>
+		public bool IsChankanWindow { get; private set; }
 
 		// ---- Constructor ----------------------------------------------------
 
@@ -199,16 +233,21 @@ namespace RiichiMahjong.Core
 			LastWinContext    = null;
 			LastWinnerSeat    = -1;
 			LastDiscarderSeat = -1;
+			IsRinshanDraw     = false;
+			IsChankanWindow   = false;
 
 			// Reset player hand state
+			_firstRoundUninterrupted = true;
 			foreach (var p in Players)
 			{
 				p.Hand.Reset();  // We'll add a Reset() to Hand
                 p.Furiten.Reset();
                 p.Discards.Clear();
-                p.DeclaredRiichi = false;
-                p.RiichiBetTurn  = -1;
-                p.IsTenpaiAtDraw = false;
+                p.DeclaredRiichi        = false;
+                p.RiichiBetTurn         = -1;
+                p.IsTenpaiAtDraw        = false;
+                p.WallDrawCount         = 0;
+                p.HasDiscardBeenClaimed = false;
             }
 
             // Build and shuffle wall, deal tiles.
@@ -246,6 +285,8 @@ namespace RiichiMahjong.Core
         {
             if (Phase != TurnPhase.ActionPhase) return false;
             if (playerIndex != CurrentPlayerIndex) return false;
+
+            IsRinshanDraw = false;   // discard clears the rinshan flag
 
             var player = Players[playerIndex];
             if (!player.Hand.RemoveTile(tile)) return false;
@@ -325,8 +366,10 @@ namespace RiichiMahjong.Core
 			var source = GetClaimSource(DiscarderIndex, claimingPlayerIndex);
 			player.Hand.ApplyPon(PendingDiscard, PendingDiscard, source);
 
-			// Clear ippatsu for all riichi players (a call breaks it)
+			// Clear ippatsu; mark discarder's tile as claimed (for Nagashi Mangan)
 			BreakAllIppatsu();
+			Players[DiscarderIndex].HasDiscardBeenClaimed = true;
+			_firstRoundUninterrupted = false;
 
 			var meld = player.Hand.OpenMelds.Last();
 			OnMeldDeclared?.Invoke(claimingPlayerIndex, meld);
@@ -365,6 +408,8 @@ namespace RiichiMahjong.Core
             player.Hand.ApplyChi(t1, t2, PendingDiscard, ClaimSource.Left);
 
             BreakAllIppatsu();
+            Players[DiscarderIndex].HasDiscardBeenClaimed = true;
+            _firstRoundUninterrupted = false;
 
             var meld = player.Hand.OpenMelds.Last();
             OnMeldDeclared?.Invoke(claimingPlayerIndex, meld);
@@ -400,14 +445,22 @@ namespace RiichiMahjong.Core
                 return false;
             }
 
-            // Build context and evaluate
-            var bestResult = EvaluateBestDecomposition(claimingPlayerIndex, winCheck, WinMethod.Ron);
+            // Determine the correct Ron win method:
+            //   Chankan  — robbing an opponent's kakan extension
+            //   Houtei   — ron on the very last discard (wall is empty)
+            //   Ron      — standard ron
+            WinMethod winMethod = IsChankanWindow    ? WinMethod.Chankan
+                                : Wall.TilesRemaining == 0 ? WinMethod.Houtei
+                                : WinMethod.Ron;
+
+            var bestResult = EvaluateBestDecomposition(claimingPlayerIndex, winCheck, winMethod);
             if (!bestResult.HasYaku)
             {
                 player.Hand.RemoveTile(PendingDiscard);
                 return false;
             }
 
+            IsChankanWindow = false;   // consume the chankan window on a successful ron
             ResolveRon(claimingPlayerIndex, DiscarderIndex, bestResult, winCheck);
             return true;
         }
@@ -452,21 +505,26 @@ namespace RiichiMahjong.Core
 
             player.Hand.ApplyKanClosed(tile);
 
-            // Draw rinshan tile and reveal new dora
+            // Fire meld event before drawing so dora can be broadcast with meld
+            var meld = player.Hand.OpenMelds.Last();
+            OnMeldDeclared?.Invoke(playerIndex, meld);
+
+            // Draw rinshan tile and reveal new dora — no chankan window for ankan
             var rinshan = Wall.DrawKanReplacement();
             player.Hand.AddTile(rinshan);
             player.Hand.Sort();
+            IsRinshanDraw = true;
+            Players[playerIndex].WallDrawCount++;
 
-            // Fire meld event (Phase/CurrentPlayerIndex unchanged — stay in ActionPhase)
-            var meld = player.Hand.OpenMelds.Last();
-            OnMeldDeclared?.Invoke(playerIndex, meld);
+            // Phase/CurrentPlayerIndex unchanged — stay in ActionPhase
             OnTileDrawn?.Invoke(playerIndex);
             return true;
         }
 
         /// <summary>
         /// Declare an extended Kan (Kakan): player adds the 4th tile to an existing open Pon.
-        /// Draws a rinshan replacement from the dead wall, reveals a new dora.
+        /// Opens a chankan claim window — opponents in tenpai on that tile may rob it for Ron.
+        /// If no one robs, call <see cref="ResolveChankan"/> to draw the rinshan tile.
         /// </summary>
         public bool DeclareKakan(int playerIndex, Tile tile)
         {
@@ -483,14 +541,42 @@ namespace RiichiMahjong.Core
 
             BreakAllIppatsu();
 
+            // Broadcast the meld immediately (before rinshan — dora unchanged for now)
+            var meld = player.Hand.OpenMelds.Last();
+            OnMeldDeclared?.Invoke(playerIndex, meld);
+
+            // Open the chankan claim window — rinshan is drawn in ResolveChankan()
+            IsChankanWindow = true;
+            PendingDiscard  = tile;          // the kakan tile is the "claimable" tile
+            DiscarderIndex  = playerIndex;   // so ClaimRon knows who the "discarder" is
+            Phase           = TurnPhase.ClaimWindow;
+
+            OnChankanOpened?.Invoke(playerIndex, tile);
+            return true;
+        }
+
+        /// <summary>
+        /// Complete a kakan after the chankan claim window passes with no rob.
+        /// Draws the rinshan tile, reveals the new dora, and returns the game to ActionPhase.
+        /// </summary>
+        public void ResolveChankan()
+        {
+            if (!IsChankanWindow) return;
+
+            IsChankanWindow = false;
+            PendingDiscard  = null;
+            // DiscarderIndex is the kakan player — CurrentPlayerIndex hasn't changed.
+
+            // Draw rinshan and reveal new dora indicator
+            var player  = Players[CurrentPlayerIndex];
             var rinshan = Wall.DrawKanReplacement();
             player.Hand.AddTile(rinshan);
             player.Hand.Sort();
+            IsRinshanDraw = true;
+            player.WallDrawCount++;
+            Phase         = TurnPhase.ActionPhase;
 
-            var meld = player.Hand.OpenMelds.Last();
-            OnMeldDeclared?.Invoke(playerIndex, meld);
-            OnTileDrawn?.Invoke(playerIndex);
-            return true;
+            OnTileDrawn?.Invoke(CurrentPlayerIndex);
         }
 
         /// <summary>
@@ -513,10 +599,14 @@ namespace RiichiMahjong.Core
             player.Hand.ApplyKanOpen(PendingDiscard, PendingDiscard, source);
 
             BreakAllIppatsu();
+            Players[DiscarderIndex].HasDiscardBeenClaimed = true;
+            _firstRoundUninterrupted = false;
 
             var rinshan = Wall.DrawKanReplacement();
             player.Hand.AddTile(rinshan);
             player.Hand.Sort();
+            IsRinshanDraw = true;
+            Players[claimingPlayerIndex].WallDrawCount++;
 
             // Fire meld event BEFORE resetting DiscarderIndex so UI can remove the discard
             var meld = player.Hand.OpenMelds.Last();
@@ -548,6 +638,7 @@ namespace RiichiMahjong.Core
             Players[CurrentPlayerIndex].Hand.AddTile(tile);
             Players[CurrentPlayerIndex].Furiten.OnDraw();
             Players[CurrentPlayerIndex].Hand.Sort();
+            Players[CurrentPlayerIndex].WallDrawCount++;
 
             Phase = TurnPhase.ActionPhase;
             OnTileDrawn?.Invoke(CurrentPlayerIndex);
@@ -557,10 +648,12 @@ namespace RiichiMahjong.Core
         /// <summary>
 		/// Pass on all claims — advance to the next player's draw.
 		/// Call this when no one wants to claim the pending discard.
+		/// Do NOT call for a chankan window — call <see cref="ResolveChankan"/> instead.
 		/// </summary>
 		public void PassAllClaims()
 		{
 			if (Phase != TurnPhase.ClaimWindow) return;
+			if (IsChankanWindow) return;  // caller should use ResolveChankan() for chankan
 
 			// Now that everyone has passed, record missed Ron opportunities.
 			// This is intentionally here rather than in Discard() — furiten only
@@ -649,6 +742,55 @@ namespace RiichiMahjong.Core
 
 		private void ResolveExhaustiveDraw()
 		{
+			// ----------------------------------------------------------------
+			// Nagashi Mangan — all discards terminals/honours, no one claimed
+			// ----------------------------------------------------------------
+			var nagashiWinners = new List<int>();
+			for (int i = 0; i < 4; i++)
+			{
+				var p = Players[i];
+				if (p.Discards.Count > 0
+				    && !p.HasDiscardBeenClaimed
+				    && p.Discards.All(t => t.IsTerminalOrHonour))
+					nagashiWinners.Add(i);
+			}
+
+			if (nagashiWinners.Count > 0)
+			{
+				// Apply mangan-tsumo payments for each nagashi winner.
+				// Riichi bets remain on the table (not awarded).
+				foreach (int winner in nagashiWinners)
+				{
+					bool isDealer = winner == DealerIndex;
+					if (isDealer)
+					{
+						// Dealer nagashi: each other player pays 4 000
+						for (int s = 0; s < 4; s++)
+							if (s != winner) { Players[winner].Points += 4000; Players[s].Points -= 4000; }
+					}
+					else
+					{
+						// Non-dealer nagashi: dealer pays 4 000, others pay 2 000
+						Players[DealerIndex].Points -= 4000;
+						Players[winner].Points      += 4000;
+						for (int s = 0; s < 4; s++)
+							if (s != winner && s != DealerIndex)
+								{ Players[winner].Points += 2000; Players[s].Points -= 2000; }
+					}
+				}
+
+				// Dealer stays if they won nagashi; otherwise rotate
+				if (nagashiWinners.Contains(DealerIndex)) Counters++;
+				else AdvanceDealer();
+
+				Phase = TurnPhase.HandEnd;
+				OnHandEnd?.Invoke(HandEndReason.NagashiMangan, nagashiWinners.ToArray());
+				return;
+			}
+
+			// ----------------------------------------------------------------
+			// Normal tenpai / noten payment
+			// ----------------------------------------------------------------
 			// Determine tenpai/noten for each player
 			var tenpaiPlayers = new List<int>();
 			var notenPlayers  = new List<int>();
@@ -750,11 +892,12 @@ namespace RiichiMahjong.Core
 				SeatWind        = seatWind,
 				RoundWind       = RoundWind,
 				IsDealer        = playerIndex == DealerIndex,
-				IsRiichi        = player.DeclaredRiichi,
-				IsDoubleRiichi  = player.Hand.IsDoubleRiichi,
-				IsIppatsu       = player.Hand.IsIppatsu,
-				IsFirstRoundWin = TurnNumber == 0,
-				WinningTile     = player.Hand.DrawnTile,
+				IsRiichi                = player.DeclaredRiichi,
+				IsDoubleRiichi          = player.Hand.IsDoubleRiichi,
+				IsIppatsu               = player.Hand.IsIppatsu,
+				WinnerWallDrawCount     = player.WallDrawCount,
+				FirstRoundUninterrupted = _firstRoundUninterrupted,
+				WinningTile             = player.Hand.DrawnTile,
 				OpenMelds       = player.Hand.OpenMelds.ToList(),
 				DoraCount       = CountDora(player, Wall.GetActiveDoraTiles()),
 				UraDoraCount    = player.DeclaredRiichi ? CountDora(player, Wall.GetUradDoraTiles()) : 0,
@@ -792,9 +935,10 @@ namespace RiichiMahjong.Core
 
 		private WinMethod GetTsumoMethod(int playerIndex)
 		{
-			// Check if this is a rinshan draw (after kan) or haitei (last tile)
-			// These flags would be set on the player or wall state
-			// For now return standard Tsumo; game controller will set special cases
+			// Rinshan Kaihou — drew from dead wall after a kan
+			if (IsRinshanDraw) return WinMethod.Rinshan;
+			// Haitei Raoyue — last tile drawn from the live wall
+			if (Wall.TilesRemaining == 0) return WinMethod.Haitei;
 			return WinMethod.Tsumo;
 		}
 
@@ -856,7 +1000,7 @@ namespace RiichiMahjong.Core
 				player.Hand.ClosedTiles.ToList(),
 				player.Hand.OpenMelds.ToList());
 			if (!winCheck.IsWin) return false;
-			var ctx = BuildContext(playerIndex, WinMethod.Tsumo);
+			var ctx = BuildContext(playerIndex, GetTsumoMethod(playerIndex));
 			return winCheck.Decompositions.Any(d => YakuChecker.Evaluate(d, ctx).HasYaku);
 		}
 	}

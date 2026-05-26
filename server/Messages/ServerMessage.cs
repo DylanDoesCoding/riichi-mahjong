@@ -35,11 +35,20 @@ namespace RiichiServer.Messages
         public MeldDto?          Meld         { get; set; }
 
         // ---- Claim window -----------------------------------------------
-        public int               DiscarderSeat { get; set; }
-        public bool              CanRon        { get; set; }
-        public bool              CanPon        { get; set; }
-        public bool              CanChi        { get; set; }
-        public bool              CanKan        { get; set; }
+        public int               DiscarderSeat      { get; set; }
+        public bool              CanRon             { get; set; }
+        public bool              CanPon             { get; set; }
+        public bool              CanChi             { get; set; }
+        public bool              CanKan             { get; set; }
+
+        // ---- Furiten notification ----------------------------------------
+        /// <summary>
+        /// Sent via the "furitenChanged" message type to the specific human seat
+        /// that just entered temporary furiten (missed a ron opportunity).
+        /// True = now in temporary furiten; the flag clears automatically on the
+        /// client when that player receives their next tileDrawn event.
+        /// </summary>
+        public bool              IsTemporaryFuriten { get; set; }
 
         // ---- Hand end ---------------------------------------------------
         public string?           Reason        { get; set; }
@@ -55,6 +64,18 @@ namespace RiichiServer.Messages
         public int               UraDoraCount  { get; set; }
         public int               WinnerSeat    { get; set; }
         public int               PayerSeat     { get; set; }  // -1 for tsumo
+
+        // ---- Ryuukyoku (exhaustive draw) reveal --------------------------
+        /// <summary>
+        /// Closed tiles for all 4 seats at exhaustive draw.
+        /// Empty inner list = noten (hand not revealed). Null = not an exhaustive draw.
+        /// </summary>
+        public List<List<TileDto>>? RevealedHands { get; set; }
+        /// <summary>
+        /// Waiting tiles for all 4 seats at exhaustive draw.
+        /// Empty inner list = noten or no waits. Null = not an exhaustive draw.
+        /// </summary>
+        public List<List<TileDto>>? TenpaiWaits   { get; set; }
 
         // ---- Reconnection state snapshot --------------------------------
         // Sent as "gameStateSnapshot" when a player rejoins mid-game.
@@ -84,5 +105,7 @@ namespace RiichiServer.Messages
         public const string NewHand             = "newHand";
         public const string GameOver            = "gameOver";
         public const string GameStateSnapshot   = "gameStateSnapshot";  // full resync on rejoin
+        public const string FuritenChanged     = "furitenChanged";     // human entered temporary furiten
+        public const string QueueJoined        = "queueJoined";        // player entered matchmaking queue
     }
 }

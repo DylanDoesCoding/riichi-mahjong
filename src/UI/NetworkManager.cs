@@ -97,6 +97,16 @@ namespace RiichiMahjong.UI
 
         // ---- Dora -----------------------------------------------------------
         public List<NetTileDto>?       DoraIndicators { get; set; }
+
+        // ---- Furiten --------------------------------------------------------
+        /// <summary>True when the server reports the human player entered temporary furiten.</summary>
+        public bool                    IsTemporaryFuriten { get; set; }
+
+        // ---- Ryuukyoku reveal -----------------------------------------------
+        /// <summary>Closed tiles per seat at exhaustive draw. Empty inner list = noten.</summary>
+        public List<List<NetTileDto>>? RevealedHands  { get; set; }
+        /// <summary>Waiting tiles per seat at exhaustive draw. Empty inner list = noten or no waits.</summary>
+        public List<List<NetTileDto>>? TenpaiWaits    { get; set; }
     }
 
     // =========================================================================
@@ -131,10 +141,24 @@ namespace RiichiMahjong.UI
         public event Action<int, NetMeldDto>?        OnMeldDeclared;    // seat, meld
         public event Action<int>?                    OnRiichiDeclared;  // seat
         public event Action<int, Tile, bool, bool, bool, bool>? OnClaimWindowOpened;
+        public event Action<bool>?                   OnFuritenChanged;  // isTemporaryFuriten
+        public event Action?                         OnQueueJoined;     // entered matchmaking queue
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
         public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int, int, int, int>? OnHandEnded;
         //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, doraCount, uraDoraCount, winnerSeat, payerSeat
         public event Action<List<NetScoreEntry>>?    OnGameOver;        // scoreBoard
+
+        // ---- Ryuukyoku reveal data (populated before OnHandEnded fires) ------
+        /// <summary>
+        /// Closed tiles for all 4 seats at exhaustive draw (empty list = noten).
+        /// Set before <see cref="OnHandEnded"/> fires; null when last hand was not a draw.
+        /// </summary>
+        public List<List<Tile>>? LastRevealedHands { get; private set; }
+        /// <summary>
+        /// Waiting tile types per seat at exhaustive draw (empty list = noten).
+        /// Computed server-side so open-hand waits are always correct.
+        /// </summary>
+        public List<List<Tile>>? LastTenpaiWaits   { get; private set; }
 
         // Fired when a mid-game rejoin succeeds — carries same payload as OnHandDealt
         // plus per-seat discards and melds for full board resync.
@@ -279,6 +303,12 @@ namespace RiichiMahjong.UI
         public void SendNextHand()
             => Send(new { type = "nextHand" });
 
+        public void SendJoinQueue(string displayName)
+            => Send(new { type = "joinQueue", displayName, uuid = GameSettings.PlayerUuid });
+
+        public void SendLeaveQueue()
+            => Send(new { type = "leaveQueue" });
+
         // =====================================================================
         // Dispatch
         // =====================================================================
@@ -313,7 +343,14 @@ namespace RiichiMahjong.UI
 
                 case "gameStarted":
                     LocalSeat = msg.YourSeat;
+                    // For matchmade games there is no prior roomJoined, so the server
+                    // includes the room code here for reconnection support.
+                    if (!string.IsNullOrEmpty(msg.Code)) RoomCode = msg.Code;
                     OnGameStarted?.Invoke(msg.YourSeat, msg.Names ?? Array.Empty<string>());
+                    break;
+
+                case "queueJoined":
+                    OnQueueJoined?.Invoke();
                     break;
 
                 case "handDealt":
@@ -332,6 +369,8 @@ namespace RiichiMahjong.UI
 
                 case "tileDrawn":
                     OnTileDrawn?.Invoke(msg.Seat, msg.Tile?.ToTile());
+                    if (msg.DoraIndicators != null)
+                        OnDoraUpdated?.Invoke(msg.DoraIndicators.Select(d => d.ToTile()).ToList());
                     break;
 
                 case "tileDiscarded":
@@ -357,7 +396,18 @@ namespace RiichiMahjong.UI
                             msg.CanRon, msg.CanPon, msg.CanChi, msg.CanKan);
                     break;
 
+                case "furitenChanged":
+                    OnFuritenChanged?.Invoke(msg.IsTemporaryFuriten);
+                    break;
+
                 case "handEnded":
+                    // Parse ryuukyoku reveal data before firing the event
+                    LastRevealedHands = msg.RevealedHands?
+                        .Select(row => row.Select(d => d.ToTile()).ToList())
+                        .ToList();
+                    LastTenpaiWaits = msg.TenpaiWaits?
+                        .Select(row => row.Select(d => d.ToTile()).ToList())
+                        .ToList();
                     OnHandEnded?.Invoke(
                         msg.Reason     ?? "",
                         msg.Winners    ?? Array.Empty<int>(),

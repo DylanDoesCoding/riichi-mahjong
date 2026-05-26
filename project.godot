@@ -16,7 +16,6 @@ config/features=PackedStringArray("4.6", "C#", "GL Compatibility")
 boot_splash/bg_color=Color(0, 0, 0, 1)
 boot_splash/image="res://Assets/splash.png"
 config/icon="res://icon.svg"
-boot_splash/minimum_display_time=0
 
 [autoload]
 

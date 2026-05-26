@@ -42,6 +42,11 @@ namespace RiichiMahjong.UI
         private bool   _isHost             = false;
         private string _reconnectCode      = "";  // room code to rejoin after disconnect
         private string _reconnectServerUrl = "";
+        private bool   _isSearching        = false;
+
+        // ---- Searching-state widgets (shown inside connect panel while in queue) ---
+        private Control  _searchingOverlay = null!;
+        private Label    _searchingLabel   = null!;
 
         // ---- Style colours ---------------------------------------------------
         private static readonly Color BgColor      = new(0.08f, 0.10f, 0.15f, 1f);
@@ -95,6 +100,7 @@ namespace RiichiMahjong.UI
             nm.OnGameStarted  += HandleGameStarted;
             nm.OnConnected    += HandleConnected;
             nm.OnDisconnected += HandleDisconnected;
+            nm.OnQueueJoined  += HandleQueueJoined;
         }
 
         public override void _ExitTree()
@@ -112,6 +118,7 @@ namespace RiichiMahjong.UI
             nm.OnGameStarted  -= HandleGameStarted;
             nm.OnConnected    -= HandleConnected;
             nm.OnDisconnected -= HandleDisconnected;
+            nm.OnQueueJoined  -= HandleQueueJoined;
         }
 
         // =====================================================================
@@ -144,6 +151,12 @@ namespace RiichiMahjong.UI
             _serverInput = MakeLineEdit("ws://localhost:5000/ws", GameSettings.ServerUrl);
             vbox.AddChild(_serverInput);
             vbox.AddChild(Spacer(14));
+
+            // Quick Play (matchmaking)
+            var quickPlayBtn = MakeButton("⚡  Quick Play", new Color(0.18f, 0.45f, 0.28f));
+            quickPlayBtn.Pressed += OnQuickPlay;
+            vbox.AddChild(quickPlayBtn);
+            vbox.AddChild(Spacer(6));
 
             // Create Room
             var createBtn = MakeButton("＋  Create Room", AccentBlue);
@@ -178,10 +191,29 @@ namespace RiichiMahjong.UI
 
             vbox.AddChild(Spacer(4));
 
+            // ---- Searching overlay (hidden until Quick Play is pressed) ----
+            // Sits in the same VBox; shown by ShowSearching(), hidden by HideSearching().
+            _searchingOverlay = new VBoxContainer();
+            _searchingOverlay.AddThemeConstantOverride("separation", 8);
+            _searchingOverlay.Visible = false;
+
+            _searchingLabel = new Label { Text = "Searching for players…" };
+            _searchingLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _searchingLabel.AddThemeFontSizeOverride("font_size", 16);
+            _searchingLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.90f, 0.65f));
+            _searchingOverlay.AddChild(_searchingLabel);
+
+            var cancelBtn = MakeButton("✕  Cancel Search", AccentRed);
+            cancelBtn.Pressed += OnCancelQueue;
+            _searchingOverlay.AddChild(cancelBtn);
+
+            vbox.AddChild(_searchingOverlay);
+
             // Back to menu
             var backBtn = MakeButton("← Back to Menu", new Color(0.18f, 0.22f, 0.35f));
             backBtn.Pressed += () =>
             {
+                if (_isSearching) NetworkManager.Instance?.SendLeaveQueue();
                 NetworkManager.Instance?.ResetSession();
                 GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
             };
@@ -393,9 +425,38 @@ namespace RiichiMahjong.UI
         private void OnLeaveRoom()
         {
             _reconnectCode = "";
+            // If we were searching (not in a real room yet), cancel the queue
+            if (_isSearching) NetworkManager.Instance?.SendLeaveQueue();
             NetworkManager.Instance?.ResetSession();
             ShowConnect();
             SetConnectStatus("");
+        }
+
+        private void OnQuickPlay()
+        {
+            var name = _nameInput.Text.Trim();
+            if (name.Length == 0)
+            {
+                SetConnectStatus("Please enter a display name.");
+                return;
+            }
+
+            if (!ValidateAndConnect()) return;
+
+            // Save name preference
+            GameSettings.PlayerName = name;
+            GameSettings.Save();
+
+            SetConnectStatus("");
+            NetworkManager.Instance!.SendJoinQueue(name);
+            // UI will switch to searching state via HandleQueueJoined once the server confirms
+        }
+
+        private void OnCancelQueue()
+        {
+            NetworkManager.Instance?.SendLeaveQueue();
+            HideSearching();
+            SetConnectStatus("Search cancelled.");
         }
 
         // =====================================================================
@@ -444,6 +505,12 @@ namespace RiichiMahjong.UI
             // If we're reconnecting to a lobby, send the rejoin immediately
             if (_reconnectCode.Length > 0)
                 NetworkManager.Instance?.SendRejoinRoom(_reconnectCode);
+        }
+
+        private void HandleQueueJoined()
+        {
+            // Server confirmed we're in the matchmaking queue — switch to searching state
+            ShowSearching();
         }
 
         private void HandleDisconnected()
@@ -512,12 +579,48 @@ namespace RiichiMahjong.UI
         {
             _connectPanel.Visible = true;
             _waitingPanel.Visible = false;
+            HideSearching();
         }
 
         private void ShowWaiting()
         {
             _connectPanel.Visible = false;
             _waitingPanel.Visible = true;
+            HideSearching();
+        }
+
+        /// <summary>
+        /// Enter the searching state: show the waiting panel (already styled) with
+        /// "Searching…" status, empty player slots, and no room code — so the player
+        /// has a clean waiting view with only the Leave/Cancel button available.
+        /// The searching overlay inside the connect panel is a fallback but the connect
+        /// panel itself is hidden, so there's no interference from the form widgets.
+        /// </summary>
+        private void ShowSearching()
+        {
+            _isSearching = true;
+
+            // Reuse the waiting panel as the searching view — no room code, just status
+            _connectPanel.Visible = false;
+            _waitingPanel.Visible = true;
+
+            _roomCodeLabel.Text = "------";
+            _startBtn.Visible   = false;
+            SetWaitingStatus("Searching for players…  (up to 30 s, then CPU fills empty seats)");
+
+            // Reset all player slots to "Open"
+            for (int i = 0; i < 4; i++)
+            {
+                _playerNameLabels[i].Text = "Open";
+                _playerNameLabels[i].AddThemeColorOverride("font_color", DimText);
+                _playerTagLabels[i].Text  = "";
+            }
+        }
+
+        private void HideSearching()
+        {
+            _isSearching = false;
+            // Panels are restored by ShowConnect() / ShowWaiting() — nothing extra needed here.
         }
 
         private void SetConnectStatus(string msg) => _connectStatus.Text = msg;

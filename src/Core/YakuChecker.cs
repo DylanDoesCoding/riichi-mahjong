@@ -46,11 +46,17 @@ namespace RiichiMahjong.Core
         public WinMethod     WinMethod       { get; init; }
         public WindDirection SeatWind        { get; init; }   // The winning player's seat
         public WindDirection RoundWind       { get; init; }   // Current round wind (East/South/etc.)
-        public bool          IsRiichi        { get; init; }
-        public bool          IsDoubleRiichi  { get; init; }
-        public bool          IsIppatsu       { get; init; }
-        public bool          IsFirstRoundWin { get; init; }   // For Tenho / Chiho (1st uninterrupted turn)
-        public bool          IsDealer        { get; init; }   // Seat wind == Round wind (East round) AND player is East
+        public bool          IsRiichi                { get; init; }
+        public bool          IsDoubleRiichi          { get; init; }
+        public bool          IsIppatsu               { get; init; }
+        /// <summary>
+        /// How many tiles the winning player has drawn from the live wall this hand.
+        /// 0 = hasn't drawn yet (initial deal for dealer; pre-draw ron for non-dealer).
+        /// </summary>
+        public int           WinnerWallDrawCount     { get; init; }
+        /// <summary>True if no pon/chi/kan claim has been made by any player this hand.</summary>
+        public bool          FirstRoundUninterrupted { get; init; }
+        public bool          IsDealer                { get; init; }   // Seat wind == Round wind (East round) AND player is East
         public int           DoraCount       { get; init; }   // Total dora in winning hand
         public int           UraDoraCount    { get; init; }   // Ura-dora (only if riichi)
         public int           KanDoraCount    { get; init; }   // Kan-dora in winning hand
@@ -149,15 +155,29 @@ namespace RiichiMahjong.Core
 
         private static void CheckYakuman(HandDecomposition d, YakuContext ctx, YakuCheckResult r)
         {
-            // Blessing of Heaven — dealer wins on initial 14-tile deal (tsumo only)
-            if (ctx.IsDealer && ctx.IsFirstRoundWin && ctx.WinMethod == WinMethod.Tsumo)
+            // Blessing of Heaven (Tenhou) — dealer wins tsumo on initial 14-tile deal.
+            // WallDrawCount == 0 means they have the dealt hand with no wall draw yet.
+            if (ctx.IsDealer
+                && ctx.WinnerWallDrawCount == 0
+                && ctx.FirstRoundUninterrupted
+                && ctx.WinMethod == WinMethod.Tsumo)
                 r.Add("Blessing of Heaven", "Tenho", 13, yakuman: true);
 
-            // Blessing of Earth — non-dealer self-draw win in first uninterrupted turn
-            if (!ctx.IsDealer && ctx.IsFirstRoundWin && ctx.WinMethod == WinMethod.Tsumo)
+            // Blessing of Earth (Chiihou) — non-dealer wins tsumo on their FIRST wall draw.
+            if (!ctx.IsDealer
+                && ctx.WinnerWallDrawCount == 1
+                && ctx.FirstRoundUninterrupted
+                && ctx.WinMethod == WinMethod.Tsumo)
                 r.Add("Blessing of Earth", "Chiho", 13, yakuman: true);
 
-            if (r.IsYakuman) return;  // Tenho/Chiho found — stop here
+            // Blessing of Man (Renhou) — non-dealer wins ron BEFORE their first wall draw.
+            if (!ctx.IsDealer
+                && ctx.WinnerWallDrawCount == 0
+                && ctx.FirstRoundUninterrupted
+                && ctx.WinMethod == WinMethod.Ron)
+                r.Add("Blessing of Man", "Renho", 13, yakuman: true);
+
+            if (r.IsYakuman) return;  // Tenho/Chiho/Renho found — stop here
 
             if (d.IsThirteenOrphans)
             {
@@ -282,8 +302,12 @@ namespace RiichiMahjong.Core
 
         private static void CheckMenzenTsumo(YakuContext ctx, bool open, YakuCheckResult r)
         {
-            // Menzen Tsumo: self-draw on a fully concealed hand
-            if (!open && ctx.WinMethod == WinMethod.Tsumo)
+            // Menzen Tsumo: self-draw on a fully concealed hand.
+            // Applies to standard Tsumo, Rinshan (after kan), and Haitei (last tile).
+            bool isSelfDraw = ctx.WinMethod is WinMethod.Tsumo
+                                           or WinMethod.Rinshan
+                                           or WinMethod.Haitei;
+            if (!open && isSelfDraw)
                 r.Add("Menzen Tsumo", "Menzen Tsumo", 1);
         }
 
