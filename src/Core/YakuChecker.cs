@@ -406,12 +406,15 @@ namespace RiichiMahjong.Core
         private static void CheckChanta(HandDecomposition d, bool open, YakuCheckResult r)
         {
             // Outside Hand: every set and the pair contain a terminal or honour;
-            // must have at least one sequence (chi)
+            // must have at least one sequence (chi).
+            // Junchan (terminals in ALL sets, no honours required) supersedes Chanta —
+            // suppress Chanta when every meld already contains a terminal.
             var allMelds = AllMelds(d);
             bool allContainTerminalOrHonour = allMelds.All(m =>
                 m.Tiles.Any(t => t.IsTerminalOrHonour));
-            bool hasChi = d.Sets.Any(s => s.Type == MeldType.Chi);
-            if (allContainTerminalOrHonour && hasChi)
+            bool hasChi    = d.Sets.Any(s => s.Type == MeldType.Chi);
+            bool isJunchan = allMelds.All(m => m.Tiles.Any(t => t.IsTerminal));
+            if (allContainTerminalOrHonour && hasChi && !isJunchan)
                 r.Add("Outside Hand", "Chanta", open ? 1 : 2);
         }
 
