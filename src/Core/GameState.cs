@@ -134,6 +134,12 @@ namespace RiichiMahjong.Core
 		/// <summary>Seat index of each kan declarant this hand (in declaration order).</summary>
 		private readonly List<int> _kanDeclarants = new();
 
+		/// <summary>
+		/// Kuikae forbidden tiles: (suit, value) pairs that the player who just claimed chi
+		/// is not allowed to discard immediately.  Cleared after any legal discard.
+		/// </summary>
+		private readonly HashSet<(TileSuit, int)> _kuikaeForbidden = new();
+
 		// ---- Wall -----------------------------------------------------------
 
 		public TileWall      Wall          { get; private set; } = null!;
@@ -196,6 +202,13 @@ namespace RiichiMahjong.Core
 		/// </summary>
 		public bool IsChankanWindow { get; private set; }
 
+		/// <summary>
+		/// Tiles the current player is forbidden from discarding due to kuikae (swap-calling).
+		/// Non-empty only immediately after a successful chi claim — cleared on the next legal discard.
+		/// Each entry is a (suit, value) pair matching <see cref="Tile.Suit"/> / <see cref="Tile.Value"/>.
+		/// </summary>
+		public IReadOnlyCollection<(TileSuit Suit, int Value)> KuikaeForbidden => _kuikaeForbidden;
+
 		// ---- Constructor ----------------------------------------------------
 
 		/// <param name="humanSeat">Which seat (0–3) the human player occupies.</param>
@@ -243,6 +256,7 @@ namespace RiichiMahjong.Core
 			// Reset player hand state
 			_firstRoundUninterrupted = true;
 			_kanDeclarants.Clear();
+			_kuikaeForbidden.Clear();
 			foreach (var p in Players)
 			{
 				p.Hand.Reset();  // We'll add a Reset() to Hand
@@ -290,6 +304,12 @@ namespace RiichiMahjong.Core
         {
             if (Phase != TurnPhase.ActionPhase) return false;
             if (playerIndex != CurrentPlayerIndex) return false;
+
+            // Kuikae: after chi, the player cannot immediately discard the claimed tile
+            // or its ryanmen-equivalent (the tile at the other end of a two-sided wait).
+            if (_kuikaeForbidden.Count > 0 && _kuikaeForbidden.Contains((tile.Suit, tile.Value)))
+                return false;
+            _kuikaeForbidden.Clear();  // Restriction expires after any legal discard
 
             IsRinshanDraw = false;   // discard clears the rinshan flag
 
@@ -419,9 +439,6 @@ namespace RiichiMahjong.Core
             // Validate the sequence
             if (!IsValidChi(t1, t2, PendingDiscard)) return false;
 
-            // Check kuikae (swap-calling) prohibition
-            if (IsKuikae(t1, t2, PendingDiscard)) return false;
-
             var player = Players[claimingPlayerIndex];
             player.Hand.ApplyChi(t1, t2, PendingDiscard, ClaimSource.Left);
 
@@ -431,6 +448,9 @@ namespace RiichiMahjong.Core
 
             var meld = player.Hand.OpenMelds.Last();
             OnMeldDeclared?.Invoke(claimingPlayerIndex, meld);
+
+            // Kuikae: record which tiles this player cannot immediately discard.
+            SetKuikaeForbidden(t1, t2, PendingDiscard);
 
             CurrentPlayerIndex = claimingPlayerIndex;
             PendingDiscard     = null;
@@ -584,7 +604,7 @@ namespace RiichiMahjong.Core
             if (Wall.KanCount >= 4) return false;
 
             var player = Players[playerIndex];
-            if (player.Hand.IsRiichi) return false;  // Simplified: no riichi-ankan for now
+            if (player.Hand.IsRiichi && !player.Hand.CanRiichiAnkan(tile)) return false;
             if (player.Hand.ClosedTiles.Count(t => t == tile) < 4) return false;
 
             player.Hand.ApplyKanClosed(tile);
@@ -1114,11 +1134,35 @@ namespace RiichiMahjong.Core
 			return vals[1] == vals[0] + 1 && vals[2] == vals[1] + 1;
 		}
 
-		private static bool IsKuikae(Tile t1, Tile t2, Tile claimed)
+		/// <summary>
+		/// Compute and store kuikae-forbidden tiles after a successful chi.
+		/// Always forbidden: the claimed tile itself.
+		/// Also forbidden when the claimed tile is at one end of the sequence:
+		///   the tile at the opposite ryanmen end (if in range 1–9).
+		/// Kanchan (middle-tile) calls only forbid the claimed tile itself.
+		/// </summary>
+		private void SetKuikaeForbidden(Tile t1, Tile t2, Tile claimed)
 		{
-			// Swap-calling: cannot claim for chi and immediately discard either end of the chi
-			// (The actual discard check happens in the Discard() call — this is a placeholder)
-			return false;
+			_kuikaeForbidden.Clear();
+			_kuikaeForbidden.Add((claimed.Suit, claimed.Value));
+
+			// Determine the low and high values of the three-tile sequence
+			int lo = Math.Min(Math.Min(t1.Value, t2.Value), claimed.Value);
+			int hi = Math.Max(Math.Max(t1.Value, t2.Value), claimed.Value);
+
+			if (claimed.Value == lo)
+			{
+				// Claimed is the low end (e.g. claimed 3, hand has 4-5).
+				// The hand tiles form a ryanmen that also waits on hi+1.
+				if (hi + 1 <= 9) _kuikaeForbidden.Add((claimed.Suit, hi + 1));
+			}
+			else if (claimed.Value == hi)
+			{
+				// Claimed is the high end (e.g. claimed 5, hand has 3-4).
+				// The hand tiles form a ryanmen that also waits on lo-1.
+				if (lo - 1 >= 1) _kuikaeForbidden.Add((claimed.Suit, lo - 1));
+			}
+			// claimed.Value == mid (kanchan): no ryanmen extension, only claimed tile is forbidden.
 		}
 
 		private void BreakAllIppatsu()

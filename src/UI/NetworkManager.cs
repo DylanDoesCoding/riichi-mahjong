@@ -297,6 +297,9 @@ namespace RiichiMahjong.UI
                 ? new { type = "kan", tile = NetTileDto.From(tile) }
                 : (object)new { type = "kan" });
 
+        public void SendKyuushu()
+            => Send(new { type = "kyuushu" });
+
         public void SendPass()
             => Send(new { type = "pass" });
 

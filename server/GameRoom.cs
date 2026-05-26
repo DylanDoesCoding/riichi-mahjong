@@ -326,6 +326,10 @@ namespace RiichiServer
                 case ClientMessageType.NextHand:
                     if (IsHost(conn)) _nextHandTcs?.TrySetResult(true);
                     break;
+
+                case ClientMessageType.Kyuushu:
+                    await HandleKyuushuAsync(seat);
+                    break;
             }
         }
 
@@ -366,6 +370,19 @@ namespace RiichiServer
 
             await FlushOutboxAsync();
             // OnHandEnd will have fired; wait for host to advance
+            if (ok) await WaitForNextHandAsync();
+        }
+
+        private async Task HandleKyuushuAsync(int seat)
+        {
+            if (_game == null) return;
+
+            await _gameSem.WaitAsync();
+            bool ok;
+            try   { ok = _game.DeclareKyuushuKyuuhai(seat); }
+            finally { _gameSem.Release(); }
+
+            await FlushOutboxAsync();
             if (ok) await WaitForNextHandAsync();
         }
 
@@ -776,8 +793,18 @@ namespace RiichiServer
                     if (_game.DeclareTsumo()) { advanced = true; goto done; }
                 }
 
-                // Ankan? (AI decides via existing helper)
-                if (!hand.IsRiichi)
+                // Ankan? (riichi ankan allowed if waits don't change)
+                if (hand.IsRiichi)
+                {
+                    // In riichi the only legal ankan is the drawn tile completing a set of 4
+                    // without altering the wait set.
+                    var drawn = hand.DrawnTile;
+                    if (drawn != null && _game.Wall.KanCount < 4 && hand.CanRiichiAnkan(drawn))
+                    {
+                        if (_game.DeclareAnkan(seat, drawn)) { advanced = true; goto done; }
+                    }
+                }
+                else
                 {
                     var ankanTile = _ai[seat].GetAnkanTile(hand, _game, seat);
                     if (ankanTile != null && _game.Wall.KanCount < 4)
@@ -797,14 +824,20 @@ namespace RiichiServer
                     }
                 }
 
-                // Plain discard
+                // Plain discard (respect kuikae — cannot discard the just-claimed chi tile
+                // or its ryanmen equivalent immediately after a chi call)
                 {
                     var discard = _ai[seat].ChooseDiscard(hand, _game, seat);
-                    if (discard != null)
+                    bool ok = discard != null && _game.Discard(seat, discard);
+                    if (!ok)
                     {
-                        _game.Discard(seat, discard);
-                        advanced = true;
+                        // Preferred pick was kuikae-forbidden (or null); fall back to first legal tile
+                        foreach (var t in hand.ClosedTiles)
+                        {
+                            if (_game.Discard(seat, t)) { ok = true; break; }
+                        }
                     }
+                    if (ok) advanced = true;
                 }
 
                 done: ;

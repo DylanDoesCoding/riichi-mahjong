@@ -39,5 +39,6 @@ namespace RiichiServer.Messages
         public const string RejoinRoom = "rejoinRoom";  // uuid + code → reconnect mid-game
         public const string JoinQueue  = "joinQueue";   // enter matchmaking queue
         public const string LeaveQueue = "leaveQueue";  // cancel matchmaking
+        public const string Kyuushu   = "kyuushu";     // declare Kyuushu Kyuuhai abortive draw
     }
 }

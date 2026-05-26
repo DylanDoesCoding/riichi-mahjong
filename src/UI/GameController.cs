@@ -589,6 +589,7 @@ namespace RiichiMahjong.UI
                                     ? $"🀄 {_netNames[winnerSeat]} — Nagashi Mangan!"
                                     : "Nagashi Mangan!",
                 "exhaustivedraw" => "Exhaustive draw (Ryuukyoku)",
+                "abortivedraw"   => "Abortive draw",
                 _                => "Hand over"
             };
             _hud.SetStatus(msg);
@@ -642,6 +643,11 @@ namespace RiichiMahjong.UI
                         doraCount:      capturedDora,
                         uraDoraCount:   capturedUraDora,
                         totalPointsWon: capturedBase));
+            }
+            else if (r == "abortivedraw")
+            {
+                SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
+                ShowAbortiveDrawPanelNet();
             }
             else  // exhaustivedraw (and anything else)
             {
@@ -977,7 +983,24 @@ namespace RiichiMahjong.UI
                 riichi = GetRiichiCandidatesFromTiles(_netMyTiles).Count > 0;
 
             bool kan = NetCanHumanKan();
-            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: kan);
+
+            // Kyuushu Kyuuhai: eligible on first turn if no calls and 9+ distinct terminal/honours
+            bool kyuushu = false;
+            if (_netMyDiscards.Count == 0 && _netMyTiles.Count == 14)
+            {
+                bool firstRoundClean = !_netMelds.Any(melds => melds.Any(m => m.IsOpen));
+                if (firstRoundClean)
+                {
+                    int distinctTermHon = _netMyTiles
+                        .Where(t => t.IsTerminalOrHonour)
+                        .Select(t => (t.Suit, t.Value))
+                        .Distinct()
+                        .Count();
+                    kyuushu = distinctTermHon >= 9;
+                }
+            }
+
+            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: kan, canKyuushu: kyuushu);
         }
 
         private bool NetCanHumanKan()
@@ -1463,6 +1486,25 @@ namespace RiichiMahjong.UI
                 new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
         }
 
+        /// <summary>
+        /// Network-mode equivalent of <see cref="ShowAbortiveDrawPanel"/>.
+        /// Uses <see cref="_netNames"/> / <see cref="_netScores"/> since <c>_game</c> is null.
+        /// </summary>
+        private void ShowAbortiveDrawPanelNet()
+        {
+            var names  = new string[4];
+            var points = new int[4];
+            for (int gs = 0; gs < 4; gs++)
+            {
+                int vs     = ToVisualSeat(gs);
+                names[vs]  = _netNames[gs];
+                points[vs] = _netScores[gs];
+            }
+            _hud.ShowRyuukyokuPanel(
+                names, points, ToVisualSeat(_netDealerSeat),
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
+        }
+
         private void ShowScoringOverlay(HandEndReason reason, int winnerSeat)
         {
             var score = _game.LastScoreResult;
@@ -1793,7 +1835,12 @@ namespace RiichiMahjong.UI
 
         private void OnHumanKyuushu()
         {
-            if (_isNetworkMode) return;  // server-side implementation pending
+            if (_isNetworkMode)
+            {
+                NetworkManager.Instance?.SendKyuushu();
+                _hud.HideActionButtons();
+                return;
+            }
             if (_game.DeclareKyuushuKyuuhai(_humanSeat))
                 _hud.HideActionButtons();
         }
