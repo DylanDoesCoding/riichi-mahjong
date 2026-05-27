@@ -566,8 +566,25 @@ namespace RiichiServer
                 switch (claimType)
                 {
                     case "ron":
-                        ok = _game.ClaimRon(seat);
+                    {
+                        // Include any AI seats that simultaneously want to ron on the same tile.
+                        // This lets ClaimRonMulti detect double-ron and sanchahou correctly.
+                        // Other human seats are skipped — they had the claim window and can
+                        // respond separately; forcing their ron would bypass their choice.
+                        var candidates = new List<int> { seat };
+                        int discarderIdx = _game.DiscarderIndex;
+                        for (int i = 1; i <= 3; i++)
+                        {
+                            int s = (discarderIdx + i) % 4;
+                            if (s == seat) continue;               // already included
+                            if (_connections[s] != null) continue; // other human seat
+                            var h = _game.Players[s].Hand;
+                            if (_ai[s].ShouldClaimRon(pendingTile, h, _game, s))
+                                candidates.Add(s);
+                        }
+                        ok = _game.ClaimRonMulti(candidates.ToArray());
                         break;
+                    }
                     case "pon":
                         ok = _game.ClaimPon(seat);
                         break;
@@ -612,18 +629,24 @@ namespace RiichiServer
             int discarder = _game.DiscarderIndex;
 
             // Priority: Ron > Daiminkan > Pon > Chi
-            for (int i = 1; i <= 3; i++)
+            //
+            // Ron: collect ALL AI candidates first so ClaimRonMulti can detect
+            // double-ron (2 winners split pot) and sanchahou (3 winners → abort).
             {
-                int s = (discarder + i) % 4;
-                if (_connections[s] != null) continue;   // human seat
-
-                var hand = _game.Players[s].Hand;
-
-                if (_ai[s].ShouldClaimRon(tile, hand, _game, s))
+                var ronCandidates = new List<int>();
+                for (int i = 1; i <= 3; i++)
+                {
+                    int s = (discarder + i) % 4;
+                    if (_connections[s] != null) continue;  // human seat
+                    var hand = _game.Players[s].Hand;
+                    if (_ai[s].ShouldClaimRon(tile, hand, _game, s))
+                        ronCandidates.Add(s);
+                }
+                if (ronCandidates.Count > 0)
                 {
                     await _gameSem.WaitAsync();
                     bool ok;
-                    try   { ok = _game.ClaimRon(s); }
+                    try   { ok = _game.ClaimRonMulti(ronCandidates.ToArray()); }
                     finally { _gameSem.Release(); }
 
                     await FlushOutboxAsync();
