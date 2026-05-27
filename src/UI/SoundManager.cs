@@ -16,7 +16,6 @@
 
 using Godot;
 using System;
-using System.IO;
 
 namespace RiichiMahjong.UI
 {
@@ -59,15 +58,15 @@ namespace RiichiMahjong.UI
             int count = Enum.GetValues<Sound>().Length;
             _streams = new AudioStream?[count];
 
-            // Generate and cache each sound to user://
-            _streams[(int)Sound.TileDiscard]    = LoadBuilt("snd_clack_hi",  () => BuildTileClack(0.95f));
-            _streams[(int)Sound.TileDraw]       = LoadBuilt("snd_clack_lo",  () => BuildTileClack(0.55f, 0.85f));
-            _streams[(int)Sound.Riichi]         = LoadBuilt("snd_riichi",    BuildRiichi);
-            _streams[(int)Sound.WinTsumo]       = LoadBuilt("snd_win_tsumo", () => BuildWinFanfare(true));
-            _streams[(int)Sound.WinRon]         = LoadBuilt("snd_win_ron",   () => BuildWinFanfare(false));
-            _streams[(int)Sound.ExhaustiveDraw] = LoadBuilt("snd_draw",      BuildExhaustiveDraw);
-            _streams[(int)Sound.GameOver]       = LoadBuilt("snd_gameover",  BuildGameOver);
-            _streams[(int)Sound.ButtonClick]    = LoadBuilt("snd_click",     BuildButtonClick);
+            // Build each sound directly as an AudioStreamWAV (no file I/O needed)
+            _streams[(int)Sound.TileDiscard]    = BuildStream(() => BuildTileClack(0.95f));
+            _streams[(int)Sound.TileDraw]       = BuildStream(() => BuildTileClack(0.55f, 0.85f));
+            _streams[(int)Sound.Riichi]         = BuildStream(BuildRiichi);
+            _streams[(int)Sound.WinTsumo]       = BuildStream(() => BuildWinFanfare(true));
+            _streams[(int)Sound.WinRon]         = BuildStream(() => BuildWinFanfare(false));
+            _streams[(int)Sound.ExhaustiveDraw] = BuildStream(BuildExhaustiveDraw);
+            _streams[(int)Sound.GameOver]       = BuildStream(BuildGameOver);
+            _streams[(int)Sound.ButtonClick]    = BuildStream(BuildButtonClick);
 
             _pool = new AudioStreamPlayer[PoolSize];
             for (int i = 0; i < PoolSize; i++)
@@ -102,93 +101,38 @@ namespace RiichiMahjong.UI
         }
 
         // =====================================================================
-        // WAV persistence helpers
+        // Stream construction
         // =====================================================================
 
         /// <summary>
-        /// Builds a sound via <paramref name="factory"/>, writes it as a WAV
-        /// file to user://, and returns the loaded AudioStream.
-        /// The build is skipped on subsequent launches (file already exists).
+        /// Generates samples via <paramref name="factory"/> and returns an
+        /// AudioStreamWAV populated with the PCM data — no file I/O.
+        /// AudioStreamWAV is not exported as a public C# type in GodotSharp 4.x,
+        /// so we instantiate it via ClassDB and set properties through GodotObject.Set.
+        /// GodotSharp resolves the runtime type to the nearest known C# base (AudioStream).
         /// </summary>
-        private static AudioStream? LoadBuilt(string baseName, Func<float[]> factory)
+        private static AudioStream? BuildStream(Func<float[]> factory)
         {
-            string path = $"user://{baseName}.wav";
+            float[] samples = factory();
 
-            string osPath = ProjectSettings.GlobalizePath(path);
-            if (!File.Exists(osPath))
-            {
-                float[] samples = factory();
-                WriteWav(path, samples);
-            }
-
-            return ResourceLoader.Load<AudioStream>(path);
-        }
-
-        /// <summary>
-        /// Write a float[-1..1] sample array as a 16-bit mono WAV file.
-        /// <paramref name="godotPath"/> is a Godot virtual path (e.g. "user://snd_x.wav");
-        /// it is converted to a real OS path via ProjectSettings.GlobalizePath.
-        /// </summary>
-        private static void WriteWav(string godotPath, float[] samples)
-        {
-            int dataSize = samples.Length * 2;  // 16-bit = 2 bytes/sample
-
-            // Build RIFF/WAV buffer in memory
-            var buf = new byte[44 + dataSize];
-            int p = 0;
-
-            // RIFF chunk descriptor
-            buf[p++] = (byte)'R'; buf[p++] = (byte)'I'; buf[p++] = (byte)'F'; buf[p++] = (byte)'F';
-            WriteU32(buf, ref p, (uint)(36 + dataSize));
-            buf[p++] = (byte)'W'; buf[p++] = (byte)'A'; buf[p++] = (byte)'V'; buf[p++] = (byte)'E';
-
-            // "fmt " sub-chunk  (PCM, mono, 22050 Hz, 16-bit)
-            buf[p++] = (byte)'f'; buf[p++] = (byte)'m'; buf[p++] = (byte)'t'; buf[p++] = (byte)' ';
-            WriteU32(buf, ref p, 16);
-            WriteU16(buf, ref p, 1);                          // AudioFormat = PCM
-            WriteU16(buf, ref p, 1);                          // NumChannels = 1
-            WriteU32(buf, ref p, (uint)SampleRate);
-            WriteU32(buf, ref p, (uint)(SampleRate * 2));     // ByteRate
-            WriteU16(buf, ref p, 2);                          // BlockAlign
-            WriteU16(buf, ref p, 16);                         // BitsPerSample
-
-            // "data" sub-chunk
-            buf[p++] = (byte)'d'; buf[p++] = (byte)'a'; buf[p++] = (byte)'t'; buf[p++] = (byte)'a';
-            WriteU32(buf, ref p, (uint)dataSize);
-
-            // PCM samples (little-endian 16-bit signed)
+            var pcm = new byte[samples.Length * 2];
             for (int i = 0; i < samples.Length; i++)
             {
                 short s16 = (short)(Mathf.Clamp(samples[i], -1f, 1f) * 32_767f);
-                buf[p++] = (byte)( s16        & 0xFF);
-                buf[p++] = (byte)((s16 >> 8)  & 0xFF);
+                pcm[i * 2]     = (byte)( s16       & 0xFF);
+                pcm[i * 2 + 1] = (byte)((s16 >> 8) & 0xFF);
             }
 
-            // Godot's "user://" maps to an OS-specific writable directory.
-            // ProjectSettings.GlobalizePath converts it to an absolute OS path.
-            string osPath = ProjectSettings.GlobalizePath(godotPath);
-            try
-            {
-                File.WriteAllBytes(osPath, buf);
-            }
-            catch (Exception ex)
-            {
-                GD.PrintErr($"SoundManager: cannot write {osPath} — {ex.Message}");
-            }
-        }
+            var variant = ClassDB.Instantiate("AudioStreamWAV");
+            if (variant.VariantType == Variant.Type.Nil) return null;
+            var obj = variant.AsGodotObject();
+            if (obj is not AudioStream audioStream) return null;
 
-        private static void WriteU16(byte[] b, ref int p, ushort v)
-        {
-            b[p++] = (byte)( v       & 0xFF);
-            b[p++] = (byte)((v >> 8) & 0xFF);
-        }
-
-        private static void WriteU32(byte[] b, ref int p, uint v)
-        {
-            b[p++] = (byte)( v        & 0xFF);
-            b[p++] = (byte)((v >>  8) & 0xFF);
-            b[p++] = (byte)((v >> 16) & 0xFF);
-            b[p++] = (byte)((v >> 24) & 0xFF);
+            obj.Set("mix_rate", SampleRate);
+            obj.Set("format",   1);      // AudioStreamWAV.FORMAT_16_BITS
+            obj.Set("stereo",   false);
+            obj.Set("data",     pcm);
+            return audioStream;
         }
 
         // =====================================================================

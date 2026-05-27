@@ -7,6 +7,7 @@
 // All subsequent messages are game actions routed through GameRoom.
 // =============================================================================
 
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -27,6 +28,14 @@ var jsonOpts = new JsonSerializerOptions
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     Converters             = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
 };
+
+// ---- Matchmaking ----------------------------------------------------------
+// pendingMatches maps a connection's PlayerId → GameRoom after the queue fires.
+// Each player's receive loop checks this dict at the top of every iteration so
+// game messages are routed correctly even though no roomJoined was sent first.
+
+var pendingMatches = new ConcurrentDictionary<string, GameRoom>();
+var queue          = new MatchmakingQueue(rooms, pendingMatches);
 
 // ---- Single WebSocket endpoint -------------------------------------------
 
@@ -50,6 +59,10 @@ app.MapGet("/ws", async context =>
         {
             var msg = await conn.ReceiveAsync(context.RequestAborted);
             if (msg == null) break;
+
+            // If this player was matched via matchmaking while waiting, pick up the room now
+            if (room == null && pendingMatches.TryRemove(conn.PlayerId, out var matchedRoom))
+                room = matchedRoom;
 
             if (room == null)
             {
@@ -175,6 +188,29 @@ app.MapGet("/ws", async context =>
                         }
                         break;
 
+                    case ClientMessageType.JoinQueue:
+                        conn.DisplayName = msg.DisplayName ?? "Player";
+                        conn.PlayerUuid  = msg.Uuid ?? conn.PlayerId;
+                        bool added = await queue.JoinAsync(
+                            conn, conn.DisplayName, conn.PlayerUuid);
+                        if (added)
+                        {
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type = ServerMessageType.QueueJoined,
+                            });
+                        }
+                        else
+                        {
+                            await conn.SendErrorAsync("Already in the matchmaking queue.");
+                        }
+                        break;
+
+                    case ClientMessageType.LeaveQueue:
+                        queue.Leave(conn);
+                        // No specific response needed — client just goes back to the connect panel
+                        break;
+
                     default:
                         await conn.SendErrorAsync("Join or create a room first.");
                         break;
@@ -203,6 +239,9 @@ app.MapGet("/ws", async context =>
     finally
     {
         await conn.CloseAsync();
+
+        // Always remove from queue in case the player disconnected while searching
+        queue.Leave(conn);
 
         if (room != null)
         {

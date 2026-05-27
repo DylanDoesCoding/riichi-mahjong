@@ -46,11 +46,17 @@ namespace RiichiMahjong.Core
         public WinMethod     WinMethod       { get; init; }
         public WindDirection SeatWind        { get; init; }   // The winning player's seat
         public WindDirection RoundWind       { get; init; }   // Current round wind (East/South/etc.)
-        public bool          IsRiichi        { get; init; }
-        public bool          IsDoubleRiichi  { get; init; }
-        public bool          IsIppatsu       { get; init; }
-        public bool          IsFirstRoundWin { get; init; }   // For Tenho / Chiho (1st uninterrupted turn)
-        public bool          IsDealer        { get; init; }   // Seat wind == Round wind (East round) AND player is East
+        public bool          IsRiichi                { get; init; }
+        public bool          IsDoubleRiichi          { get; init; }
+        public bool          IsIppatsu               { get; init; }
+        /// <summary>
+        /// How many tiles the winning player has drawn from the live wall this hand.
+        /// 0 = hasn't drawn yet (initial deal for dealer; pre-draw ron for non-dealer).
+        /// </summary>
+        public int           WinnerWallDrawCount     { get; init; }
+        /// <summary>True if no pon/chi/kan claim has been made by any player this hand.</summary>
+        public bool          FirstRoundUninterrupted { get; init; }
+        public bool          IsDealer                { get; init; }   // Seat wind == Round wind (East round) AND player is East
         public int           DoraCount       { get; init; }   // Total dora in winning hand
         public int           UraDoraCount    { get; init; }   // Ura-dora (only if riichi)
         public int           KanDoraCount    { get; init; }   // Kan-dora in winning hand
@@ -78,14 +84,18 @@ namespace RiichiMahjong.Core
     /// <summary>All yaku detected for one hand decomposition.</summary>
     public class YakuCheckResult
     {
-        public List<YakuResult> Yaku       { get; } = new();
-        public bool             IsYakuman  => Yaku.Any(y => y.IsYakuman);
+        public List<YakuResult> Yaku             { get; } = new();
+        public bool             IsYakuman        => Yaku.Any(y => y.IsYakuman);
+        /// <summary>True when the hand qualifies for a double-yakuman variant (26-fan payout).</summary>
+        public bool             IsDoubleYakuman  => Yaku.Any(y => y.IsYakuman && y.Fan >= 26);
 
         /// <summary>
         /// Total fan from yaku only (excludes dora).
-        /// For yakuman hands this returns 13 (the yakuman base).
+        /// Returns 13 for regular yakuman, 26 for double yakuman.
         /// </summary>
-        public int YakuFan => IsYakuman ? 13 : Yaku.Sum(y => y.Fan);
+        public int YakuFan => IsYakuman
+            ? (IsDoubleYakuman ? 26 : 13)
+            : Yaku.Sum(y => y.Fan);
 
         public bool HasYaku => Yaku.Count > 0;
 
@@ -149,19 +159,49 @@ namespace RiichiMahjong.Core
 
         private static void CheckYakuman(HandDecomposition d, YakuContext ctx, YakuCheckResult r)
         {
-            // Blessing of Heaven — dealer wins on initial 14-tile deal (tsumo only)
-            if (ctx.IsDealer && ctx.IsFirstRoundWin && ctx.WinMethod == WinMethod.Tsumo)
+            // Blessing of Heaven (Tenhou) — dealer wins tsumo on initial 14-tile deal.
+            // WallDrawCount == 0 means they have the dealt hand with no wall draw yet.
+            if (ctx.IsDealer
+                && ctx.WinnerWallDrawCount == 0
+                && ctx.FirstRoundUninterrupted
+                && ctx.WinMethod == WinMethod.Tsumo)
                 r.Add("Blessing of Heaven", "Tenho", 13, yakuman: true);
 
-            // Blessing of Earth — non-dealer self-draw win in first uninterrupted turn
-            if (!ctx.IsDealer && ctx.IsFirstRoundWin && ctx.WinMethod == WinMethod.Tsumo)
+            // Blessing of Earth (Chiihou) — non-dealer wins tsumo on their FIRST wall draw.
+            if (!ctx.IsDealer
+                && ctx.WinnerWallDrawCount == 1
+                && ctx.FirstRoundUninterrupted
+                && ctx.WinMethod == WinMethod.Tsumo)
                 r.Add("Blessing of Earth", "Chiho", 13, yakuman: true);
 
-            if (r.IsYakuman) return;  // Tenho/Chiho found — stop here
+            // Blessing of Man (Renhou) — non-dealer wins ron BEFORE their first wall draw.
+            if (!ctx.IsDealer
+                && ctx.WinnerWallDrawCount == 0
+                && ctx.FirstRoundUninterrupted
+                && ctx.WinMethod == WinMethod.Ron)
+                r.Add("Blessing of Man", "Renho", 13, yakuman: true);
+
+            if (r.IsYakuman) return;  // Tenho/Chiho/Renho found — stop here
 
             if (d.IsThirteenOrphans)
             {
-                r.Add("Thirteen Orphans", "Kokushi Musou", 13, yakuman: true);
+                // 13-sided kokushi: the 13-tile waiting hand contained all 13 unique
+                // terminal/honour types. Removing the winning tile leaves exactly
+                // 13 distinct (suit, value) pairs — double yakuman.
+                bool thirteenSided = false;
+                if (ctx.WinningTile != null)
+                {
+                    var kokushiTiles = AllTiles(d).ToList();
+                    int widx = kokushiTiles.FindIndex(
+                        t => t.Suit == ctx.WinningTile.Suit && t.Value == ctx.WinningTile.Value);
+                    if (widx >= 0)
+                    {
+                        kokushiTiles.RemoveAt(widx);
+                        thirteenSided = kokushiTiles.Count == 13
+                            && kokushiTiles.Select(t => (t.Suit, t.Value)).Distinct().Count() == 13;
+                    }
+                }
+                r.Add("Thirteen Orphans", "Kokushi Musou", thirteenSided ? 26 : 13, yakuman: true);
                 return;
             }
 
@@ -170,11 +210,14 @@ namespace RiichiMahjong.Core
 
             // Four Concealed Pungs — four concealed triplets/quads
             // On ron: only valid if the pair is the single wait (the winning tile completes the pair)
+            // Pair-wait (tanki) = double yakuman (Suu Ankou Tanki)
             bool fourAnkou = allMelds.Count(IsConcealedPon) == 4;
             if (fourAnkou)
             {
                 bool pairWait = ctx.WinningTile != null && ctx.WinningTile == d.Pair.Lead;
-                if (ctx.WinMethod == WinMethod.Tsumo || pairWait)
+                if (pairWait)
+                    r.Add("Four Concealed Pungs — Pair Wait", "Suu Ankou Tanki", 26, yakuman: true);
+                else if (ctx.WinMethod == WinMethod.Tsumo)
                     r.Add("Four Concealed Pungs", "Suu Ankou", 13, yakuman: true);
             }
 
@@ -229,11 +272,27 @@ namespace RiichiMahjong.Core
             if (suit is TileSuit.Wind or TileSuit.Dragon) return;
             if (allTiles.Any(t => t.Suit != suit)) return;
 
-            // Check the base pattern: 1112345678999 — sort values and verify
             var vals = allTiles.Select(t => t.Value).OrderBy(v => v).ToList();
             var required = new List<int> { 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9 };
 
-            // Remove one tile (the extra) and see if remainder matches required
+            // Pure nine gates (double yakuman): the winning tile is the "extra" tile,
+            // meaning the 13-tile waiting hand was exactly 1112345678999.
+            if (ctx.WinningTile?.Suit == suit)
+            {
+                var withoutWin = new List<int>(vals);
+                int widx = withoutWin.IndexOf(ctx.WinningTile.Value);
+                if (widx >= 0)
+                {
+                    withoutWin.RemoveAt(widx);
+                    if (withoutWin.SequenceEqual(required))
+                    {
+                        r.Add("Nine Gates — Pure", "Chuuren Pooto (Pure)", 26, yakuman: true);
+                        return;
+                    }
+                }
+            }
+
+            // Regular nine gates: remove one tile (the extra) and see if remainder matches
             for (int skip = 0; skip < vals.Count; skip++)
             {
                 var candidate = vals.Where((_, i) => i != skip).ToList();
@@ -282,8 +341,12 @@ namespace RiichiMahjong.Core
 
         private static void CheckMenzenTsumo(YakuContext ctx, bool open, YakuCheckResult r)
         {
-            // Menzen Tsumo: self-draw on a fully concealed hand
-            if (!open && ctx.WinMethod == WinMethod.Tsumo)
+            // Menzen Tsumo: self-draw on a fully concealed hand.
+            // Applies to standard Tsumo, Rinshan (after kan), and Haitei (last tile).
+            bool isSelfDraw = ctx.WinMethod is WinMethod.Tsumo
+                                           or WinMethod.Rinshan
+                                           or WinMethod.Haitei;
+            if (!open && isSelfDraw)
                 r.Add("Menzen Tsumo", "Menzen Tsumo", 1);
         }
 
@@ -382,12 +445,15 @@ namespace RiichiMahjong.Core
         private static void CheckChanta(HandDecomposition d, bool open, YakuCheckResult r)
         {
             // Outside Hand: every set and the pair contain a terminal or honour;
-            // must have at least one sequence (chi)
+            // must have at least one sequence (chi).
+            // Junchan (terminals in ALL sets, no honours required) supersedes Chanta —
+            // suppress Chanta when every meld already contains a terminal.
             var allMelds = AllMelds(d);
             bool allContainTerminalOrHonour = allMelds.All(m =>
                 m.Tiles.Any(t => t.IsTerminalOrHonour));
-            bool hasChi = d.Sets.Any(s => s.Type == MeldType.Chi);
-            if (allContainTerminalOrHonour && hasChi)
+            bool hasChi    = d.Sets.Any(s => s.Type == MeldType.Chi);
+            bool isJunchan = allMelds.All(m => m.Tiles.Any(t => t.IsTerminal));
+            if (allContainTerminalOrHonour && hasChi && !isJunchan)
                 r.Add("Outside Hand", "Chanta", open ? 1 : 2);
         }
 

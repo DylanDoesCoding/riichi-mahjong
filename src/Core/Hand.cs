@@ -177,6 +177,62 @@ namespace RiichiMahjong.Core
 			return true;
 		}
 
+		/// <summary>
+		/// During riichi, check whether declaring an ankan on <paramref name="kanTile"/>
+		/// is legal — i.e. the wait set does not change after the kan.
+		///
+		/// The method simulates the kan non-destructively:
+		///   1. Temporarily strips the drawn tile to get the locked 13-tile tenpai hand.
+		///   2. Records the current wait set (beforeWaits).
+		///   3. Removes the 3 remaining copies and adds a KanClosed meld.
+		///   4. Records the new wait set (afterWaits).
+		///   5. Undoes every change.
+		///   6. Returns true iff both wait sets are identical.
+		/// </summary>
+		public bool CanRiichiAnkan(Tile kanTile)
+		{
+			// Must have all 4 copies present
+			if (_closedTiles.Count(t => t == kanTile) < 4) return false;
+
+			// ── Step 1: strip drawn tile to get locked 13-tile tenpai hand ──────
+			var drawn = DrawnTile;
+			int drawnIdx = drawn != null ? _closedTiles.LastIndexOf(drawn) : -1;
+			if (drawnIdx >= 0) _closedTiles.RemoveAt(drawnIdx);
+
+			// ── Step 2: before-waits ─────────────────────────────────────────────
+			var beforeWaits = GetWaitingTiles()
+				.Select(t => (t.Suit, t.Value))
+				.OrderBy(x => x.Suit).ThenBy(x => x.Value)
+				.ToList();
+
+			// ── Step 3: simulate ankan ───────────────────────────────────────────
+			var removed = new List<Tile>(3);
+			for (int i = _closedTiles.Count - 1; i >= 0 && removed.Count < 3; i--)
+			{
+				if (_closedTiles[i] == kanTile)
+				{
+					removed.Add(_closedTiles[i]);
+					_closedTiles.RemoveAt(i);
+				}
+			}
+			_openMelds.Add(Meld.KanClosed(kanTile));
+
+			// ── Step 4: after-waits (10 closed + 1 KanClosed → openMentsu=1) ────
+			var afterWaits = GetWaitingTiles()
+				.Select(t => (t.Suit, t.Value))
+				.OrderBy(x => x.Suit).ThenBy(x => x.Value)
+				.ToList();
+
+			// ── Step 5: undo ─────────────────────────────────────────────────────
+			_openMelds.RemoveAt(_openMelds.Count - 1);
+			foreach (var t in removed) _closedTiles.Add(t);
+			if (drawnIdx >= 0 && drawn != null) _closedTiles.Add(drawn);
+			// DrawnTile property is unchanged — no setter call needed.
+
+			// ── Step 6: compare ──────────────────────────────────────────────────
+			return beforeWaits.SequenceEqual(afterWaits);
+		}
+
 		// ---- Riichi ----------------------------------------------------------
 
 		/// <summary>

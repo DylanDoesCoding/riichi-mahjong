@@ -261,9 +261,10 @@ namespace RiichiServer
             {
                 await SendToSeatAsync(s, new ServerMessage
                 {
-                    Type      = ServerMessageType.GameStarted,
-                    YourSeat  = s,
-                    Names     = _names,
+                    Type     = ServerMessageType.GameStarted,
+                    YourSeat = s,
+                    Names    = _names,
+                    Code     = Code,   // included so matchmade players can rejoin without a prior roomJoined
                 });
             }
 
@@ -325,6 +326,10 @@ namespace RiichiServer
                 case ClientMessageType.NextHand:
                     if (IsHost(conn)) _nextHandTcs?.TrySetResult(true);
                     break;
+
+                case ClientMessageType.Kyuushu:
+                    await HandleKyuushuAsync(seat);
+                    break;
             }
         }
 
@@ -368,6 +373,19 @@ namespace RiichiServer
             if (ok) await WaitForNextHandAsync();
         }
 
+        private async Task HandleKyuushuAsync(int seat)
+        {
+            if (_game == null) return;
+
+            await _gameSem.WaitAsync();
+            bool ok;
+            try   { ok = _game.DeclareKyuushuKyuuhai(seat); }
+            finally { _gameSem.Release(); }
+
+            await FlushOutboxAsync();
+            if (ok) await WaitForNextHandAsync();
+        }
+
         private async Task HandleKanAsync(int seat, TileDto? tileDto)
         {
             if (_game == null) return;
@@ -378,25 +396,61 @@ namespace RiichiServer
             {
                 if (tileDto != null)
                 {
+                    // Ankan or kakan on the player's own turn.
+                    // Client sends the specific tile; try ankan first (no chankan window),
+                    // then kakan (which opens the chankan window for opponents).
                     var tile = tileDto.FindIn(_game.Players[seat].Hand.ClosedTiles);
                     if (tile != null)
-                    {
-                        // Try ankan first, then kakan
                         ok = _game.DeclareAnkan(seat, tile)
                           || _game.DeclareKakan(seat, tile);
-                    }
+                }
+                else if (_game.Phase == TurnPhase.ClaimWindow)
+                {
+                    // Daiminkan: claiming the pending discard during a claim window.
+                    ok = _game.ClaimDaiminkan(seat);
                 }
                 else
                 {
-                    // Daiminkan during claim window
-                    ok = _game.ClaimDaiminkan(seat);
+                    // Fallback: client sent no tile during action phase.
+                    // Scan the hand and attempt the first valid kan.
+                    var hand = _game.Players[seat].Hand;
+                    // Kakan (pon extension) takes priority because it opens a chankan window.
+                    foreach (var meld in hand.OpenMelds)
+                    {
+                        if (meld.Type == MeldType.Pon)
+                        {
+                            var fourth = hand.ClosedTiles.FirstOrDefault(t => t == meld.Lead);
+                            if (fourth != null && _game.DeclareKakan(seat, fourth)) { ok = true; break; }
+                        }
+                    }
+                    // Ankan: four identical tiles in closed hand.
+                    if (!ok)
+                    {
+                        var counts = hand.ClosedTiles
+                            .GroupBy(t => t.TileId)
+                            .Where(g => g.Count() >= 4)
+                            .Select(g => g.First())
+                            .FirstOrDefault();
+                        if (counts != null)
+                            ok = _game.DeclareAnkan(seat, counts);
+                    }
                 }
             }
             finally { _gameSem.Release(); }
 
             await FlushOutboxAsync();
-            if (ok && _game.Phase == TurnPhase.DrawPhase)
-                await AdvanceDrawPhaseAsync();
+
+            if (!ok) return;
+
+            // After ankan/daiminkan the rinshan tile is drawn inside GameState and
+            // OnTileDrawn fires synchronously → already in the outbox.  Game is in
+            // ActionPhase, not DrawPhase, so the human client drives the next action
+            // after receiving the tileDrawn message.
+            // After kakan the chankan window is open — handle it here.
+            if (_game.Phase == TurnPhase.ClaimWindow && _game.IsChankanWindow)
+                await HandleClaimWindowAsync();
+            else if (_game.Phase == TurnPhase.DrawPhase)
+                await AdvanceDrawPhaseAsync();   // safety net — should not normally be reached
         }
 
         // =====================================================================
@@ -471,6 +525,8 @@ namespace RiichiServer
             var result = new List<(int, bool, bool, bool, bool)>();
             if (_game == null) return result;
 
+            bool isChankan = _game.IsChankanWindow;
+
             for (int s = 0; s < MaxPlayers; s++)
             {
                 if (_connections[s] == null) continue;   // CPU seat
@@ -482,12 +538,14 @@ namespace RiichiServer
                 bool canRon = !_game.Players[s].Furiten.IsFuriten
                            && hand.IsTenpai()
                            && hand.IsWaitingFor(tile);
-                bool canPon = !hand.IsRiichi
+
+                // Chankan window: only Ron is available (robbing the kan)
+                bool canPon = !isChankan && !hand.IsRiichi
                            && hand.ClosedTiles.Count(t => t == tile) >= 2;
-                bool canChi = discarder == leftOf
+                bool canChi = !isChankan && discarder == leftOf
                            && !hand.IsRiichi
                            && _ai[s].BestChiCombination(tile, hand) != null;
-                bool canKan = !hand.IsRiichi
+                bool canKan = !isChankan && !hand.IsRiichi
                            && hand.ClosedTiles.Count(t => t == tile) >= 3
                            && _game.Wall.KanCount < 4;
 
@@ -508,8 +566,25 @@ namespace RiichiServer
                 switch (claimType)
                 {
                     case "ron":
-                        ok = _game.ClaimRon(seat);
+                    {
+                        // Include any AI seats that simultaneously want to ron on the same tile.
+                        // This lets ClaimRonMulti detect double-ron and sanchahou correctly.
+                        // Other human seats are skipped — they had the claim window and can
+                        // respond separately; forcing their ron would bypass their choice.
+                        var candidates = new List<int> { seat };
+                        int discarderIdx = _game.DiscarderIndex;
+                        for (int i = 1; i <= 3; i++)
+                        {
+                            int s = (discarderIdx + i) % 4;
+                            if (s == seat) continue;               // already included
+                            if (_connections[s] != null) continue; // other human seat
+                            var h = _game.Players[s].Hand;
+                            if (_ai[s].ShouldClaimRon(pendingTile, h, _game, s))
+                                candidates.Add(s);
+                        }
+                        ok = _game.ClaimRonMulti(candidates.ToArray());
                         break;
+                    }
                     case "pon":
                         ok = _game.ClaimPon(seat);
                         break;
@@ -554,18 +629,24 @@ namespace RiichiServer
             int discarder = _game.DiscarderIndex;
 
             // Priority: Ron > Daiminkan > Pon > Chi
-            for (int i = 1; i <= 3; i++)
+            //
+            // Ron: collect ALL AI candidates first so ClaimRonMulti can detect
+            // double-ron (2 winners split pot) and sanchahou (3 winners → abort).
             {
-                int s = (discarder + i) % 4;
-                if (_connections[s] != null) continue;   // human seat
-
-                var hand = _game.Players[s].Hand;
-
-                if (_ai[s].ShouldClaimRon(tile, hand, _game, s))
+                var ronCandidates = new List<int>();
+                for (int i = 1; i <= 3; i++)
+                {
+                    int s = (discarder + i) % 4;
+                    if (_connections[s] != null) continue;  // human seat
+                    var hand = _game.Players[s].Hand;
+                    if (_ai[s].ShouldClaimRon(tile, hand, _game, s))
+                        ronCandidates.Add(s);
+                }
+                if (ronCandidates.Count > 0)
                 {
                     await _gameSem.WaitAsync();
                     bool ok;
-                    try   { ok = _game.ClaimRon(s); }
+                    try   { ok = _game.ClaimRonMulti(ronCandidates.ToArray()); }
                     finally { _gameSem.Release(); }
 
                     await FlushOutboxAsync();
@@ -626,13 +707,49 @@ namespace RiichiServer
                 }
             }
 
-            // Nobody claimed — pass all
+            // Nobody claimed
+            bool wasChankan;
             await _gameSem.WaitAsync();
-            try   { _game.PassAllClaims(); }
+            try
+            {
+                wasChankan = _game.IsChankanWindow;
+                if (wasChankan) _game.ResolveChankan();  // draw rinshan, stay in ActionPhase
+                else            _game.PassAllClaims();
+            }
             finally { _gameSem.Release(); }
 
             await FlushOutboxAsync();
-            await AdvanceDrawPhaseAsync();
+
+            if (wasChankan)
+                await AdvanceFromActionPhaseAsync();   // kakan player acts on rinshan tile
+            else
+            {
+                await NotifyTemporaryFuritenAsync();
+                await AdvanceDrawPhaseAsync();
+            }
+        }
+
+        /// <summary>
+        /// After PassAllClaims(), send a "furitenChanged" message to any human
+        /// seat that is now in temporary furiten (they were in tenpai but passed
+        /// on an opponent's discard that would have completed their hand).
+        /// Each player only receives the message once — when they enter the state.
+        /// The client clears the flag when that player's next tileDrawn arrives.
+        /// </summary>
+        private async Task NotifyTemporaryFuritenAsync()
+        {
+            if (_game == null) return;
+            for (int s = 0; s < MaxPlayers; s++)
+            {
+                if (_connections[s] == null) continue;  // CPU seat — no socket to notify
+                if (!_game.Players[s].Furiten.IsTemporaryFuriten) continue;
+
+                await SendToSeatAsync(s, new ServerMessage
+                {
+                    Type               = ServerMessageType.FuritenChanged,
+                    IsTemporaryFuriten = true,
+                });
+            }
         }
 
         // =====================================================================
@@ -699,8 +816,18 @@ namespace RiichiServer
                     if (_game.DeclareTsumo()) { advanced = true; goto done; }
                 }
 
-                // Ankan? (AI decides via existing helper)
-                if (!hand.IsRiichi)
+                // Ankan? (riichi ankan allowed if waits don't change)
+                if (hand.IsRiichi)
+                {
+                    // In riichi the only legal ankan is the drawn tile completing a set of 4
+                    // without altering the wait set.
+                    var drawn = hand.DrawnTile;
+                    if (drawn != null && _game.Wall.KanCount < 4 && hand.CanRiichiAnkan(drawn))
+                    {
+                        if (_game.DeclareAnkan(seat, drawn)) { advanced = true; goto done; }
+                    }
+                }
+                else
                 {
                     var ankanTile = _ai[seat].GetAnkanTile(hand, _game, seat);
                     if (ankanTile != null && _game.Wall.KanCount < 4)
@@ -720,14 +847,20 @@ namespace RiichiServer
                     }
                 }
 
-                // Plain discard
+                // Plain discard (respect kuikae — cannot discard the just-claimed chi tile
+                // or its ryanmen equivalent immediately after a chi call)
                 {
                     var discard = _ai[seat].ChooseDiscard(hand, _game, seat);
-                    if (discard != null)
+                    bool ok = discard != null && _game.Discard(seat, discard);
+                    if (!ok)
                     {
-                        _game.Discard(seat, discard);
-                        advanced = true;
+                        // Preferred pick was kuikae-forbidden (or null); fall back to first legal tile
+                        foreach (var t in hand.ClosedTiles)
+                        {
+                            if (_game.Discard(seat, t)) { ok = true; break; }
+                        }
                     }
+                    if (ok) advanced = true;
                 }
 
                 done: ;
@@ -739,9 +872,11 @@ namespace RiichiServer
             if (!advanced) return;
 
             if (_game.Phase == TurnPhase.ClaimWindow)
-                await HandleClaimWindowAsync();
+                await HandleClaimWindowAsync();   // discard or chankan claim window
             else if (_game.Phase == TurnPhase.DrawPhase)
                 await AdvanceDrawPhaseAsync();
+            else if (_game.Phase == TurnPhase.ActionPhase)
+                await AdvanceFromActionPhaseAsync();   // CPU ankan/daiminkan — same player discards
             else if (_game.Phase == TurnPhase.HandEnd)
                 await WaitForNextHandAsync();
         }
@@ -812,6 +947,13 @@ namespace RiichiServer
 
             var drawnTile = _game.Players[seat].Hand.DrawnTile;
 
+            // A rinshan draw follows a kan declaration — include the updated dora
+            // indicator list so every client sees the newly-flipped indicator
+            // (the kan revealed it before the chankan window was resolved).
+            List<TileDto>? doraUpdate = _game.IsRinshanDraw
+                ? _game.Wall.DoraIndicators.Select(TileDto.From).ToList()
+                : null;
+
             for (int s = 0; s < MaxPlayers; s++)
             {
                 if (s == seat)
@@ -819,9 +961,10 @@ namespace RiichiServer
                     // Send actual tile to the player who drew it
                     _outbox.Add((s, new ServerMessage
                     {
-                        Type = ServerMessageType.TileDrawn,
-                        Seat = seat,
-                        Tile = drawnTile != null ? TileDto.From(drawnTile) : null,
+                        Type           = ServerMessageType.TileDrawn,
+                        Seat           = seat,
+                        Tile           = drawnTile != null ? TileDto.From(drawnTile) : null,
+                        DoraIndicators = doraUpdate,
                     }));
                 }
                 else
@@ -829,9 +972,10 @@ namespace RiichiServer
                     // Everyone else just sees a face-down draw (count goes up)
                     _outbox.Add((s, new ServerMessage
                     {
-                        Type = ServerMessageType.TileDrawn,
-                        Seat = seat,
-                        Tile = null,   // null = hidden draw
+                        Type           = ServerMessageType.TileDrawn,
+                        Seat           = seat,
+                        Tile           = null,   // null = hidden draw
+                        DoraIndicators = doraUpdate,
                     }));
                 }
             }
@@ -932,6 +1076,22 @@ namespace RiichiServer
                 {
                     msg.DoraCount    = _game.LastWinContext.DoraCount;
                     msg.UraDoraCount = _game.LastWinContext.UraDoraCount;
+                }
+
+                // For exhaustive draw, reveal tenpai hands and send waiting tiles
+                if (reason == HandEndReason.ExhaustiveDraw)
+                {
+                    var tenpaiSet = new HashSet<int>(winners);
+                    msg.RevealedHands = Enumerable.Range(0, MaxPlayers)
+                        .Select(seat => tenpaiSet.Contains(seat)
+                            ? _game.Players[seat].Hand.ClosedTiles.Select(TileDto.From).ToList()
+                            : new List<TileDto>())
+                        .ToList();
+                    msg.TenpaiWaits = Enumerable.Range(0, MaxPlayers)
+                        .Select(seat => tenpaiSet.Contains(seat)
+                            ? _game.Players[seat].Hand.GetWaitingTiles().Select(TileDto.From).ToList()
+                            : new List<TileDto>())
+                        .ToList();
                 }
 
                 _outbox.Add((s, msg));

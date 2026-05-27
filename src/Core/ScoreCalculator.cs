@@ -37,12 +37,13 @@ namespace RiichiMahjong.Core
     /// <summary>The limit hand classification based on fan count.</summary>
     public enum HandLimit
     {
-        None,       // Under 5 fan — use fu-based calculation
-        Mangan,     // 5 fan
-        Haneman,    // 6–7 fan
-        Baiman,     // 8–10 fan
-        Sanbaiman,  // 11–12 fan
-        Yakuman,    // 13 fan (or yakuman)
+        None,           // Under 5 fan — use fu-based calculation
+        Mangan,         // 5 fan
+        Haneman,        // 6–7 fan
+        Baiman,         // 8–10 fan
+        Sanbaiman,      // 11–12 fan
+        Yakuman,        // 13 fan (or yakuman)
+        DoubleYakuman,  // 26 fan (double yakuman)
     }
 
     /// <summary>Complete score calculation result for a winning hand.</summary>
@@ -82,7 +83,8 @@ namespace RiichiMahjong.Core
         private const int HanemanBase   = 3000;
         private const int BaimanBase    = 4000;
         private const int SanbaimanBase = 6000;
-        private const int YakumanBase   = 8000;
+        private const int YakumanBase        = 8000;
+        private const int DoubleYakumanBase  = 16000;
 
         /// <summary>
         /// Full scoring calculation for a winning hand.
@@ -115,7 +117,7 @@ namespace RiichiMahjong.Core
             int fu    = result.Fu.Total;
 
             // ---- Step 3: Limit classification ----
-            result.Limit = ClassifyLimit(result.TotalFan, yakuResult.IsYakuman);
+            result.Limit = ClassifyLimit(result.TotalFan, yakuResult.IsYakuman, yakuResult.IsDoubleYakuman);
 
             // ---- Step 4 & 5: Payments ----
             if (result.Limit == HandLimit.None)
@@ -254,9 +256,10 @@ namespace RiichiMahjong.Core
         // Payment calculations
         // =====================================================================
 
-        private static HandLimit ClassifyLimit(int totalFan, bool isYakuman)
+        private static HandLimit ClassifyLimit(int totalFan, bool isYakuman, bool isDoubleYakuman = false)
         {
-            if (isYakuman || totalFan >= 13) return HandLimit.Yakuman;
+            if (isDoubleYakuman || totalFan >= 26) return HandLimit.DoubleYakuman;
+            if (isYakuman       || totalFan >= 13) return HandLimit.Yakuman;
             return totalFan switch
             {
                 >= 11 => HandLimit.Sanbaiman,
@@ -299,11 +302,12 @@ namespace RiichiMahjong.Core
         {
             int basic = result.Limit switch
             {
-                HandLimit.Mangan    => ManganBase,
-                HandLimit.Haneman   => HanemanBase,
-                HandLimit.Baiman    => BaimanBase,
-                HandLimit.Sanbaiman => SanbaimanBase,
-                HandLimit.Yakuman   => YakumanBase,
+                HandLimit.Mangan        => ManganBase,
+                HandLimit.Haneman       => HanemanBase,
+                HandLimit.Baiman        => BaimanBase,
+                HandLimit.Sanbaiman     => SanbaimanBase,
+                HandLimit.Yakuman       => YakumanBase,
+                HandLimit.DoubleYakuman => DoubleYakumanBase,
                 _ => ManganBase,
             };
 
@@ -331,12 +335,13 @@ namespace RiichiMahjong.Core
         /// <summary>Human-readable limit name for display.</summary>
         public static string LimitName(HandLimit limit) => limit switch
         {
-            HandLimit.Mangan    => "Mangan",
-            HandLimit.Haneman   => "Haneman",
-            HandLimit.Baiman    => "Baiman",
-            HandLimit.Sanbaiman => "Sanbaiman",
-            HandLimit.Yakuman   => "Yakuman",
-            _                   => "",
+            HandLimit.Mangan        => "Mangan",
+            HandLimit.Haneman       => "Haneman",
+            HandLimit.Baiman        => "Baiman",
+            HandLimit.Sanbaiman     => "Sanbaiman",
+            HandLimit.Yakuman       => "Yakuman",
+            HandLimit.DoubleYakuman => "Double Yakuman",
+            _                       => "",
         };
     }
 }

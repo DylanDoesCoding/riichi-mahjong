@@ -30,6 +30,7 @@ namespace RiichiMahjong.UI
         [Signal] public delegate void ChiPressedEventHandler();
         [Signal] public delegate void KanPressedEventHandler();
         [Signal] public delegate void PassPressedEventHandler();
+        [Signal] public delegate void KyuushuPressedEventHandler();
         [Signal] public delegate void NextHandPressedEventHandler();
         [Signal] public delegate void MenuPressedEventHandler();
         [Signal] public delegate void ScoringContinuePressedEventHandler();   // kept for compat
@@ -52,14 +53,15 @@ namespace RiichiMahjong.UI
         private Control[] _discardPools = null!;
 
         // Action buttons
-        private Button _btnRiichi = null!;
-        private Button _btnTsumo  = null!;
-        private Button _btnRon    = null!;
-        private Button _btnPon    = null!;
-        private Button _btnChi    = null!;
-        private Button _btnKan    = null!;
-        private Button _btnPass   = null!;
-        private Button _btnNext   = null!;
+        private Button _btnRiichi   = null!;
+        private Button _btnTsumo    = null!;
+        private Button _btnRon      = null!;
+        private Button _btnPon      = null!;
+        private Button _btnChi      = null!;
+        private Button _btnKan      = null!;
+        private Button _btnPass     = null!;
+        private Button _btnNext     = null!;
+        private Button _btnKyuushu  = null!;
 
         // Status bar
         private Label _statusLabel = null!;
@@ -80,6 +82,12 @@ namespace RiichiMahjong.UI
         // Furiten warning — human player panel only
         private Label _furitenLabel = null!;
 
+        // Win-call overlay — "RON!" / "TSUMO!" / "RIICHI!" slam animation
+        private ColorRect _winCallBackdrop   = null!;
+        private Label     _winCallText       = null!;
+        private Label     _winCallName       = null!;
+        private Tween?    _callOverlayTween  = null;  // so we can kill any in-flight animation
+
         // Scoring overlay — shown after a Tsumo or Ron win, and reused for Game Over
         private ColorRect     _scoringBackdrop   = null!;
         private Panel         _scoringPanel      = null!;
@@ -92,6 +100,10 @@ namespace RiichiMahjong.UI
         private VBoxContainer _scoringAllScores  = null!;  // Per-player point totals
         private Button        _scoringNextBtn    = null!;  // Hidden on game-over screen
         private Button        _scoringMenuBtn    = null!;
+
+        // Ryuukyoku overlay — shown after an exhaustive draw (tenpai reveal)
+        private ColorRect?     _ryuukyokuBackdrop = null;
+        private VBoxContainer? _ryuukyokuContent  = null;  // rebuilt each exhaustive draw
 
         // =====================================================================
         // Godot lifecycle
@@ -293,15 +305,16 @@ namespace RiichiMahjong.UI
 
         // ---- Button visibility ----------------------------------------------
 
-        public void ShowActionButtons(bool canTsumo, bool canRiichi, bool canKan = false)
+        public void ShowActionButtons(bool canTsumo, bool canRiichi, bool canKan = false, bool canKyuushu = false)
         {
-            _btnRiichi.Visible = canRiichi;
-            _btnTsumo.Visible  = canTsumo;
-            _btnKan.Visible    = canKan;
-            _btnRon.Visible    = false;
-            _btnPon.Visible    = false;
-            _btnChi.Visible    = false;
-            _btnPass.Visible   = false;
+            _btnRiichi.Visible   = canRiichi;
+            _btnTsumo.Visible    = canTsumo;
+            _btnKan.Visible      = canKan;
+            _btnKyuushu.Visible  = canKyuushu;
+            _btnRon.Visible      = false;
+            _btnPon.Visible      = false;
+            _btnChi.Visible      = false;
+            _btnPass.Visible     = false;
         }
 
         public void ShowClaimButtons(bool canRon, bool canPon, bool canChi, bool canKan = false)
@@ -317,13 +330,14 @@ namespace RiichiMahjong.UI
 
         public void HideActionButtons()
         {
-            _btnRiichi.Visible = false;
-            _btnTsumo.Visible  = false;
-            _btnRon.Visible    = false;
-            _btnPon.Visible    = false;
-            _btnChi.Visible    = false;
-            _btnKan.Visible    = false;
-            _btnPass.Visible   = false;
+            _btnRiichi.Visible  = false;
+            _btnTsumo.Visible   = false;
+            _btnRon.Visible     = false;
+            _btnPon.Visible     = false;
+            _btnChi.Visible     = false;
+            _btnKan.Visible     = false;
+            _btnPass.Visible    = false;
+            _btnKyuushu.Visible = false;
         }
 
         public void HideClaimButtons()
@@ -415,6 +429,12 @@ namespace RiichiMahjong.UI
 
             // ---- Countdown bar (above action buttons, hidden until network turn) ----
             BuildCountdownBar();
+
+            // ---- Win-call overlay (RON!/TSUMO!) — above game, below scoring panel ----
+            BuildWinCallOverlay();
+
+            // ---- Ryuukyoku panel — above game, below scoring/win overlays ----
+            BuildRyuukyokuPanel();
 
             // ---- Win scoring overlay — MUST be added last so it renders on top ----
             BuildScoringPanel();
@@ -677,23 +697,25 @@ namespace RiichiMahjong.UI
             bar.Alignment    = BoxContainer.AlignmentMode.Center;
             bar.AddThemeConstantOverride("separation", 8);
 
-            _btnRiichi = MakeButton("RIICHI", new Color(0.8f, 0.2f, 0.2f));
-            _btnTsumo  = MakeButton("TSUMO",  new Color(0.2f, 0.6f, 0.2f));
-            _btnRon    = MakeButton("RON",    new Color(0.8f, 0.4f, 0.1f));
-            _btnPon    = MakeButton("PON",    new Color(0.2f, 0.4f, 0.8f));
-            _btnChi    = MakeButton("CHI",    new Color(0.5f, 0.2f, 0.7f));
-            _btnKan    = MakeButton("KAN",    new Color(0.6f, 0.3f, 0.0f));
-            _btnPass   = MakeButton("PASS",   new Color(0.4f, 0.4f, 0.4f));
-            _btnNext   = MakeButton("NEXT HAND →", new Color(0.2f, 0.6f, 0.4f));
+            _btnRiichi  = MakeButton("RIICHI",    new Color(0.8f, 0.2f, 0.2f));
+            _btnTsumo   = MakeButton("TSUMO",     new Color(0.2f, 0.6f, 0.2f));
+            _btnRon     = MakeButton("RON",       new Color(0.8f, 0.4f, 0.1f));
+            _btnPon     = MakeButton("PON",       new Color(0.2f, 0.4f, 0.8f));
+            _btnChi     = MakeButton("CHI",       new Color(0.5f, 0.2f, 0.7f));
+            _btnKan     = MakeButton("KAN",       new Color(0.6f, 0.3f, 0.0f));
+            _btnPass    = MakeButton("PASS",      new Color(0.4f, 0.4f, 0.4f));
+            _btnNext    = MakeButton("NEXT HAND →", new Color(0.2f, 0.6f, 0.4f));
+            _btnKyuushu = MakeButton("KYUUSHU",   new Color(0.3f, 0.5f, 0.6f));
 
-            _btnRiichi.Pressed += () => EmitSignal(SignalName.RiichiPressed);
-            _btnTsumo.Pressed  += () => EmitSignal(SignalName.TsumoPressed);
-            _btnRon.Pressed    += () => EmitSignal(SignalName.RonPressed);
-            _btnPon.Pressed    += () => EmitSignal(SignalName.PonPressed);
-            _btnChi.Pressed    += () => EmitSignal(SignalName.ChiPressed);
-            _btnKan.Pressed    += () => EmitSignal(SignalName.KanPressed);
-            _btnPass.Pressed   += () => EmitSignal(SignalName.PassPressed);
-            _btnNext.Pressed   += () => EmitSignal(SignalName.NextHandPressed);
+            _btnRiichi.Pressed   += () => EmitSignal(SignalName.RiichiPressed);
+            _btnTsumo.Pressed    += () => EmitSignal(SignalName.TsumoPressed);
+            _btnRon.Pressed      += () => EmitSignal(SignalName.RonPressed);
+            _btnPon.Pressed      += () => EmitSignal(SignalName.PonPressed);
+            _btnChi.Pressed      += () => EmitSignal(SignalName.ChiPressed);
+            _btnKan.Pressed      += () => EmitSignal(SignalName.KanPressed);
+            _btnPass.Pressed     += () => EmitSignal(SignalName.PassPressed);
+            _btnNext.Pressed     += () => EmitSignal(SignalName.NextHandPressed);
+            _btnKyuushu.Pressed  += () => EmitSignal(SignalName.KyuushuPressed);
 
             bar.AddChild(_btnRiichi);
             bar.AddChild(_btnTsumo);
@@ -702,6 +724,7 @@ namespace RiichiMahjong.UI
             bar.AddChild(_btnChi);
             bar.AddChild(_btnKan);
             bar.AddChild(_btnPass);
+            bar.AddChild(_btnKyuushu);
             bar.AddChild(_btnNext);
 
             HideActionButtons();
@@ -837,6 +860,355 @@ namespace RiichiMahjong.UI
             _waitsPopup.Visible = false;
             foreach (var child in _waitsRow.GetChildren())
                 child.QueueFree();
+        }
+
+        private void BuildWinCallOverlay()
+        {
+            // Full-screen dark backdrop — sits above game, below scoring panel
+            _winCallBackdrop = new ColorRect();
+            _winCallBackdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _winCallBackdrop.Color       = new Color(0f, 0f, 0f, 0.55f);
+            _winCallBackdrop.MouseFilter = MouseFilterEnum.Stop;
+            _winCallBackdrop.Visible     = false;
+
+            // Centre container
+            var centre = new VBoxContainer();
+            centre.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+            centre.OffsetLeft   = -350;
+            centre.OffsetTop    = -120;
+            centre.OffsetRight  =  350;
+            centre.OffsetBottom =  120;
+            centre.AddThemeConstantOverride("separation", 14);
+            centre.Alignment = BoxContainer.AlignmentMode.Center;
+
+            // Big call text ("RON!" / "TSUMO!")
+            _winCallText = new Label();
+            _winCallText.HorizontalAlignment = HorizontalAlignment.Center;
+            _winCallText.AddThemeFontSizeOverride("font_size", 88);
+
+            var textSettings = new LabelSettings();
+            textSettings.OutlineSize  = 6;
+            textSettings.OutlineColor = new Color(1f, 1f, 1f, 1f);
+            textSettings.ShadowSize   = 4;
+            textSettings.ShadowColor  = new Color(0f, 0f, 0f, 0.70f);
+            textSettings.ShadowOffset = new Vector2(3, 3);
+            _winCallText.LabelSettings = textSettings;
+
+            // Player name subtitle
+            _winCallName = new Label();
+            _winCallName.HorizontalAlignment = HorizontalAlignment.Center;
+            _winCallName.AddThemeFontSizeOverride("font_size", 24);
+            _winCallName.AddThemeColorOverride("font_color", new Color(0.90f, 0.90f, 0.90f, 1f));
+
+            var nameSettings = new LabelSettings();
+            nameSettings.OutlineSize  = 3;
+            nameSettings.OutlineColor = new Color(0f, 0f, 0f, 0.80f);
+            _winCallName.LabelSettings = nameSettings;
+
+            centre.AddChild(_winCallText);
+            centre.AddChild(_winCallName);
+
+            _winCallBackdrop.AddChild(centre);
+            AddChild(_winCallBackdrop);
+        }
+
+        /// <summary>
+        /// Show a brief "RON!" or "TSUMO!" slam-in animation, then call
+        /// <paramref name="onComplete"/> once the animation finishes so the
+        /// caller can show the scoring panel.
+        /// </summary>
+        public void ShowWinCall(bool isTsumo, string playerName, Action onComplete)
+        {
+            Color accentColor = isTsumo
+                ? new Color(1.00f, 0.84f, 0.00f, 1f)   // gold    — tsumo
+                : new Color(0.90f, 0.15f, 0.15f, 1f);  // crimson — ron
+            ShowCallOverlay(
+                callText:      isTsumo ? "TSUMO!" : "RON!",
+                accentColor:   accentColor,
+                playerName:    playerName,
+                backdropAlpha: 0.55f,
+                holdSec:       1.05f,
+                blockInput:    true,
+                onComplete:    onComplete);
+        }
+
+        /// <summary>
+        /// Show a fire-and-forget "RIICHI!" slam-in overlay.
+        /// Non-blocking — input passes through and the game continues underneath.
+        /// </summary>
+        public void ShowRiichiCall(string playerName)
+        {
+            ShowCallOverlay(
+                callText:      "RIICHI!",
+                accentColor:   new Color(0.62f, 0.28f, 0.92f, 1f),   // violet
+                playerName:    playerName,
+                backdropAlpha: 0.38f,
+                holdSec:       0.70f,
+                blockInput:    false,
+                onComplete:    null);
+        }
+
+        /// <summary>
+        /// Core slam-in overlay shared by win calls and riichi declarations.
+        /// </summary>
+        private void ShowCallOverlay(
+            string  callText,
+            Color   accentColor,
+            string  playerName,
+            float   backdropAlpha,
+            float   holdSec,
+            bool    blockInput,
+            Action? onComplete)
+        {
+            // Kill any in-flight animation so back-to-back calls don't stack
+            _callOverlayTween?.Kill();
+
+            // ---- Text & colour ----
+            _winCallText.Text = callText;
+            _winCallText.LabelSettings!.FontColor = accentColor;
+            _winCallName.Text = playerName;
+
+            // ---- Reset state ----
+            _winCallBackdrop.Color       = new Color(0f, 0f, 0f, backdropAlpha);
+            _winCallBackdrop.MouseFilter = blockInput
+                ? MouseFilterEnum.Stop
+                : MouseFilterEnum.Ignore;
+            _winCallBackdrop.Visible  = true;
+            _winCallBackdrop.Modulate = new Color(1f, 1f, 1f, 0f);  // start transparent
+
+            // Pivot at visual centre — size may not be finalised yet so use a
+            // fixed estimate for the 88-px font; Godot still scales from the correct
+            // origin because the label is centred horizontally inside its container.
+            _winCallText.PivotOffset = new Vector2(_winCallText.Size.X * 0.5f, 60f);
+            _winCallText.Scale    = new Vector2(2.0f, 2.0f);
+            _winCallText.Modulate = new Color(1f, 1f, 1f, 0f);
+
+            _winCallName.Modulate = new Color(1f, 1f, 1f, 0f);
+
+            // ---- Tween sequence ----
+            _callOverlayTween = CreateTween();
+
+            // 1. Backdrop fades in
+            _callOverlayTween.TweenProperty(_winCallBackdrop, "modulate:a", 1.0f, 0.12f)
+                 .SetTrans(Tween.TransitionType.Linear);
+
+            // 2. Call text slams in (scale 2→1, fade 0→1) — simultaneous with backdrop
+            _callOverlayTween.Parallel()
+                 .TweenProperty(_winCallText, "scale", Vector2.One, 0.18f)
+                 .SetTrans(Tween.TransitionType.Quart)
+                 .SetEase(Tween.EaseType.Out);
+            _callOverlayTween.Parallel()
+                 .TweenProperty(_winCallText, "modulate:a", 1.0f, 0.12f)
+                 .SetTrans(Tween.TransitionType.Linear);
+
+            // 3. Player name fades in with a slight delay
+            _callOverlayTween.TweenProperty(_winCallName, "modulate:a", 1.0f, 0.18f)
+                 .SetTrans(Tween.TransitionType.Linear);
+
+            // 4. Hold
+            _callOverlayTween.TweenInterval(holdSec);
+
+            // 5. Everything fades out together
+            _callOverlayTween.TweenProperty(_winCallBackdrop, "modulate:a", 0.0f, 0.28f)
+                 .SetTrans(Tween.TransitionType.Linear);
+
+            // 6. Cleanup + optional callback
+            _callOverlayTween.TweenCallback(Callable.From(() =>
+            {
+                _winCallBackdrop.Visible = false;
+                onComplete?.Invoke();
+            }));
+        }
+
+        // =====================================================================
+        // Ryuukyoku (exhaustive draw) reveal panel
+        // =====================================================================
+
+        private void BuildRyuukyokuPanel()
+        {
+            _ryuukyokuBackdrop = new ColorRect();
+            _ryuukyokuBackdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _ryuukyokuBackdrop.Color       = new Color(0f, 0f, 0f, 0.72f);
+            _ryuukyokuBackdrop.MouseFilter = MouseFilterEnum.Stop;
+            _ryuukyokuBackdrop.Visible     = false;
+
+            var card = new Panel();
+            card.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+            card.OffsetLeft   = -300;
+            card.OffsetTop    = -200;
+            card.OffsetRight  =  300;
+            card.OffsetBottom =  200;
+            card.MouseFilter  = MouseFilterEnum.Stop;
+
+            var cardStyle = new StyleBoxFlat();
+            cardStyle.BgColor     = new Color(0.07f, 0.07f, 0.12f, 1f);
+            cardStyle.BorderColor = new Color(0.38f, 0.58f, 0.88f, 1f);  // Blue — draw, not win
+            cardStyle.BorderWidthTop    = cardStyle.BorderWidthBottom =
+            cardStyle.BorderWidthLeft   = cardStyle.BorderWidthRight  = 2;
+            cardStyle.CornerRadiusTopLeft    = cardStyle.CornerRadiusTopRight    =
+            cardStyle.CornerRadiusBottomLeft = cardStyle.CornerRadiusBottomRight = 10;
+            card.AddThemeStyleboxOverride("panel", cardStyle);
+
+            _ryuukyokuContent = new VBoxContainer();
+            _ryuukyokuContent.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _ryuukyokuContent.OffsetLeft   = 22;
+            _ryuukyokuContent.OffsetTop    = 14;
+            _ryuukyokuContent.OffsetRight  = -22;
+            _ryuukyokuContent.OffsetBottom = -14;
+            _ryuukyokuContent.AddThemeConstantOverride("separation", 5);
+
+            card.AddChild(_ryuukyokuContent);
+            _ryuukyokuBackdrop.AddChild(card);
+            AddChild(_ryuukyokuBackdrop);
+        }
+
+        /// <summary>
+        /// Populate and show the ryuukyoku result panel.
+        /// All arrays are indexed by VISUAL seat (0=bottom/self, 1=right, 2=top, 3=left).
+        /// </summary>
+        public void ShowRyuukyokuPanel(
+            string[]      names,
+            int[]         currentPoints,
+            int           dealerVisualSeat,
+            bool[]        isTenpai,
+            List<Tile>[]  waitingTiles,
+            int[]         pointDeltas)
+        {
+            // Clear any previous content
+            foreach (var child in _ryuukyokuContent!.GetChildren()) child.QueueFree();
+
+            // ── Title ──────────────────────────────────────────────
+            var title = new Label { Text = "流局  ·  Ryuukyoku (Exhaustive Draw)" };
+            title.HorizontalAlignment = HorizontalAlignment.Center;
+            title.AddThemeFontSizeOverride("font_size", 16);
+            title.AddThemeColorOverride("font_color", new Color(0.62f, 0.80f, 1.0f));
+            _ryuukyokuContent.AddChild(title);
+            _ryuukyokuContent.AddChild(new HSeparator());
+
+            // ── One row per player ──────────────────────────────────
+            for (int vs = 0; vs < 4; vs++)
+            {
+                var row = new HBoxContainer();
+                row.AddThemeConstantOverride("separation", 6);
+
+                // Name (with dealer star)
+                string nameText = (vs == dealerVisualSeat ? "★ " : "   ") + names[vs];
+                var nameLabel = new Label { Text = nameText };
+                nameLabel.CustomMinimumSize        = new Vector2(140, 0);
+                nameLabel.ClipText                 = true;
+                nameLabel.AddThemeFontSizeOverride("font_size", 13);
+                row.AddChild(nameLabel);
+
+                // TENPAI / NOTEN badge
+                var badge = new Label { Text = isTenpai[vs] ? "TENPAI" : "NOTEN " };
+                badge.CustomMinimumSize           = new Vector2(62, 0);
+                badge.HorizontalAlignment         = HorizontalAlignment.Center;
+                badge.AddThemeFontSizeOverride("font_size", 12);
+                badge.AddThemeColorOverride("font_color", isTenpai[vs]
+                    ? new Color(0.25f, 1.0f, 0.45f) : new Color(0.55f, 0.55f, 0.60f));
+                row.AddChild(badge);
+
+                // Point delta
+                int delta = pointDeltas[vs];
+                if (delta != 0)
+                {
+                    var deltaLabel = new Label
+                    {
+                        Text = delta > 0 ? $"+{delta:N0}" : $"{delta:N0}"
+                    };
+                    deltaLabel.CustomMinimumSize     = new Vector2(65, 0);
+                    deltaLabel.HorizontalAlignment   = HorizontalAlignment.Right;
+                    deltaLabel.AddThemeFontSizeOverride("font_size", 13);
+                    deltaLabel.AddThemeColorOverride("font_color", delta > 0
+                        ? new Color(0.3f, 1.0f, 0.4f) : new Color(1.0f, 0.38f, 0.38f));
+                    row.AddChild(deltaLabel);
+                }
+
+                // Waiting tiles (pills) for tenpai players
+                if (isTenpai[vs] && waitingTiles[vs].Count > 0)
+                {
+                    var sepLabel = new Label { Text = "│" };
+                    sepLabel.AddThemeFontSizeOverride("font_size", 12);
+                    sepLabel.AddThemeColorOverride("font_color", new Color(0.35f, 0.35f, 0.45f));
+                    row.AddChild(sepLabel);
+
+                    var seenIds = new System.Collections.Generic.HashSet<int>();
+                    foreach (var wt in waitingTiles[vs])
+                    {
+                        if (!seenIds.Add(wt.TileId)) continue;
+
+                        var pillBox = new PanelContainer();
+                        var pillStyle = new StyleBoxFlat();
+                        pillStyle.BgColor = new Color(0.22f, 0.18f, 0.06f, 1f);
+                        pillStyle.CornerRadiusTopLeft    = pillStyle.CornerRadiusTopRight    =
+                        pillStyle.CornerRadiusBottomLeft = pillStyle.CornerRadiusBottomRight = 4;
+                        pillStyle.ContentMarginLeft  = 4;
+                        pillStyle.ContentMarginRight = 4;
+                        pillBox.AddThemeStyleboxOverride("panel", pillStyle);
+
+                        var pillLabel = new Label { Text = wt.ToString() };
+                        pillLabel.AddThemeFontSizeOverride("font_size", 12);
+                        pillLabel.AddThemeColorOverride("font_color", new Color(1.0f, 0.82f, 0.25f));
+                        pillBox.AddChild(pillLabel);
+                        row.AddChild(pillBox);
+                    }
+                }
+
+                _ryuukyokuContent.AddChild(row);
+            }
+
+            _ryuukyokuContent.AddChild(new HSeparator());
+
+            // ── Score table ────────────────────────────────────────
+            var scoresHeader = new Label { Text = "  Scores After This Hand" };
+            scoresHeader.AddThemeFontSizeOverride("font_size", 12);
+            scoresHeader.AddThemeColorOverride("font_color", new Color(0.70f, 0.70f, 0.80f));
+            _ryuukyokuContent.AddChild(scoresHeader);
+
+            var scoresRow = new HBoxContainer();
+            scoresRow.AddThemeConstantOverride("separation", 8);
+            for (int vs = 0; vs < 4; vs++)
+            {
+                // Truncate long names to first word for compact display
+                string shortName = names[vs].Split(' ')[0];
+                var scoreEntry = new Label
+                {
+                    Text = $"{shortName}\n{currentPoints[vs]:N0}"
+                };
+                scoreEntry.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+                scoreEntry.HorizontalAlignment = HorizontalAlignment.Center;
+                scoreEntry.AddThemeFontSizeOverride("font_size", 12);
+                scoresRow.AddChild(scoreEntry);
+            }
+            _ryuukyokuContent.AddChild(scoresRow);
+            _ryuukyokuContent.AddChild(new HSeparator());
+
+            // ── Button row ─────────────────────────────────────────
+            var btnRow = new HBoxContainer();
+            btnRow.Alignment = BoxContainer.AlignmentMode.Center;
+            btnRow.AddThemeConstantOverride("separation", 16);
+            btnRow.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+            var nextBtn = MakeButton("▶  Next Hand", new Color(0.15f, 0.44f, 0.22f));
+            nextBtn.CustomMinimumSize = new Vector2(165, 42);
+            nextBtn.Pressed += () => EmitSignal(SignalName.ScoringNextHandPressed);
+
+            var menuBtn = MakeButton("⬅  Menu", new Color(0.28f, 0.28f, 0.35f));
+            menuBtn.CustomMinimumSize = new Vector2(130, 42);
+            menuBtn.Pressed += () => EmitSignal(SignalName.ScoringMenuPressed);
+
+            btnRow.AddChild(nextBtn);
+            btnRow.AddChild(menuBtn);
+            _ryuukyokuContent.AddChild(btnRow);
+
+            _ryuukyokuBackdrop!.Visible = true;
+        }
+
+        public void HideRyuukyokuPanel()
+        {
+            if (_ryuukyokuBackdrop == null || !_ryuukyokuBackdrop.Visible) return;
+            _ryuukyokuBackdrop.Visible = false;
+            foreach (var child in _ryuukyokuContent!.GetChildren()) child.QueueFree();
         }
 
         private void BuildScoringPanel()

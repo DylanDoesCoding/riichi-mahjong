@@ -57,7 +57,8 @@ namespace RiichiMahjong.UI
         private int      _netDealerSeat;
         private string   _netRoundWind  = "East";
         private int      _netCounters;
-        private bool     _netIsInRiichi;     // human is in riichi this hand
+        private bool     _netIsInRiichi;          // human is in riichi this hand
+        private bool     _netIsTemporaryFuriten;  // server notified us of a missed-discard furiten
 
         // Per-seat open melds built up from meldDeclared messages
         private readonly List<Meld>[] _netMelds =
@@ -164,6 +165,7 @@ namespace RiichiMahjong.UI
             _hud.ChiPressed             += OnHumanChi;
             _hud.KanPressed             += OnHumanKan;
             _hud.PassPressed            += OnHumanPass;
+            _hud.KyuushuPressed         += OnHumanKyuushu;
             _hud.NextHandPressed        += OnNextHand;
             _hud.MenuPressed            += ReturnToMenu;
             _hud.ScoringNextHandPressed += OnNextHand;
@@ -211,6 +213,7 @@ namespace RiichiMahjong.UI
             _game.OnTileDrawn      += OnTileDrawn;
             _game.OnTileDiscarded  += OnTileDiscarded;
             _game.OnMeldDeclared   += OnMeldDeclared;
+            _game.OnChankanOpened  += OnChankanOpened;
             _game.OnRiichiDeclared += OnRiichiDeclared;
             _game.OnHandEnd        += OnHandEnd;
             _game.OnNewHand        += OnNewHand;
@@ -254,6 +257,7 @@ namespace RiichiMahjong.UI
             nm.OnGameStateSnapshot  += Net_OnGameStateSnapshot;
             nm.OnRejoinSuccess      += Net_OnRejoinSuccess;
             nm.OnDoraUpdated        += Net_OnDoraUpdated;
+            nm.OnFuritenChanged     += Net_OnFuritenChanged;
         }
 
         private void UnsubscribeNetworkEvents()
@@ -272,6 +276,7 @@ namespace RiichiMahjong.UI
             nm.OnDisconnected      -= Net_OnDisconnected;
             nm.OnGameStateSnapshot -= Net_OnGameStateSnapshot;
             nm.OnRejoinSuccess     -= Net_OnRejoinSuccess;
+            nm.OnFuritenChanged    -= Net_OnFuritenChanged;
         }
 
         // =====================================================================
@@ -283,13 +288,14 @@ namespace RiichiMahjong.UI
         {
             StopActionCountdown();
             ExitRiichiMode();
-            _autoDiscardPending  = false;
-            _nextDiscardIsRiichi = false;
-            _riichiDiscardSeat   = -1;
-            _netChiCombo         = null;
-            _netIsInRiichi       = false;
-            _netLastDiscarderSeat   = -1;
-            _netLastDiscardedTile   = null;
+            _autoDiscardPending      = false;
+            _nextDiscardIsRiichi     = false;
+            _riichiDiscardSeat       = -1;
+            _netChiCombo             = null;
+            _netIsInRiichi           = false;
+            _netIsTemporaryFuriten   = false;
+            _netLastDiscarderSeat    = -1;
+            _netLastDiscardedTile    = null;
 
             _netNames      = names;
             _netScores     = scores;
@@ -333,6 +339,9 @@ namespace RiichiMahjong.UI
 
             if (seat == _humanSeat)
             {
+                // Drawing a tile clears temporary furiten — mirrors FuritenTracker.OnDraw()
+                _netIsTemporaryFuriten = false;
+
                 if (tile != null)
                 {
                     _netMyTiles.Add(tile);
@@ -354,13 +363,17 @@ namespace RiichiMahjong.UI
                     {
                         _hud.ShowActionButtons(canTsumo: true, canRiichi: false, canKan: false);
                         _hud.SetStatus("TSUMO available! Click TSUMO to win, or discard drawn tile to pass.");
+                        StartActionCountdown(isClaim: false);
                     }
                     else
                     {
+                        // No decision to make — auto-discard the drawn tile after a short pause
+                        // (mirrors local-mode behaviour; no 20-second countdown shown).
                         _hud.HideActionButtons();
-                        _hud.SetStatus("In Riichi — discard your drawn tile.");
+                        _hud.SetStatus("In Riichi — discarding drawn tile…");
+                        _autoDiscardPending = true;
+                        _autoDiscardTimer   = AutoDiscardDelay;
                     }
-                    StartActionCountdown(isClaim: false);
                 }
                 else
                 {
@@ -411,6 +424,12 @@ namespace RiichiMahjong.UI
         private void Net_OnDoraUpdated(List<Tile> indicators)
         {
             _hud.UpdateDoraIndicators(indicators);
+        }
+
+        private void Net_OnFuritenChanged(bool isTemporaryFuriten)
+        {
+            _netIsTemporaryFuriten = isTemporaryFuriten;
+            NetUpdateHud();
         }
 
         private void Net_OnMeldDeclared(int seat, NetMeldDto dto)
@@ -504,6 +523,7 @@ namespace RiichiMahjong.UI
             _riichiDiscardSeat   = seat;
             if (seat == _humanSeat) _netIsInRiichi = true;
             _hud.ShowRiichiStick(ToVisualSeat(seat));
+            _hud.ShowRiichiCall(_netNames[seat]);
             NetUpdateHud();
             _hud.SetStatus($"{_netNames[seat]} declares Riichi!");
         }
@@ -565,35 +585,118 @@ namespace RiichiMahjong.UI
             {
                 "tsumo"          => $"🀄 {_netNames[winnerSeat]} wins by Tsumo!",
                 "ron"            => $"🀄 {_netNames[winnerSeat]} wins by Ron!",
+                "nagashimangan"  => winnerSeat >= 0 && winnerSeat < 4
+                                    ? $"🀄 {_netNames[winnerSeat]} — Nagashi Mangan!"
+                                    : "Nagashi Mangan!",
                 "exhaustivedraw" => "Exhaustive draw (Ryuukyoku)",
+                "abortivedraw"   => "Abortive draw",
                 _                => "Hand over"
             };
             _hud.SetStatus(msg);
 
+            if (r == "nagashimangan")
+            {
+                SoundManager.Instance?.Play(Sound.WinTsumo);
+                string nagashiName = winnerSeat >= 0 && winnerSeat < 4
+                    ? _netNames[winnerSeat] : "Nagashi";
+                _hud.ShowWinCall(isTsumo: true, playerName: nagashiName, onComplete: () =>
+                {
+                    NetUpdateHud();
+                    _btnNextVisible(true);
+                });
+                return;
+            }
+
             bool isWin = r is "tsumo" or "ron";
             if (isWin)
             {
-                SoundManager.Instance?.Play(r == "tsumo" ? Sound.WinTsumo : Sound.WinRon);
-                string payerName = payerSeat >= 0 && payerSeat < 4 ? _netNames[payerSeat] : "";
-                _hud.ShowScoringPanelNet(
-                    winnerName:     _netNames[winnerSeat],
-                    isTsumo:        r == "tsumo",
-                    payerName:      payerName,
-                    allNames:       _netNames,
-                    allPoints:      _netScores,
-                    winnerSeat:     winnerSeat,
-                    dealerSeat:     _netDealerSeat,
-                    yakuNames:      yakuNames,
-                    han:            han,
-                    fu:             fu,
-                    doraCount:      doraCount,
-                    uraDoraCount:   uraDoraCount,
-                    totalPointsWon: basePoints);
+                bool   isTsumo    = r == "tsumo";
+                string winnerName = _netNames[winnerSeat];
+                string payerName  = payerSeat >= 0 && payerSeat < 4 ? _netNames[payerSeat] : "";
+
+                SoundManager.Instance?.Play(isTsumo ? Sound.WinTsumo : Sound.WinRon);
+
+                // Capture everything the scoring panel needs before the lambda
+                string[]        capturedNames     = _netNames;
+                int[]           capturedScores    = (int[])_netScores.Clone();
+                int             capturedWinner    = winnerSeat;
+                int             capturedDealer    = _netDealerSeat;
+                string[]        capturedYaku      = yakuNames;
+                int             capturedHan       = han;
+                int             capturedFu        = fu;
+                int             capturedDora      = doraCount;
+                int             capturedUraDora   = uraDoraCount;
+                int             capturedBase      = basePoints;
+
+                _hud.ShowWinCall(isTsumo, winnerName, onComplete: () =>
+                    _hud.ShowScoringPanelNet(
+                        winnerName:     winnerName,
+                        isTsumo:        isTsumo,
+                        payerName:      payerName,
+                        allNames:       capturedNames,
+                        allPoints:      capturedScores,
+                        winnerSeat:     capturedWinner,
+                        dealerSeat:     capturedDealer,
+                        yakuNames:      capturedYaku,
+                        han:            capturedHan,
+                        fu:             capturedFu,
+                        doraCount:      capturedDora,
+                        uraDoraCount:   capturedUraDora,
+                        totalPointsWon: capturedBase));
             }
-            else
+            else if (r == "abortivedraw")
             {
                 SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
-                _btnNextVisible(true);
+                ShowAbortiveDrawPanelNet();
+            }
+            else  // exhaustivedraw (and anything else)
+            {
+                SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
+
+                // Build the ryuukyoku reveal panel from server-supplied data
+                var nm = NetworkManager.Instance;
+                var revealedHands = nm?.LastRevealedHands;
+                var revealedWaits = nm?.LastTenpaiWaits;
+
+                var tenpaiSet  = new System.Collections.Generic.HashSet<int>(winners);
+                int tenpaiCount = tenpaiSet.Count;
+                int notenCount  = 4 - tenpaiCount;
+                int perTenpai = tenpaiCount > 0 && notenCount > 0 ? 3000 / tenpaiCount : 0;
+                int perNoten  = tenpaiCount > 0 && notenCount > 0 ? 3000 / notenCount  : 0;
+
+                var names   = new string[4];
+                var points  = new int[4];
+                var tenpai  = new bool[4];
+                var waits   = new List<Tile>[4];
+                var deltas  = new int[4];
+
+                for (int gs = 0; gs < 4; gs++)
+                {
+                    int vs     = ToVisualSeat(gs);
+                    names[vs]  = _netNames[gs];
+                    points[vs] = _netScores[gs];
+                    tenpai[vs] = tenpaiSet.Contains(gs);
+                    deltas[vs] = tenpai[vs]
+                        ? (notenCount  > 0 ? +perTenpai : 0)
+                        : (tenpaiCount > 0 ? -perNoten  : 0);
+                    waits[vs]  = tenpai[vs] && revealedWaits != null && gs < revealedWaits.Count
+                        ? revealedWaits[gs]
+                        : new List<Tile>();
+
+                    // Rebuild tenpai opponent hands with actual tiles, then highlight waits
+                    if (tenpai[vs] && revealedHands != null && gs < revealedHands.Count
+                        && revealedHands[gs].Count > 0)
+                    {
+                        GetHandDisplay(gs).Rebuild(
+                            revealedHands[gs], _netMelds[gs], drawnTile: null);
+                    }
+                    if (tenpai[vs] && waits[vs].Count > 0)
+                        GetHandDisplay(gs).HighlightClaimTiles(waits[vs]);
+                }
+
+                _hud.ShowRyuukyokuPanel(
+                    names, points, ToVisualSeat(_netDealerSeat),
+                    tenpai, waits, deltas);
             }
         }
 
@@ -644,12 +747,13 @@ namespace RiichiMahjong.UI
         {
             // Reset everything just like a new hand
             ExitRiichiMode();
-            _nextDiscardIsRiichi = false;
-            _riichiDiscardSeat   = -1;
-            _netChiCombo         = null;
-            _netIsInRiichi       = false;
-            _netLastDiscarderSeat   = -1;
-            _netLastDiscardedTile   = null;
+            _nextDiscardIsRiichi     = false;
+            _riichiDiscardSeat       = -1;
+            _netChiCombo             = null;
+            _netIsInRiichi           = false;
+            _netIsTemporaryFuriten   = false;
+            _netLastDiscarderSeat    = -1;
+            _netLastDiscardedTile    = null;
 
             _netNames      = names;
             _netScores     = scores;
@@ -847,9 +951,10 @@ namespace RiichiMahjong.UI
             }
             _hud.UpdateAll(rotNames, rotScores, ToVisualSeat(_netDealerSeat), _netRoundWind, _netCounters);
 
-            // Furiten indicator — only meaningful when waiting (no drawn tile, 13 tiles in hand).
-            // We can only detect permanent furiten client-side (own discard matches a current wait).
-            // Temporary furiten (missed opponent discard) requires server co-operation; skip for now.
+            // Furiten indicator — only shown while waiting (no drawn tile, 13 tiles in hand).
+            // Permanent furiten: own discard matches a current wait — computed client-side.
+            // Temporary furiten: missed an opponent's winning discard — server notifies via
+            // "furitenChanged"; we store the flag in _netIsTemporaryFuriten and clear it on draw.
             bool showFuriten = false;
             bool isPermanent = false;
             if (_netDrawnTile == null && _netMyTiles.Count == 13)
@@ -859,7 +964,7 @@ namespace RiichiMahjong.UI
                 {
                     var waits = h.GetWaitingTiles();
                     isPermanent = waits.Any(w => _netMyDiscards.Any(d => d == w));
-                    showFuriten = isPermanent;
+                    showFuriten = isPermanent || _netIsTemporaryFuriten;
                 }
             }
             _hud.SetFuriten(showFuriten, isPermanent);
@@ -878,7 +983,24 @@ namespace RiichiMahjong.UI
                 riichi = GetRiichiCandidatesFromTiles(_netMyTiles).Count > 0;
 
             bool kan = NetCanHumanKan();
-            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: kan);
+
+            // Kyuushu Kyuuhai: eligible on first turn if no calls and 9+ distinct terminal/honours
+            bool kyuushu = false;
+            if (_netMyDiscards.Count == 0 && _netMyTiles.Count == 14)
+            {
+                bool firstRoundClean = !_netMelds.Any(melds => melds.Any(m => m.IsOpen));
+                if (firstRoundClean)
+                {
+                    int distinctTermHon = _netMyTiles
+                        .Where(t => t.IsTerminalOrHonour)
+                        .Select(t => (t.Suit, t.Value))
+                        .Distinct()
+                        .Count();
+                    kyuushu = distinctTermHon >= 9;
+                }
+            }
+
+            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: kan, canKyuushu: kyuushu);
         }
 
         private bool NetCanHumanKan()
@@ -1007,6 +1129,19 @@ namespace RiichiMahjong.UI
                 }
             }
 
+            // Auto-discard timer — runs in both modes (riichi auto-discard in network,
+            // and post-riichi-declaration discard in local mode).
+            if (_autoDiscardPending)
+            {
+                _autoDiscardTimer -= (float)delta;
+                if (_autoDiscardTimer <= 0f)
+                {
+                    _autoDiscardPending = false;
+                    if (_isNetworkMode) ExecuteNetRiichiAutoDiscard();
+                    else                ExecuteAutoDiscard();
+                }
+            }
+
             // AI and claim-window timers only run in local mode
             if (_isNetworkMode) return;
 
@@ -1020,12 +1155,6 @@ namespace RiichiMahjong.UI
             {
                 _claimWindowTimer -= (float)delta;
                 if (_claimWindowTimer <= 0f) { _claimWindowActive = false; AutoResolveClaimWindow(); }
-            }
-
-            if (_autoDiscardPending)
-            {
-                _autoDiscardTimer -= (float)delta;
-                if (_autoDiscardTimer <= 0f) { _autoDiscardPending = false; ExecuteAutoDiscard(); }
             }
         }
 
@@ -1046,6 +1175,7 @@ namespace RiichiMahjong.UI
             _rightHand.FaceDown  = true;
 
             _hud.ClearAllDiscards();
+            _hud.HideRyuukyokuPanel();
             RebuildAllHands();
             _playerHand.StartDealAnimation();
             _topHand   .StartDealAnimation();
@@ -1071,6 +1201,7 @@ namespace RiichiMahjong.UI
             }
 
             _hud.HideScoringPanel();
+            _hud.HideRyuukyokuPanel();
             _btnNextVisible(false);
 
             if (_isNetworkMode) NetworkManager.Instance?.SendNextHand();
@@ -1156,12 +1287,64 @@ namespace RiichiMahjong.UI
             HudUpdateLocal();
         }
 
+        /// <summary>
+        /// Fired when an opponent declares a kakan (extended kan).
+        /// Opens a brief Ron-only claim window — the human may rob the kan (chankan);
+        /// if they can't or choose not to, AI seats get the same chance, then the
+        /// rinshan tile is drawn automatically via ResolveChankan().
+        /// </summary>
+        private void OnChankanOpened(int playerIndex, Tile tile)
+        {
+            var humanHand = _game.Players[_humanSeat].Hand;
+
+            bool humanRon = playerIndex != _humanSeat
+                            && !_game.Players[_humanSeat].Furiten.IsFuriten
+                            && humanHand.IsTenpai()
+                            && humanHand.IsWaitingFor(tile);
+
+            if (humanRon)
+            {
+                _hud.ShowClaimButtons(canRon: true, canPon: false, canChi: false, canKan: false);
+                _hud.HighlightLastDiscard(ToVisualSeat(playerIndex));
+                _claimWindowActive = true;
+                _claimWindowTimer  = ClaimWindowDuration;
+            }
+            else
+            {
+                ResolveChankanAI();
+            }
+        }
+
+        /// <summary>
+        /// Let AI seats attempt chankan ron.
+        /// If no one robs, call ResolveChankan() so the kakan player draws their rinshan.
+        /// </summary>
+        private void ResolveChankanAI()
+        {
+            if (!_game.IsChankanWindow) return;
+            var tile = _game.PendingDiscard!;
+
+            // Check all seats (excluding the kakan player and human) for ron
+            for (int i = 1; i <= 3; i++)
+            {
+                int seat = (_game.DiscarderIndex + i) % 4;
+                if (seat == _humanSeat) continue;
+                if (_ai[seat].ShouldClaimRon(tile, _game.Players[seat].Hand, _game, seat))
+                    if (_game.ClaimRon(seat)) return;   // OnHandEnd handles the rest
+            }
+
+            // No one robs — proceed to rinshan draw
+            _game.ResolveChankan();
+            TriggerCurrentPlayerAction();
+        }
+
         private void OnRiichiDeclared(int playerIndex)
         {
             SoundManager.Instance?.Play(Sound.Riichi);
             _nextDiscardIsRiichi = true;
             _riichiDiscardSeat   = playerIndex;
             _hud.ShowRiichiStick(ToVisualSeat(playerIndex));
+            _hud.ShowRiichiCall(_game.Players[playerIndex].Name);
             HudUpdateLocal();
             _hud.SetStatus($"{_game.Players[playerIndex].Name} declares Riichi!");
         }
@@ -1191,23 +1374,135 @@ namespace RiichiMahjong.UI
             string msg = reason switch
             {
                 HandEndReason.Tsumo          => $"🀄 {_game.Players[winners[0]].Name} wins by Tsumo!",
+                HandEndReason.Ron when winners.Length == 2
+                                             => $"🀄 Double Ron! {_game.Players[winners[0]].Name} & {_game.Players[winners[1]].Name}!",
                 HandEndReason.Ron            => $"🀄 {_game.Players[winners[0]].Name} wins by Ron!",
+                HandEndReason.NagashiMangan  => winners.Length == 1
+                    ? $"🀄 {_game.Players[winners[0]].Name} — Nagashi Mangan!"
+                    : "Nagashi Mangan!",
                 HandEndReason.ExhaustiveDraw => "Exhaustive draw (Ryuukyoku)",
+                HandEndReason.AbortiveDraw   => "Abortive draw",
                 _                            => "Hand over"
             };
             _hud.SetStatus(msg);
 
             if (reason is HandEndReason.Tsumo or HandEndReason.Ron)
             {
-                SoundManager.Instance?.Play(
-                    reason == HandEndReason.Tsumo ? Sound.WinTsumo : Sound.WinRon);
-                ShowScoringOverlay(reason, winners[0]);
+                bool   isTsumo     = reason == HandEndReason.Tsumo;
+                string winnerName  = winners.Length == 2
+                    ? $"{_game.Players[winners[0]].Name} & {_game.Players[winners[1]].Name}"
+                    : _game.Players[winners[0]].Name;
+                int    winnerSeatL = winners[0];   // capture for lambda
+
+                SoundManager.Instance?.Play(isTsumo ? Sound.WinTsumo : Sound.WinRon);
+
+                _hud.ShowWinCall(isTsumo, winnerName, onComplete: () =>
+                    ShowScoringOverlay(reason, winnerSeatL));
             }
-            else
+            else if (reason == HandEndReason.NagashiMangan)
+            {
+                SoundManager.Instance?.Play(Sound.WinTsumo);   // mangan fanfare
+                string nagashiNames = string.Join(" & ",
+                    winners.Select(w => _game.Players[w].Name));
+                _hud.ShowWinCall(isTsumo: true, playerName: nagashiNames, onComplete: () =>
+                {
+                    HudUpdateLocal();
+                    _btnNextVisible(true);
+                });
+            }
+            else if (reason == HandEndReason.AbortiveDraw)
+            {
+                // Abortive draw: show as ryuukyoku with no tenpai payments, specific message
+                SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
+                ShowAbortiveDrawPanel();
+            }
+            else  // ExhaustiveDraw
             {
                 SoundManager.Instance?.Play(Sound.ExhaustiveDraw);
-                _btnNextVisible(true);
+                ShowRyuukyokuPanel(winners);
             }
+        }
+
+        /// <summary>
+        /// Build and display the ryuukyoku (exhaustive draw) reveal panel in local mode.
+        /// <paramref name="tenpaiGlobalSeats"/> = the winners[] array from OnHandEnd (tenpai seats).
+        /// </summary>
+        private void ShowRyuukyokuPanel(int[] tenpaiGlobalSeats)
+        {
+            var tenpaiSet  = new System.Collections.Generic.HashSet<int>(tenpaiGlobalSeats);
+            int tenpaiCount = tenpaiSet.Count;
+            int notenCount  = 4 - tenpaiCount;
+            int perTenpai = tenpaiCount > 0 && notenCount > 0 ? 3000 / tenpaiCount : 0;
+            int perNoten  = tenpaiCount > 0 && notenCount > 0 ? 3000 / notenCount  : 0;
+
+            var names   = new string[4];
+            var points  = new int[4];
+            var tenpai  = new bool[4];
+            var waits   = new List<Tile>[4];
+            var deltas  = new int[4];
+
+            for (int gs = 0; gs < 4; gs++)
+            {
+                int vs       = ToVisualSeat(gs);
+                names[vs]    = _game.Players[gs].Name;
+                points[vs]   = _game.Players[gs].Points;
+                tenpai[vs]   = tenpaiSet.Contains(gs);
+                deltas[vs]   = tenpai[vs]
+                    ? (notenCount  > 0 ? +perTenpai : 0)
+                    : (tenpaiCount > 0 ? -perNoten  : 0);
+                waits[vs] = tenpai[vs]
+                    ? _game.Players[gs].Hand.GetWaitingTiles()
+                    : new List<Tile>();
+
+                // Highlight waiting tiles on the revealed hand display
+                if (tenpai[vs] && waits[vs].Count > 0)
+                    GetHandDisplay(gs).HighlightClaimTiles(waits[vs]);
+            }
+
+            _hud.ShowRyuukyokuPanel(
+                names, points, ToVisualSeat(_game.DealerIndex),
+                tenpai, waits, deltas);
+        }
+
+        /// <summary>
+        /// Show an abortive-draw panel (Kyuushu, Suufonren, Suukaikan, Sanchahou).
+        /// No tenpai payments — the hand is simply discarded. Treat it like an
+        /// all-no-ten ryuukyoku so the panel infrastructure is reused.
+        /// </summary>
+        private void ShowAbortiveDrawPanel()
+        {
+            var names  = new string[4];
+            var points = new int[4];
+            for (int gs = 0; gs < 4; gs++)
+            {
+                int vs     = ToVisualSeat(gs);
+                names[vs]  = _game.Players[gs].Name;
+                points[vs] = _game.Players[gs].Points;
+            }
+
+            // Reuse the ryuukyoku panel with no-tenpai for everyone (no payments, no waits shown)
+            _hud.ShowRyuukyokuPanel(
+                names, points, ToVisualSeat(_game.DealerIndex),
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
+        }
+
+        /// <summary>
+        /// Network-mode equivalent of <see cref="ShowAbortiveDrawPanel"/>.
+        /// Uses <see cref="_netNames"/> / <see cref="_netScores"/> since <c>_game</c> is null.
+        /// </summary>
+        private void ShowAbortiveDrawPanelNet()
+        {
+            var names  = new string[4];
+            var points = new int[4];
+            for (int gs = 0; gs < 4; gs++)
+            {
+                int vs     = ToVisualSeat(gs);
+                names[vs]  = _netNames[gs];
+                points[vs] = _netScores[gs];
+            }
+            _hud.ShowRyuukyokuPanel(
+                names, points, ToVisualSeat(_netDealerSeat),
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
         }
 
         private void ShowScoringOverlay(HandEndReason reason, int winnerSeat)
@@ -1383,7 +1678,22 @@ namespace RiichiMahjong.UI
                 _hud.HideClaimButtons();
                 return;
             }
-            if (!_game.ClaimRon(_humanSeat)) _hud.SetStatus("Cannot declare ron — furiten or invalid hand.");
+
+            // Include any AI seats that also want to ron (double ron / sanchahou check)
+            var tile = _game.PendingDiscard;
+            var candidates = new List<int> { _humanSeat };
+            if (tile != null)
+            {
+                for (int i = 1; i <= 3; i++)
+                {
+                    int seat = (_game.DiscarderIndex + i) % 4;
+                    if (seat == _humanSeat) continue;
+                    if (_ai[seat].ShouldClaimRon(tile, _game.Players[seat].Hand, _game, seat))
+                        candidates.Add(seat);
+                }
+            }
+            if (!_game.ClaimRonMulti(candidates.ToArray()))
+                _hud.SetStatus("Cannot declare ron — furiten or invalid hand.");
         }
 
         private void OnHumanPon()
@@ -1437,8 +1747,39 @@ namespace RiichiMahjong.UI
             if (_isNetworkMode)
             {
                 StopActionCountdown();
-                // Server validates whether it's daiminkan / ankan / kakan
-                NetworkManager.Instance?.SendKan();
+
+                // Daiminkan (claim window): the server already knows the tile from PendingDiscard,
+                // so send no tile.  Ankan / kakan (action phase): we must tell the server which
+                // tile to use, otherwise it wrongly falls into the daiminkan branch.
+                // Discriminator: if the player has a drawn tile they're in their action phase.
+                Tile? kanTile = null;
+                if (_netDrawnTile != null)
+                {
+                    // Kakan: pon meld whose lead tile appears in the closed hand (4th copy drawn)
+                    foreach (var meld in _netMelds[_humanSeat])
+                    {
+                        if (meld.Type == MeldType.Pon)
+                        {
+                            var match = _netMyTiles.FirstOrDefault(t => t == meld.Lead);
+                            if (match != null) { kanTile = match; break; }
+                        }
+                    }
+                    // Ankan: four identical tiles in the closed hand
+                    if (kanTile == null)
+                    {
+                        var counts = new Dictionary<int, int>();
+                        var first  = new Dictionary<int, Tile>();
+                        foreach (var t in _netMyTiles)
+                        {
+                            counts[t.TileId] = counts.GetValueOrDefault(t.TileId) + 1;
+                            first.TryAdd(t.TileId, t);
+                        }
+                        foreach (var (id, cnt) in counts)
+                            if (cnt >= 4) { kanTile = first[id]; break; }
+                    }
+                }
+
+                NetworkManager.Instance?.SendKan(kanTile);
                 _playerHand.ClearClaimTileHighlights();
                 _hud.HideClaimButtons();
                 _hud.SetStatus("Kan declared — waiting for server…");
@@ -1488,7 +1829,20 @@ namespace RiichiMahjong.UI
             if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(ToVisualSeat(_game.DiscarderIndex));
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
-            ResolveAIClaims();
+            if (_game.IsChankanWindow) ResolveChankanAI();
+            else                       ResolveAIClaims();
+        }
+
+        private void OnHumanKyuushu()
+        {
+            if (_isNetworkMode)
+            {
+                NetworkManager.Instance?.SendKyuushu();
+                _hud.HideActionButtons();
+                return;
+            }
+            if (_game.DeclareKyuushuKyuuhai(_humanSeat))
+                _hud.HideActionButtons();
         }
 
         // =====================================================================
@@ -1616,7 +1970,8 @@ namespace RiichiMahjong.UI
             if (_game.DiscarderIndex >= 0) _hud.ClearLastDiscardHighlight(ToVisualSeat(_game.DiscarderIndex));
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
-            ResolveAIClaims();
+            if (_game.IsChankanWindow) ResolveChankanAI();
+            else                       ResolveAIClaims();
         }
 
         private void ResolveAIClaims()
@@ -1626,14 +1981,16 @@ namespace RiichiMahjong.UI
 
             var tile = _game.PendingDiscard;
 
-            // Priority: Ron > Daiminkan > Pon > Chi
+            // Collect all AI seats that want to ron, then resolve together (double ron / sanchahou).
+            var ronCandidates = new List<int>();
             for (int i = 1; i <= 3; i++)
             {
                 int seat = (_game.DiscarderIndex + i) % 4;
                 if (seat == _humanSeat) continue;
                 if (_ai[seat].ShouldClaimRon(tile, _game.Players[seat].Hand, _game, seat))
-                    if (_game.ClaimRon(seat)) return;
+                    ronCandidates.Add(seat);
             }
+            if (ronCandidates.Count > 0 && _game.ClaimRonMulti(ronCandidates.ToArray())) return;
 
             for (int i = 1; i <= 3; i++)
             {
@@ -1692,6 +2049,9 @@ namespace RiichiMahjong.UI
             if (_game.CurrentPlayerIndex != seat) return;
 
             var hand = _game.Players[seat].Hand;
+
+            // Kyuushu Kyuuhai: AI always declares the optional abort when eligible
+            if (_game.CanDeclareKyuushu(seat) && _game.DeclareKyuushuKyuuhai(seat)) return;
 
             if (_game.DeclareTsumo()) return;
 
@@ -1752,7 +2112,8 @@ namespace RiichiMahjong.UI
                 riichi = GetRiichiCandidates().Count > 0;
             }
 
-            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: CanHumanKan());
+            bool kyuushu = _game.CanDeclareKyuushu(_humanSeat);
+            _hud.ShowActionButtons(canTsumo: tsumo, canRiichi: riichi, canKan: CanHumanKan(), canKyuushu: kyuushu);
         }
 
         private bool CanHumanKan()
@@ -1777,7 +2138,7 @@ namespace RiichiMahjong.UI
         /// </summary>
         private void HudUpdateLocal()
         {
-            HudUpdateLocal();
+            _hud.UpdateAll(_game);
             var player = _game.Players[_humanSeat];
             // Show furiten only while waiting (no drawn tile) and in tenpai —
             // that's the only phase where it can actually block a ron claim.
@@ -1848,6 +2209,17 @@ namespace RiichiMahjong.UI
 
             _hud.SetStatus("⏱ Time's up — auto-discarding.");
             NetworkManager.Instance?.SendDiscard(toDiscard);
+        }
+
+        /// <summary>
+        /// Called after the short auto-discard delay fires while in riichi (network mode).
+        /// Sends the drawn tile back to the server without showing a countdown.
+        /// </summary>
+        private void ExecuteNetRiichiAutoDiscard()
+        {
+            if (!_netIsInRiichi || _netDrawnTile == null) return;
+            _hud.HideActionButtons();
+            NetworkManager.Instance?.SendDiscard(_netDrawnTile);
         }
 
         // =====================================================================
