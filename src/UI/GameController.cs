@@ -232,10 +232,26 @@ namespace RiichiMahjong.UI
 
         private void InitNetworkMode()
         {
-            _humanSeat = NetworkManager.Instance!.LocalSeat;
+            var nm = NetworkManager.Instance!;
+            _humanSeat = nm.LocalSeat;
             foreach (var ml in _netMelds) ml.Clear();
             SubscribeNetworkEvents();
-            _hud.SetStatus("Waiting for hand to be dealt…");
+
+            // handDealt may have arrived while the scene change was still deferred.
+            // Replay it now that we're subscribed; clear the buffer so it isn't replayed again.
+            var pending = nm.PendingHandDealt;
+            if (pending != null)
+            {
+                nm.ClearPendingHandDealt();
+                Net_OnHandDealt(pending.YourTiles, pending.TileCounts, pending.Scores,
+                    pending.DealerSeat, pending.RoundWind, pending.Counters, pending.Names);
+                if (pending.DoraIndicators != null)
+                    Net_OnDoraUpdated(pending.DoraIndicators);
+            }
+            else
+            {
+                _hud.SetStatus("Waiting for hand to be dealt…");
+            }
         }
 
         // =====================================================================

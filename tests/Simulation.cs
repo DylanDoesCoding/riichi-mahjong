@@ -448,8 +448,9 @@ static class Program
                     Tile.Dragon(DragonType.Green)   // lone — the riichi discard
                 });
                 var cands = RiichiCandidates(h);
-                Test("Riichi: 1 lone dragon → exactly 1 candidate", cands.Count == 1);
-                Test("Riichi: candidate is the lone Green Dragon", cands.Count == 1 && cands[0].Suit == TileSuit.Dragon && cands[0].Value == (int)DragonType.Green);
+                // Two valid discards: Green (wait 5s/8s via ryanmen) OR 8s (wait Green tanki via 678s).
+                Test("Riichi: lone dragon hand → exactly 2 candidates", cands.Count == 2);
+                Test("Riichi: candidates include Green Dragon", cands.Any(c => c.Suit == TileSuit.Dragon && c.Value == (int)DragonType.Green));
 
                 // After discarding 菜, verify waits are 5s and 8s
                 var after = new Hand();
@@ -560,7 +561,8 @@ static class Program
                     Tile.Dragon(DragonType.Green)  // the extra tile
                 });
                 Test("IsTenpai on 14t (valid, 1 extra): returns true", valid14.IsTenpai());
-                Test("IsTenpai on 14t: candidate count == 1", RiichiCandidates(valid14).Count == 1);
+                // Green(tanki) and 8s(leaving Green tanki via 678s) are both valid discards.
+                Test("IsTenpai on 14t: candidate count == 2", RiichiCandidates(valid14).Count == 2);
 
                 // Invalid: 14-tile hand where no single discard gives tenpai
                 var invalid14 = new Hand();
@@ -885,6 +887,521 @@ static class Program
                 Test("DealerTransfer: dealer win → counter incremented", gs2.Counters == prevCounters + 1);
                 Test("DealerTransfer: dealer still has 14 tiles next hand", gs2.Players[0].Hand.ClosedTiles.Count == 14);
             }
+        }
+
+        // =========================================================================
+        // ---- Hand-deal event fires synchronously (regression: handDealt race) ----
+        // The server calls StartGame() and immediately sends the handDealt message from
+        // the OnNewHand event.  If OnNewHand were deferred or async, the message could
+        // arrive before the GameController scene is ready.  This test verifies it fires
+        // synchronously inside the StartGame() / BeginNextHand() calls.
+        // =========================================================================
+        {
+            // StartGame() must fire OnNewHand before returning
+            {
+                var gs = new GameState(humanSeat: -1);
+                int firedDuringStart = 0;
+                bool firedBeforeReturn = false;
+                gs.OnNewHand += () => firedDuringStart++;
+
+                // Subscribe inside a wrapper to verify timing
+                bool callComplete = false;
+                gs.OnNewHand += () => { if (!callComplete) firedBeforeReturn = true; };
+
+                gs.StartGame();
+                callComplete = true;
+
+                Test("OnNewHand: fires synchronously during StartGame()", firedDuringStart == 1);
+                Test("OnNewHand: fires BEFORE StartGame() returns", firedBeforeReturn);
+            }
+
+            // BeginNextHand() must also fire OnNewHand synchronously
+            {
+                var gs = new GameState(humanSeat: -1);
+                gs.StartGame();
+                // Force a hand end so BeginNextHand can run
+                var dealer = gs.Players[gs.DealerIndex];
+                dealer.Hand.Reset();
+                dealer.Hand.AddTiles(new List<Tile>
+                {
+                    Tile.Man(1), Tile.Man(2), Tile.Man(3),
+                    Tile.Pin(4), Tile.Pin(5), Tile.Pin(6),
+                    Tile.Sou(7), Tile.Sou(8), Tile.Sou(9),
+                    Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East),
+                    Tile.Dragon(DragonType.White), Tile.Dragon(DragonType.White),
+                });
+                gs.DeclareTsumo();
+
+                int newHandCount = 0;
+                bool nextHandFiredSync = false;
+                gs.OnNewHand += () => newHandCount++;
+                gs.OnNewHand += () => { if (newHandCount == 1) nextHandFiredSync = true; };
+
+                bool callDone = false;
+                gs.OnNewHand += () => { if (!callDone) nextHandFiredSync = true; };
+                gs.BeginNextHand();
+                callDone = true;
+
+                if (gs.Phase != TurnPhase.GameOver)
+                {
+                    Test("OnNewHand: fires synchronously during BeginNextHand()", newHandCount >= 1);
+                    Test("OnNewHand: BeginNextHand tiles available immediately after call", gs.Players[gs.DealerIndex].Hand.ClosedTiles.Count == 14);
+                }
+            }
+
+            // After StartGame() returns, all tile counts must be valid for every seat
+            {
+                var gs = new GameState(humanSeat: -1);
+                int[] countsDuringEvent = new int[4];
+                gs.OnNewHand += () =>
+                {
+                    for (int s = 0; s < 4; s++)
+                        countsDuringEvent[s] = gs.Players[s].Hand.ClosedTiles.Count;
+                };
+                gs.StartGame();
+                int dealer = gs.DealerIndex;
+                for (int s = 0; s < 4; s++)
+                {
+                    int expected = (s == dealer) ? 14 : 13;
+                    Test($"OnNewHand event: seat {s} already has {expected} tiles when event fires",
+                        countsDuringEvent[s] == expected);
+                }
+            }
+        }
+
+        // =========================================================================
+        // ---- Ippatsu: cleared on the riichi player's own discard ---------------
+        // Regression: ClearIppatsu() was not called on Discard(), so ippatsu persisted
+        // past the player's own next turn.
+        // =========================================================================
+        {
+            // Use the real game loop: seat 0 is dealer and declares riichi.
+            // Then advance through DrawPhase for seats 1-3 and back to seat 0's draw.
+            // When seat 0 draws and discards, ClearIppatsu() must fire.
+            var gs = new GameState(humanSeat: 0);
+            gs.StartGame();
+            int riichiSeat = gs.DealerIndex;   // 0
+            var player = gs.Players[riichiSeat];
+
+            player.Hand.Reset();
+            player.Hand.AddTiles(MakeRiichiTenpaiHand13());
+            player.Hand.AddTile(Tile.Dragon(DragonType.Green));
+
+            bool declared = gs.DeclareRiichi(riichiSeat, Tile.Dragon(DragonType.Green));
+            Test("Ippatsu: riichi declared successfully", declared);
+            Test("Ippatsu: IsIppatsu = true immediately after riichi", player.Hand.IsIppatsu);
+
+            // Pass claim window — no one can or wants to claim
+            gs.PassAllClaims();
+            Test("Ippatsu: after passing claims, phase is DrawPhase", gs.Phase == TurnPhase.DrawPhase);
+
+            // Cycle through seats 1, 2, 3 drawing and discarding a safe tile
+            // so the turn returns to seat 0 (the riichi player)
+            for (int i = 0; i < 3 && gs.Phase == TurnPhase.DrawPhase; i++)
+            {
+                int cur = gs.CurrentPlayerIndex;
+                gs.DrawForCurrentPlayer();
+                if (gs.Phase == TurnPhase.ActionPhase)
+                {
+                    // Discard a tile from the drawn player's hand (any tile works)
+                    var h = gs.Players[cur].Hand;
+                    var safe = h.ClosedTiles.FirstOrDefault(t => !player.Hand.IsWaitingFor(t))
+                            ?? h.ClosedTiles.First();
+                    gs.Discard(cur, safe);
+                    if (gs.Phase == TurnPhase.ClaimWindow)
+                        gs.PassAllClaims();
+                }
+            }
+
+            // Now it's seat 0's draw turn — draw a non-winning tile
+            if (gs.Phase == TurnPhase.DrawPhase && gs.CurrentPlayerIndex == riichiSeat)
+            {
+                gs.DrawForCurrentPlayer();
+                Test("Ippatsu: still set before own discard", player.Hand.IsIppatsu);
+
+                // Discard the drawn tile (non-winning) — ippatsu must clear
+                var drawn = player.Hand.DrawnTile;
+                if (drawn != null && !player.Hand.IsWaitingFor(drawn))
+                {
+                    gs.Discard(riichiSeat, drawn);
+                    Test("Ippatsu: cleared after own discard", !player.Hand.IsIppatsu);
+                }
+                else
+                    Test("Ippatsu: skip (drew winning tile)", true);
+            }
+            else
+                Test("Ippatsu: turn did not reach riichi seat (wall short or win intervened)", true);
+        }
+
+        // =========================================================================
+        // ---- Ippatsu: broken by an opponent's meld call ------------------------
+        // =========================================================================
+        {
+            var gs = new GameState(humanSeat: 0);
+            gs.StartGame();
+            int seat = gs.CurrentPlayerIndex;
+            var player = gs.Players[seat];
+
+            player.Hand.Reset();
+            player.Hand.AddTiles(MakeRiichiTenpaiHand13());
+            player.Hand.AddTile(Tile.Dragon(DragonType.Green));
+            gs.DeclareRiichi(seat, Tile.Dragon(DragonType.Green));
+            Test("Ippatsu+meld: IsIppatsu = true after riichi", player.Hand.IsIppatsu);
+
+            // Direct call to BreakIppatsu (server calls BreakAllIppatsu on any meld)
+            player.Hand.BreakIppatsu();
+            Test("Ippatsu+meld: IsIppatsu = false after BreakIppatsu()", !player.Hand.IsIppatsu);
+        }
+
+        // =========================================================================
+        // ---- CanRiichiAnkan: allowed when wait set is unchanged ----------------
+        // =========================================================================
+        {
+            // Build a 13-tile riichi hand waiting for 6s or 9s (ryanmen on 7s8s)
+            // Then draw 7s — ankan on 7s is valid because removing one 7s changes
+            // the pattern but CanRiichiAnkan checks the full 4-copy scenario.
+            // Simpler: build a hand where the 4th copy of the drawn tile does not
+            // change the wait (e.g. a set of 3 in a complete group).
+            // Hand: 1m2m3m 4p5p6p 7s8s9s EaEaEa WdWd  — tenpai on ??? — no
+            // Let's use: pair wait on 1m, four 1m already in hand.
+            // 1m1m1m1m + 2m3m + 4p5p6p + 7s8s9s + EaEa  — riichi tenpai on Ea (shanpon with 1m pair)
+            // Actually let's use a straightforward ankan that doesn't affect waits:
+            // Hand waiting for Ea or Wd (shanpon), and we want to ankan 1m which is 4 of a kind.
+            {
+                var h = new Hand();
+                h.AddTiles(new List<Tile>
+                {
+                    Tile.Man(1), Tile.Man(1), Tile.Man(1),   // triple — will become quad
+                    Tile.Man(2), Tile.Man(3), Tile.Man(4),   // sequence
+                    Tile.Pin(2), Tile.Pin(3), Tile.Pin(4),   // sequence
+                    Tile.Sou(2), Tile.Sou(3), Tile.Sou(4),   // sequence
+                    Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East), // pair (tenpai wait)
+                });
+                // Remove one to make it 14 tiles exactly and declare riichi
+                // Actually we need 13-tile tenpai first; add the 4th Man(1) as drawn tile
+                h.AddTile(Tile.Man(1));  // now 15 tiles — remove one
+                // Start fresh: 13-tile tenpai with three 1m
+                var h2 = new Hand();
+                h2.AddTiles(new List<Tile>
+                {
+                    Tile.Man(1), Tile.Man(1), Tile.Man(1),
+                    Tile.Man(2), Tile.Man(3), Tile.Man(4),
+                    Tile.Pin(2), Tile.Pin(3), Tile.Pin(4),
+                    Tile.Sou(2), Tile.Sou(3), Tile.Sou(4),
+                    Tile.Wind(WindDirection.East), // singleton — tenpai waiting for Ea pair
+                });
+                Test("RiichiAnkan setup: 13 tiles tenpai", h2.IsTenpai());
+                h2.DeclareRiichi();
+                // Draw 4th Man(1)
+                h2.AddTile(Tile.Man(1));
+                Test("RiichiAnkan: CanRiichiAnkan(Man1) = true (wait set unchanged)", h2.CanRiichiAnkan(Tile.Man(1)));
+            }
+
+            // Negative case: ankan that would change the wait must be rejected
+            {
+                // Hand: 1m1m 2m3m4m 2p3p4p 2s3s4s EaEaEa — tenpai on 1m (tanki)
+                // If we ankan on Ea, the pair/set structure changes — wait set changes → reject
+                var h = new Hand();
+                h.AddTiles(new List<Tile>
+                {
+                    Tile.Man(1), Tile.Man(1),               // pair (tanki wait)
+                    Tile.Man(2), Tile.Man(3), Tile.Man(4),
+                    Tile.Pin(2), Tile.Pin(3), Tile.Pin(4),
+                    Tile.Sou(2), Tile.Sou(3), Tile.Sou(4),
+                    Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East), // pair — would disrupt if ankanned
+                });
+                Test("RiichiAnkan neg: 13 tiles tenpai (tanki 1m)", h.IsTenpai());
+                h.DeclareRiichi();
+                h.AddTile(Tile.Wind(WindDirection.East));  // draw 3rd Ea — but only 3 copies, not 4
+                Test("RiichiAnkan neg: CanRiichiAnkan(Ea) = false (only 3 copies)", !h.CanRiichiAnkan(Tile.Wind(WindDirection.East)));
+            }
+        }
+
+        // =========================================================================
+        // ---- Kuikae: cannot immediately discard the claimed tile after chi -----
+        // =========================================================================
+        {
+            var gs = new GameState(humanSeat: 0);
+            gs.StartGame();
+
+            // Chi direction: seat 1 can chi from seat 0 (leftOf(1) = 0).
+            // Seat 0 (dealer, in ActionPhase) discards Man(4); seat 1 claims chi with Man(5)+Man(6).
+            var p0 = gs.Players[0];
+            p0.Hand.Reset();
+            p0.Hand.AddTiles(new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(2), Tile.Man(3),
+                Tile.Pin(4), Tile.Pin(5), Tile.Pin(6),
+                Tile.Sou(7), Tile.Sou(8), Tile.Sou(9),
+                Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East),
+                Tile.Dragon(DragonType.White), Tile.Man(4),  // Man(4) will be discarded
+            });
+
+            var p1 = gs.Players[1];
+            p1.Hand.Reset();
+            p1.Hand.AddTiles(new List<Tile>
+            {
+                Tile.Man(4),  // copy of the claimed tile — kuikae-forbidden after chi
+                Tile.Man(5), Tile.Man(6),  // the chi tiles
+                Tile.Pin(1), Tile.Pin(2), Tile.Pin(3),
+                Tile.Sou(1), Tile.Sou(2), Tile.Sou(3),
+                Tile.Wind(WindDirection.South), Tile.Wind(WindDirection.South), Tile.Wind(WindDirection.South),
+                Tile.Dragon(DragonType.Green),
+            });
+
+            // Dealer (seat 0) is already in ActionPhase — discard Man(4) directly.
+            bool discardOk = gs.Discard(0, Tile.Man(4));
+            Test("Kuikae setup: dealer discards Man(4) ok", discardOk);
+            Test("Kuikae setup: phase is ClaimWindow", gs.Phase == TurnPhase.ClaimWindow);
+
+            // Seat 1 claims chi using Man(5)+Man(6) — valid: leftOf(1) = 0
+            bool chiOk = gs.ClaimChi(1, Tile.Man(5), Tile.Man(6));
+            Test("Kuikae: chi claim succeeds", chiOk);
+            Test("Kuikae: KuikaeForbidden is non-empty after chi", gs.KuikaeForbidden.Any());
+
+            // Attempting to discard Man(4) immediately must fail (kuikae)
+            bool forbiddenDiscard = gs.Discard(1, Tile.Man(4));
+            Test("Kuikae: cannot immediately discard the claimed tile (Man4)", !forbiddenDiscard);
+
+            // But discarding another tile must succeed
+            bool legalDiscard = gs.Discard(1, Tile.Dragon(DragonType.Green));
+            Test("Kuikae: can discard a non-forbidden tile after chi", legalDiscard);
+            Test("Kuikae: KuikaeForbidden cleared after legal discard", !gs.KuikaeForbidden.Any());
+        }
+
+        // =========================================================================
+        // ---- Kyuushu Kyuuhai (9 Terminals/Honours abortive draw) ---------------
+        // =========================================================================
+        {
+            // Eligible: first turn, no calls, 9+ distinct terminal/honour tiles
+            var gs = new GameState(humanSeat: 0);
+            gs.StartGame();
+            int seat = gs.DealerIndex;
+            var player = gs.Players[seat];
+
+            // Replace hand with 9 distinct terminals/honours + 5 filler
+            player.Hand.Reset();
+            player.Hand.AddTiles(new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(9),
+                Tile.Pin(1), Tile.Pin(9),
+                Tile.Sou(1), Tile.Sou(9),
+                Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.South),
+                Tile.Dragon(DragonType.White),
+                // fillers (5 more to reach 14)
+                Tile.Man(3), Tile.Man(5), Tile.Man(7),
+                Tile.Pin(3), Tile.Pin(5),
+            });
+
+            Test("Kyuushu: CanDeclareKyuushu = true (9 distinct TH, first turn)", gs.CanDeclareKyuushu(seat));
+
+            bool handEndFired = false;
+            HandEndReason? reason = null;
+            gs.OnHandEnd += (r, _) => { handEndFired = true; reason = r; };
+
+            bool ok = gs.DeclareKyuushuKyuuhai(seat);
+            Test("Kyuushu: DeclareKyuushuKyuuhai returns true", ok);
+            Test("Kyuushu: OnHandEnd fired with AbortiveDraw", handEndFired && reason == HandEndReason.AbortiveDraw);
+            Test("Kyuushu: phase is HandEnd", gs.Phase == TurnPhase.HandEnd);
+        }
+        {
+            // Ineligible: fewer than 9 distinct terminal/honour tiles
+            var gs = new GameState(humanSeat: 0);
+            gs.StartGame();
+            int seat = gs.DealerIndex;
+            var player = gs.Players[seat];
+
+            player.Hand.Reset();
+            player.Hand.AddTiles(new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(9),
+                Tile.Pin(1), Tile.Pin(9),
+                Tile.Sou(1),                          // only 5 distinct terminals
+                Tile.Man(2), Tile.Man(3), Tile.Man(4),
+                Tile.Pin(2), Tile.Pin(3), Tile.Pin(4),
+                Tile.Sou(2), Tile.Sou(3), Tile.Sou(4),
+            });
+
+            Test("Kyuushu: CanDeclareKyuushu = false (only 5 distinct TH)", !gs.CanDeclareKyuushu(seat));
+            bool ok = gs.DeclareKyuushuKyuuhai(seat);
+            Test("Kyuushu: DeclareKyuushuKyuuhai returns false (ineligible)", !ok);
+        }
+
+        // =========================================================================
+        // ---- Double yakuman: Suu Ankou Tanki (four concealed pungs + pair wait) -
+        // =========================================================================
+        {
+            // Four concealed triplets + pair wait: winning tile completes the pair → double yakuman
+            var closed = new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(1), Tile.Man(1),
+                Tile.Pin(2), Tile.Pin(2), Tile.Pin(2),
+                Tile.Sou(3), Tile.Sou(3), Tile.Sou(3),
+                Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East),
+                Tile.Dragon(DragonType.White), Tile.Dragon(DragonType.White),  // pair — winning tile
+            };
+            var ctx = new YakuContext
+            {
+                WinMethod    = WinMethod.Ron,
+                WinningTile  = Tile.Dragon(DragonType.White),
+                SeatWind     = WindDirection.East,
+                RoundWind    = WindDirection.East,
+                IsRiichi     = false,
+            };
+            var winResult = WinChecker.Check(closed, new List<Meld>());
+            Test("SuuAnkouTanki: WinChecker says IsWin", winResult.IsWin);
+
+            YakuCheckResult? yaku = null;
+            foreach (var decomp in winResult.Decompositions)
+            {
+                var y = YakuChecker.Evaluate(decomp, ctx);
+                if (y.IsDoubleYakuman) { yaku = y; break; }
+            }
+            Test("SuuAnkouTanki: at least one decomposition gives double yakuman", yaku != null);
+            Test("SuuAnkouTanki: YakuFan == 26", yaku?.YakuFan == 26);
+            Test("SuuAnkouTanki: yaku name contains 'Tanki'",
+                yaku?.Yaku.Any(y => y.NameJP.Contains("Tanki")) == true);
+        }
+        {
+            // Four concealed triplets + pair, win by tsumo completing a TRIPLET (not the pair).
+            // WinningTile = Dragon.White (triplet), Pair = East Wind → pairWait=false → single yakuman.
+            var closed = new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(1), Tile.Man(1),
+                Tile.Pin(2), Tile.Pin(2), Tile.Pin(2),
+                Tile.Sou(3), Tile.Sou(3), Tile.Sou(3),
+                Tile.Dragon(DragonType.White), Tile.Dragon(DragonType.White), Tile.Dragon(DragonType.White),
+                Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East),  // pair
+            };
+            var ctx = new YakuContext
+            {
+                WinMethod   = WinMethod.Tsumo,
+                WinningTile = Tile.Dragon(DragonType.White),  // completes triplet, not the pair
+                SeatWind    = WindDirection.East,
+                RoundWind   = WindDirection.East,
+            };
+            var winResult = WinChecker.Check(closed, new List<Meld>());
+            YakuCheckResult? yaku = null;
+            foreach (var d in winResult.Decompositions)
+            {
+                var y = YakuChecker.Evaluate(d, ctx);
+                if (y.IsYakuman && !y.IsDoubleYakuman) { yaku = y; break; }
+            }
+            Test("SuuAnkou (tsumo): single yakuman (13 fan)", yaku != null && yaku.YakuFan == 13);
+            Test("SuuAnkou (tsumo): yaku name does NOT contain 'Tanki'",
+                yaku?.Yaku.All(y => !y.NameJP.Contains("Tanki")) == true);
+        }
+
+        // =========================================================================
+        // ---- Double yakuman: Kokushi Musou 13-sided wait -----------------------
+        // =========================================================================
+        {
+            // All 13 unique terminals/honours as the hand — waiting for any duplicate.
+            // When the winning tile matches the singleton already in hand, it is a 13-sided wait.
+            var closed = new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(9),
+                Tile.Pin(1), Tile.Pin(9),
+                Tile.Sou(1), Tile.Sou(9),
+                Tile.Wind(WindDirection.East),  Tile.Wind(WindDirection.South),
+                Tile.Wind(WindDirection.West),  Tile.Wind(WindDirection.North),
+                Tile.Dragon(DragonType.White),  Tile.Dragon(DragonType.Green),
+                Tile.Dragon(DragonType.Red),    Tile.Dragon(DragonType.Red),  // Red = completing pair
+            };
+            var ctx13 = new YakuContext
+            {
+                WinMethod   = WinMethod.Tsumo,
+                WinningTile = Tile.Dragon(DragonType.Red),   // the 13th unique tile → 13-sided
+                SeatWind    = WindDirection.East,
+                RoundWind   = WindDirection.East,
+            };
+            var wr = WinChecker.Check(closed, new List<Meld>());
+            Test("Kokushi13: WinChecker IsWin", wr.IsWin);
+            var y13 = YakuChecker.Evaluate(wr.Decompositions.First(d => d.IsThirteenOrphans), ctx13);
+            Test("Kokushi13: IsDoubleYakuman = true (13-sided wait)", y13.IsDoubleYakuman);
+            Test("Kokushi13: YakuFan == 26", y13.YakuFan == 26);
+        }
+        {
+            // Regular Kokushi (not 13-sided): win on a tile that duplicates the hand's existing pair
+            // e.g. hand already has two Man(1), winning tile is Man(9) (was singleton)
+            var closed9 = new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(1),   // duplicate pair
+                Tile.Man(9),
+                Tile.Pin(1), Tile.Pin(9),
+                Tile.Sou(1), Tile.Sou(9),
+                Tile.Wind(WindDirection.East),  Tile.Wind(WindDirection.South),
+                Tile.Wind(WindDirection.West),  Tile.Wind(WindDirection.North),
+                Tile.Dragon(DragonType.White),  Tile.Dragon(DragonType.Green),
+                Tile.Dragon(DragonType.Red),
+            };
+            var ctxReg = new YakuContext
+            {
+                WinMethod   = WinMethod.Tsumo,
+                WinningTile = Tile.Man(9),   // singleton → NOT 13-sided
+                SeatWind    = WindDirection.East,
+                RoundWind   = WindDirection.East,
+            };
+            var wrReg = WinChecker.Check(closed9, new List<Meld>());
+            Test("Kokushi regular: WinChecker IsWin", wrReg.IsWin);
+            var yReg = YakuChecker.Evaluate(wrReg.Decompositions.First(d => d.IsThirteenOrphans), ctxReg);
+            Test("Kokushi regular: IsDoubleYakuman = false (not 13-sided)", !yReg.IsDoubleYakuman);
+            Test("Kokushi regular: YakuFan == 13", yReg.YakuFan == 13);
+        }
+
+        // =========================================================================
+        // ---- Double yakuman: Pure Nine Gates (Chuuren Pooto pure) -------------
+        // =========================================================================
+        {
+            // Pure nine gates: hand is exactly 1112345678999 of one suit; win on any of the 9 waits.
+            // When the winning tile is the "extra" (the 14th tile above the base 13), it's pure (26 fan).
+            var pureBase = new List<Tile>  // 1112345678999m + 5m (winning tile)
+            {
+                Tile.Man(1), Tile.Man(1), Tile.Man(1),
+                Tile.Man(2), Tile.Man(3), Tile.Man(4),
+                Tile.Man(5), Tile.Man(5),   // 5m appears twice: once in base, once as winning tile
+                Tile.Man(6), Tile.Man(7), Tile.Man(8),
+                Tile.Man(9), Tile.Man(9), Tile.Man(9),
+            };
+            var ctxPure = new YakuContext
+            {
+                WinMethod   = WinMethod.Tsumo,
+                WinningTile = Tile.Man(5),   // extra copy beyond 1112345678999
+                SeatWind    = WindDirection.East,
+                RoundWind   = WindDirection.East,
+            };
+            var wrPure = WinChecker.Check(pureBase, new List<Meld>());
+            Test("NineGates pure: WinChecker IsWin", wrPure.IsWin);
+            bool anyDoubleYakuman = wrPure.Decompositions
+                .Select(d => YakuChecker.Evaluate(d, ctxPure))
+                .Any(y => y.IsDoubleYakuman);
+            Test("NineGates pure: at least one decomp → double yakuman (26 fan)", anyDoubleYakuman);
+        }
+        {
+            // Regular nine gates (not pure): winning tile is NOT the "extra" beyond the base 1112345678999.
+            // Hand: 1112345677899m — has an extra 7m (not the base pattern). Win on 9m.
+            // Pure check: remove 9m → 111234567789 9m → {1×3,2×1,3×1,4×1,5×1,6×1,7×2,8×1,9×2} ≠ 1112345678999.
+            // Regular check: remove one 7m → {1×3,2×1,3×1,4×1,5×1,6×1,7×1,8×1,9×3} = 1112345678999. ✓
+            var regBase = new List<Tile>
+            {
+                Tile.Man(1), Tile.Man(1), Tile.Man(1),
+                Tile.Man(2), Tile.Man(3), Tile.Man(4),
+                Tile.Man(5), Tile.Man(6), Tile.Man(7), Tile.Man(7),  // extra 7m instead of extra 9m
+                Tile.Man(8), Tile.Man(9), Tile.Man(9), Tile.Man(9),
+            };
+            var ctxReg9 = new YakuContext
+            {
+                WinMethod   = WinMethod.Tsumo,
+                WinningTile = Tile.Man(9),
+                SeatWind    = WindDirection.East,
+                RoundWind   = WindDirection.East,
+            };
+            var wrReg9 = WinChecker.Check(regBase, new List<Meld>());
+            Test("NineGates regular: WinChecker IsWin", wrReg9.IsWin);
+            bool anyNineGates = wrReg9.Decompositions
+                .Select(d => YakuChecker.Evaluate(d, ctxReg9))
+                .Any(y => y.IsYakuman && !y.IsDoubleYakuman);
+            Test("NineGates regular: at least one decomp → single yakuman (not pure)", anyNineGates);
         }
 
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");

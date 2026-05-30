@@ -382,6 +382,18 @@ namespace RiichiMahjong.Core
 				int s = CalcShantenRecursive(counts, openMentsu, 0, 0);
 				best = Math.Min(best, s);
 			}
+
+			// Tanki wait: try each singleton tile as a partial pair (waiting for 2nd copy).
+			// +1 accounts for the incomplete pair; gives shanten=0 when 4 sets already complete.
+			for (int i = 0; i < 34; i++)
+			{
+				if (counts[i] != 1) continue;
+				counts[i]--;
+				int s = CalcShantenRecursive(counts, openMentsu, 0, 1) + 1;
+				best = Math.Min(best, s);
+				counts[i]++;
+			}
+
 			return best;
 		}
 

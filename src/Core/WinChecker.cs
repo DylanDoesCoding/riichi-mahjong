@@ -44,13 +44,18 @@ namespace RiichiMahjong.Core
         /// <summary>True if this is a Thirteen Orphans hand.</summary>
         public bool IsThirteenOrphans { get; }
 
+        /// <summary>Extra tiles not captured by Sets/Pair (used for ThirteenOrphans singletons).</summary>
+        public List<Tile>? OtherTiles { get; }
+
         public HandDecomposition(List<Meld> sets, Meld pair,
-                                  bool isSevenPairs = false, bool isThirteenOrphans = false)
+                                  bool isSevenPairs = false, bool isThirteenOrphans = false,
+                                  List<Tile>? otherTiles = null)
         {
             Sets               = sets;
             Pair               = pair;
             IsSevenPairs       = isSevenPairs;
             IsThirteenOrphans  = isThirteenOrphans;
+            OtherTiles         = otherTiles;
         }
     }
 
@@ -284,10 +289,17 @@ namespace RiichiMahjong.Core
             int pairId = OrphanIds.First(id => counts[id] >= 2);
             var pair   = Meld.Pair(TileIdToTile(pairId));
 
+            // Store the 12 singleton orphan tiles so AllTiles(d) returns all 14 tiles
+            var otherTiles = OrphanIds
+                .Where(id => id != pairId)
+                .Select(id => TileIdToTile(id))
+                .ToList();
+
             return new HandDecomposition(
                 new List<Meld>(),  // No sets — special hand
                 pair,
-                isThirteenOrphans: true);
+                isThirteenOrphans: true,
+                otherTiles: otherTiles);
         }
 
         // ---- Helpers --------------------------------------------------------
