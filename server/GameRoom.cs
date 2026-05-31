@@ -668,7 +668,9 @@ namespace RiichiServer
                     finally { _gameSem.Release(); }
 
                     await FlushOutboxAsync();
-                    if (ok) { await AdvanceDrawPhaseAsync(); return; }
+                    // ClaimDaiminkan draws the rinshan internally → game is already in ActionPhase,
+                    // not DrawPhase. Drive the CPU's post-kan discard from ActionPhase.
+                    if (ok) { await AdvanceFromActionPhaseAsync(); return; }
                 }
             }
 
