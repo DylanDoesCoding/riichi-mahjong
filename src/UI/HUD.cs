@@ -1461,6 +1461,8 @@ namespace RiichiMahjong.UI
             int      winnerSeat,
             int      dealerSeat,
             string[] yakuNames,
+            int[]    yakuFans,
+            bool[]   yakuIsYakuman,
             int      han,
             int      fu,
             int      doraCount,
@@ -1473,10 +1475,16 @@ namespace RiichiMahjong.UI
             _scoringTitle.AddThemeColorOverride("font_color",
                 isTsumo ? new Color(0.35f, 1f, 0.45f) : new Color(1f, 0.55f, 0.20f));
 
-            // ── Yaku rows ──
+            // ── Yaku rows (with fan counts) ──
             foreach (var child in _scoringYakuRows.GetChildren()) child.QueueFree();
-            foreach (var name in yakuNames)
-                _scoringYakuRows.AddChild(MakeScoringRow($"  {name}", "", Colors.White));
+            for (int i = 0; i < yakuNames.Length; i++)
+            {
+                bool isYakuman = i < yakuIsYakuman.Length && yakuIsYakuman[i];
+                int  fan       = i < yakuFans.Length ? yakuFans[i] : 0;
+                string fanText = isYakuman ? "Yakuman" : (fan > 0 ? $"{fan} han" : "");
+                Color  fanCol  = isYakuman ? new Color(1f, 0.85f, 0.2f) : Colors.White;
+                _scoringYakuRows.AddChild(MakeScoringRow($"  {yakuNames[i]}", fanText, fanCol));
+            }
             if (doraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Dora", $"{doraCount} han", new Color(1f, 0.80f, 0.30f)));
@@ -1484,15 +1492,23 @@ namespace RiichiMahjong.UI
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Ura Dora", $"{uraDoraCount} han", new Color(1f, 0.70f, 0.20f)));
 
-            // ── Han / Fu ──
-            _scoringHanFuLabel.Text = $"  {han} han  {fu} fu";
-            _scoringLimitLabel.Text = "";
+            // ── Han / Fu / Limit ──
+            // Derive limit from total han (mirrors ScoreCalculator.ClassifyLimit)
+            bool isYakumanHand = yakuIsYakuman.Any(y => y);
+            string limitName = isYakumanHand ? (han >= 26 ? "Double Yakuman" : "Yakuman")
+                : han switch { >= 11 => "Sanbaiman", >= 8 => "Baiman", >= 6 => "Haneman", >= 5 => "Mangan", _ => "" };
+            bool hasLimit = !string.IsNullOrEmpty(limitName);
+            _scoringHanFuLabel.Text = hasLimit
+                ? $"  {han} han"
+                : $"  {han} han  {fu} fu";
+            _scoringLimitLabel.Text = hasLimit ? $"— {limitName} —" : "";
 
             // ── Payment ──
             foreach (var child in _scoringPayRows.GetChildren()) child.QueueFree();
-            if (!isTsumo && !string.IsNullOrEmpty(payerName))
+            if (!isTsumo && !string.IsNullOrEmpty(payerName) && totalPointsWon > 0)
                 _scoringPayRows.AddChild(MakeScoringRow(
-                    $"  {payerName} pays:", "", new Color(1f, 0.6f, 0.6f)));
+                    $"  {payerName} pays:",
+                    $"−{totalPointsWon:N0}", new Color(1f, 0.6f, 0.6f)));
 
             // ── Total ──
             _scoringTotalWon.Text = totalPointsWon > 0

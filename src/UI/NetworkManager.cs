@@ -84,6 +84,8 @@ namespace RiichiMahjong.UI
         public int                     Fu             { get; set; }
         public int                     BasePoints     { get; set; }
         public string[]?               YakuNames      { get; set; }
+        public int[]?                  YakuFans       { get; set; }
+        public bool[]?                 YakuIsYakuman  { get; set; }
         public int                     DoraCount      { get; set; }
         public int                     UraDoraCount   { get; set; }
         public int                     WinnerSeat     { get; set; }
@@ -152,8 +154,8 @@ namespace RiichiMahjong.UI
         public event Action<bool>?                   OnFuritenChanged;  // isTemporaryFuriten
         public event Action?                         OnQueueJoined;     // entered matchmaking queue
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
-        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int, int, int, int>? OnHandEnded;
-        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, doraCount, uraDoraCount, winnerSeat, payerSeat
+        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int[], bool[], int, int, int, int>? OnHandEnded;
+        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, yakuFans, yakuIsYakuman, doraCount, uraDoraCount, winnerSeat, payerSeat
         public event Action<List<NetScoreEntry>>?    OnGameOver;        // scoreBoard
 
         // ---- Ryuukyoku reveal data (populated before OnHandEnded fires) ------
@@ -431,11 +433,13 @@ namespace RiichiMahjong.UI
                         .Select(row => row.Select(d => d.ToTile()).ToList())
                         .ToList();
                     OnHandEnded?.Invoke(
-                        msg.Reason     ?? "",
-                        msg.Winners    ?? Array.Empty<int>(),
-                        msg.ScoreBoard ?? new(),
+                        msg.Reason        ?? "",
+                        msg.Winners       ?? Array.Empty<int>(),
+                        msg.ScoreBoard    ?? new(),
                         msg.Han, msg.Fu, msg.BasePoints,
-                        msg.YakuNames  ?? Array.Empty<string>(),
+                        msg.YakuNames     ?? Array.Empty<string>(),
+                        msg.YakuFans      ?? Array.Empty<int>(),
+                        msg.YakuIsYakuman ?? Array.Empty<bool>(),
                         msg.DoraCount,
                         msg.UraDoraCount,
                         msg.WinnerSeat,

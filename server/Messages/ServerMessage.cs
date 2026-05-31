@@ -60,6 +60,8 @@ namespace RiichiServer.Messages
         public int               Fu            { get; set; }
         public int               BasePoints    { get; set; }
         public string[]?         YakuNames     { get; set; }
+        public int[]?            YakuFans      { get; set; }  // fan count per yaku (parallel to YakuNames)
+        public bool[]?           YakuIsYakuman { get; set; }  // yakuman flag per yaku
         public int               DoraCount     { get; set; }
         public int               UraDoraCount  { get; set; }
         public int               WinnerSeat    { get; set; }

@@ -66,9 +66,15 @@ namespace RiichiMahjong.Core
 
         /// <summary>Total points won by the winner (sum of all payments received).</summary>
         public int TotalPointsWon =>
-            WinMethod == WinMethod.Ron
+            // Ron-type wins: single discarder pays RonPayment.
+            // Chankan and Houtei are ron-type even though WinMethod != Ron.
+            WinMethod is WinMethod.Ron or WinMethod.Chankan or WinMethod.Houtei
                 ? RonPayment + CounterBonus + RiichiBetsWon
-                : TsumoPaymentEast + (TsumoPaymentOther * 2) + CounterBonus + RiichiBetsWon;
+                // Tsumo-type: East + 2 others for non-dealer; 3 others for dealer.
+                : (IsDealer
+                    ? TsumoPaymentOther * 3
+                    : TsumoPaymentEast + TsumoPaymentOther * 2)
+                  + CounterBonus + RiichiBetsWon;
     }
 
     // -------------------------------------------------------------------------

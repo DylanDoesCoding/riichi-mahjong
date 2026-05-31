@@ -1826,6 +1826,140 @@ static class Program
                 gs2.Phase != TurnPhase.HandEnd);
         }
 
+        // =========================================================================
+        // ---- ScoreCalculator: TotalPointsWon and payment correctness -----------
+        // =========================================================================
+        {
+            // ── Regression: TotalPointsWon direct formula tests ──────────────────
+            // Build ScoreResult directly to isolate the formula from fu calculation.
+            {
+                // Non-dealer tsumo: East pays 4000, 2 others pay 2000 each = 8000
+                var s = new ScoreResult { WinMethod = WinMethod.Tsumo, IsDealer = false,
+                    TsumoPaymentEast = 4000, TsumoPaymentOther = 2000 };
+                Test("Score: non-dealer tsumo TotalPointsWon = 8000", s.TotalPointsWon == 8000);
+            }
+            {
+                // Dealer tsumo: all 3 pay 4000 each = 12000.
+                // Regression: formula was TsumoPaymentEast + TsumoPaymentOther×2 = 0+4000×2 = 8000 (WRONG)
+                var s = new ScoreResult { WinMethod = WinMethod.Tsumo, IsDealer = true,
+                    TsumoPaymentEast = 0, TsumoPaymentOther = 4000 };
+                Test("Score: dealer tsumo TotalPointsWon = 12000 (regression: was 8000)", s.TotalPointsWon == 12000);
+            }
+            {
+                // Chankan (ron-type — discarder pays): must use RonPayment, not tsumo formula.
+                // Regression: Chankan != Ron, so old code took the tsumo branch and gave wrong total.
+                var s = new ScoreResult { WinMethod = WinMethod.Chankan, IsDealer = false,
+                    RonPayment = 8000, TsumoPaymentEast = 4000, TsumoPaymentOther = 2000 };
+                Test("Score: chankan TotalPointsWon == RonPayment (regression)", s.TotalPointsWon == 8000);
+            }
+            {
+                // Houtei (last-tile ron — also ron-type)
+                var s = new ScoreResult { WinMethod = WinMethod.Houtei, IsDealer = false,
+                    RonPayment = 8000, TsumoPaymentEast = 4000, TsumoPaymentOther = 2000 };
+                Test("Score: houtei TotalPointsWon == RonPayment (regression)", s.TotalPointsWon == 8000);
+            }
+            {
+                // Counter bonus and riichi bets included in all win types
+                var s = new ScoreResult { WinMethod = WinMethod.Ron, IsDealer = false,
+                    RonPayment = 1000, CounterBonus = 600, RiichiBetsWon = 1000 };
+                Test("Score: TotalPointsWon includes counter + riichi bets (ron)", s.TotalPointsWon == 2600);
+
+                var t = new ScoreResult { WinMethod = WinMethod.Tsumo, IsDealer = true,
+                    TsumoPaymentOther = 4000, CounterBonus = 300, RiichiBetsWon = 1000 };
+                Test("Score: TotalPointsWon includes counter + riichi bets (tsumo)", t.TotalPointsWon == 4000 * 3 + 300 + 1000);
+            }
+
+            // ── ScoreCalculator.Calculate: mangan payment amounts ─────────────────
+            // Use a concrete 5-han (mangan) hand: Riichi + Tanyao + Menzen Tsumo + etc.
+            // For simplicity, directly set up a valid decomp and a fake 5-fan yaku result.
+            {
+                var decomp = new HandDecomposition(new List<Meld>
+                {
+                    Meld.Chi(Tile.Man(2), Tile.Man(3), Tile.Man(4), Tile.Man(2), ClaimSource.None),
+                    Meld.Chi(Tile.Pin(3), Tile.Pin(4), Tile.Pin(5), Tile.Pin(3), ClaimSource.None),
+                    Meld.Chi(Tile.Sou(5), Tile.Sou(6), Tile.Sou(7), Tile.Sou(5), ClaimSource.None),
+                    Meld.Chi(Tile.Man(5), Tile.Man(6), Tile.Man(7), Tile.Man(5), ClaimSource.None),
+                }, Meld.Pair(Tile.Pin(2)));  // non-value pair
+
+                var fiveHanYaku = new YakuCheckResult();
+                fiveHanYaku.Add("Mangan Test", "Mangan Test", 5);
+
+                // Non-dealer ron: basic = 2000, × 4 = 8000
+                var ctxRon = new YakuContext { WinMethod = WinMethod.Ron, IsDealer = false,
+                    WinningTile = Tile.Pin(2),
+                    SeatWind = WindDirection.South, RoundWind = WindDirection.East };
+                var sRon = ScoreCalculator.Calculate(decomp, fiveHanYaku, ctxRon);
+                Test("Score: non-dealer mangan ron = 8000", sRon.RonPayment == 8000);
+                Test("Score: non-dealer mangan ron limit = Mangan", sRon.Limit == HandLimit.Mangan);
+                Test("Score: non-dealer mangan ron TotalPointsWon = 8000", sRon.TotalPointsWon == 8000);
+
+                // Dealer ron: basic = 2000, × 6 = 12000
+                var ctxDRon = new YakuContext { WinMethod = WinMethod.Ron, IsDealer = true,
+                    WinningTile = Tile.Pin(2),
+                    SeatWind = WindDirection.East, RoundWind = WindDirection.East };
+                var sDRon = ScoreCalculator.Calculate(decomp, fiveHanYaku, ctxDRon);
+                Test("Score: dealer mangan ron = 12000", sDRon.RonPayment == 12000);
+                Test("Score: dealer mangan ron TotalPointsWon = 12000", sDRon.TotalPointsWon == 12000);
+
+                // Non-dealer mangan tsumo: East pays 4000, others pay 2000 each = 8000
+                var ctxTsumo = new YakuContext { WinMethod = WinMethod.Tsumo, IsDealer = false,
+                    WinningTile = Tile.Pin(2),
+                    SeatWind = WindDirection.South, RoundWind = WindDirection.East };
+                var sTsumo = ScoreCalculator.Calculate(decomp, fiveHanYaku, ctxTsumo);
+                Test("Score: non-dealer mangan tsumo EastPay = 4000", sTsumo.TsumoPaymentEast == 4000);
+                Test("Score: non-dealer mangan tsumo OtherPay = 2000", sTsumo.TsumoPaymentOther == 2000);
+                Test("Score: non-dealer mangan tsumo TotalPointsWon = 8000", sTsumo.TotalPointsWon == 8000);
+
+                // Dealer mangan tsumo: all 3 pay 4000 each = 12000
+                var ctxDTsumo = new YakuContext { WinMethod = WinMethod.Tsumo, IsDealer = true,
+                    WinningTile = Tile.Pin(2),
+                    SeatWind = WindDirection.East, RoundWind = WindDirection.East };
+                var sDTsumo = ScoreCalculator.Calculate(decomp, fiveHanYaku, ctxDTsumo);
+                Test("Score: dealer mangan tsumo OtherPay = 4000", sDTsumo.TsumoPaymentOther == 4000);
+                Test("Score: dealer mangan tsumo TotalPointsWon = 12000 (regression)", sDTsumo.TotalPointsWon == 12000);
+            }
+
+            // ── Yakuman payment amounts ───────────────────────────────────────────
+            {
+                // Use SuuAnkou (winning by tsumo, triplet wait — not tanki so single yakuman)
+                var yakumanHand = WinChecker.Check(new List<Tile>
+                {
+                    Tile.Man(1), Tile.Man(1), Tile.Man(1),
+                    Tile.Pin(2), Tile.Pin(2), Tile.Pin(2),
+                    Tile.Sou(3), Tile.Sou(3), Tile.Sou(3),
+                    Tile.Dragon(DragonType.White), Tile.Dragon(DragonType.White), Tile.Dragon(DragonType.White),
+                    Tile.Wind(WindDirection.East), Tile.Wind(WindDirection.East),
+                }, new List<Meld>());
+                var decomp3 = yakumanHand.Decompositions
+                    .First(d => d.Sets.Count == 4 && !d.IsSevenPairs);
+
+                // Tsumo on White Dragon (completes a triplet, not the pair = single yakuman)
+                var ctxY = new YakuContext { WinMethod = WinMethod.Tsumo, IsDealer = true,
+                    WinningTile = Tile.Dragon(DragonType.White),
+                    SeatWind = WindDirection.East, RoundWind = WindDirection.East };
+                var yakuY = YakuChecker.Evaluate(decomp3, ctxY);
+                Test("Score/yakuman: SuuAnkou tsumo IsYakuman", yakuY.IsYakuman);
+                Test("Score/yakuman: SuuAnkou tsumo NOT double yakuman", !yakuY.IsDoubleYakuman);
+
+                var sY = ScoreCalculator.Calculate(decomp3, yakuY, ctxY);
+                // Dealer yakuman tsumo: all 3 pay 16000 each = 48000
+                Test("Score/yakuman: dealer tsumo OtherPay = 16000", sY.TsumoPaymentOther == 16000);
+                Test("Score/yakuman: dealer yakuman tsumo TotalPointsWon = 48000", sY.TotalPointsWon == 48000);
+
+                // Non-dealer yakuman ron: SuuAnkou ron is only valid as tanki (pair wait).
+                // WinningTile = East Wind (the pair) → pairWait = true → Suu Ankou Tanki (26 fan = double yakuman).
+                // Double yakuman non-dealer ron: 16000 × 4 = 64000
+                var ctxYRon = new YakuContext { WinMethod = WinMethod.Ron, IsDealer = false,
+                    WinningTile = Tile.Wind(WindDirection.East),  // tanki on the East Wind pair
+                    SeatWind = WindDirection.South, RoundWind = WindDirection.East };
+                var yakuYRon = YakuChecker.Evaluate(decomp3, ctxYRon);
+                Test("Score/yakuman: SuuAnkou tanki ron is double yakuman", yakuYRon.IsDoubleYakuman);
+                var sYRon = ScoreCalculator.Calculate(decomp3, yakuYRon, ctxYRon);
+                Test("Score/yakuman: non-dealer double yakuman ron = 64000 (16000 × 4)", sYRon.RonPayment == 64000);
+                Test("Score/yakuman: non-dealer TotalPointsWon = 64000", sYRon.TotalPointsWon == 64000);
+            }
+        }
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         if (fail > 0)
         {

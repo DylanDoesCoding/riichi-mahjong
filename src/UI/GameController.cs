@@ -572,8 +572,8 @@ namespace RiichiMahjong.UI
         }
 
         private void Net_OnHandEnded(string reason, int[] winners, List<NetScoreEntry> scoreBoard,
-            int han, int fu, int basePoints, string[] yakuNames, int doraCount, int uraDoraCount,
-            int winnerSeat, int payerSeat)
+            int han, int fu, int basePoints, string[] yakuNames, int[] yakuFans, bool[] yakuIsYakuman,
+            int doraCount, int uraDoraCount, int winnerSeat, int payerSeat)
         {
             StopActionCountdown();
             ExitRiichiMode();
@@ -633,16 +633,18 @@ namespace RiichiMahjong.UI
                 SoundManager.Instance?.Play(isTsumo ? Sound.WinTsumo : Sound.WinRon);
 
                 // Capture everything the scoring panel needs before the lambda
-                string[]        capturedNames     = _netNames;
-                int[]           capturedScores    = (int[])_netScores.Clone();
-                int             capturedWinner    = winnerSeat;
-                int             capturedDealer    = _netDealerSeat;
-                string[]        capturedYaku      = yakuNames;
-                int             capturedHan       = han;
-                int             capturedFu        = fu;
-                int             capturedDora      = doraCount;
-                int             capturedUraDora   = uraDoraCount;
-                int             capturedBase      = basePoints;
+                string[]        capturedNames       = _netNames;
+                int[]           capturedScores      = (int[])_netScores.Clone();
+                int             capturedWinner      = winnerSeat;
+                int             capturedDealer      = _netDealerSeat;
+                string[]        capturedYaku        = yakuNames;
+                int[]           capturedYakuFans    = yakuFans;
+                bool[]          capturedYakuYakuman = yakuIsYakuman;
+                int             capturedHan         = han;
+                int             capturedFu          = fu;
+                int             capturedDora        = doraCount;
+                int             capturedUraDora     = uraDoraCount;
+                int             capturedBase        = basePoints;
 
                 _hud.ShowWinCall(isTsumo, winnerName, onComplete: () =>
                     _hud.ShowScoringPanelNet(
@@ -654,6 +656,8 @@ namespace RiichiMahjong.UI
                         winnerSeat:     capturedWinner,
                         dealerSeat:     capturedDealer,
                         yakuNames:      capturedYaku,
+                        yakuFans:       capturedYakuFans,
+                        yakuIsYakuman:  capturedYakuYakuman,
                         han:            capturedHan,
                         fu:             capturedFu,
                         doraCount:      capturedDora,

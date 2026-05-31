@@ -1072,7 +1072,9 @@ namespace RiichiServer
                 }
                 if (_game.LastYakuResult != null)
                 {
-                    msg.YakuNames = _game.LastYakuResult.Yaku.Select(y => y.Name).ToArray();
+                    msg.YakuNames     = _game.LastYakuResult.Yaku.Select(y => y.Name).ToArray();
+                    msg.YakuFans      = _game.LastYakuResult.Yaku.Select(y => y.Fan).ToArray();
+                    msg.YakuIsYakuman = _game.LastYakuResult.Yaku.Select(y => y.IsYakuman).ToArray();
                 }
                 if (_game.LastWinContext != null)
                 {
