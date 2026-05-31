@@ -1082,7 +1082,14 @@ namespace RiichiServer
                     msg.UraDoraCount = _game.LastWinContext.UraDoraCount;
                 }
 
-                // For exhaustive draw, reveal tenpai hands and send waiting tiles
+                // Reveal all hands for wins (tsumo/ron) — includes actual closed tiles
+                // so clients can show what everyone held, not just placeholder tiles.
+                if (reason is HandEndReason.Tsumo or HandEndReason.Ron)
+                {
+                    msg.RevealedHands = allHands;
+                }
+
+                // For exhaustive draw, reveal only tenpai hands and include waiting tiles
                 if (reason == HandEndReason.ExhaustiveDraw)
                 {
                     var tenpaiSet = new HashSet<int>(winners);

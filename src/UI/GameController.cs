@@ -585,7 +585,21 @@ namespace RiichiMahjong.UI
                 _hud.ClearLastDiscardHighlight(ToVisualSeat(_netLastDiscarderSeat));
             _playerHand.ClearClaimTileHighlights();
 
-            // Reveal hands — in network mode opponents just flip their face-down tiles
+            // Reveal hands — rebuild opponent hands with actual tiles before flipping.
+            // RevealedHands is now sent by the server for all win types so opponents
+            // show their real hand rather than Man(1) placeholders.
+            var nm = NetworkManager.Instance;
+            var revealedForWin = nm?.LastRevealedHands;
+            for (int gs = 0; gs < 4; gs++)
+            {
+                if (gs == _humanSeat) continue;  // own hand is already correct
+                if (revealedForWin != null && gs < revealedForWin.Count
+                    && revealedForWin[gs].Count > 0)
+                {
+                    // Rebuild with actual tiles, then reveal
+                    GetHandDisplay(gs).Rebuild(revealedForWin[gs], _netMelds[gs], drawnTile: null);
+                }
+            }
             for (int i = 0; i < 4; i++)
                 GetHandDisplay(i).RevealAll();
 
