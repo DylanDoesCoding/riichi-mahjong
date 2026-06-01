@@ -588,8 +588,7 @@ namespace RiichiMahjong.UI
             // Reveal hands — rebuild opponent hands with actual tiles before flipping.
             // RevealedHands is now sent by the server for all win types so opponents
             // show their real hand rather than Man(1) placeholders.
-            var nm = NetworkManager.Instance;
-            var revealedForWin = nm?.LastRevealedHands;
+            var revealedForWin = NetworkManager.Instance?.LastRevealedHands;
             for (int gs = 0; gs < 4; gs++)
             {
                 if (gs == _humanSeat) continue;  // own hand is already correct

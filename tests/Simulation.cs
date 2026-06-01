@@ -933,14 +933,8 @@ static class Program
                 gs.DeclareTsumo();
 
                 int newHandCount = 0;
-                bool nextHandFiredSync = false;
                 gs.OnNewHand += () => newHandCount++;
-                gs.OnNewHand += () => { if (newHandCount == 1) nextHandFiredSync = true; };
-
-                bool callDone = false;
-                gs.OnNewHand += () => { if (!callDone) nextHandFiredSync = true; };
                 gs.BeginNextHand();
-                callDone = true;
 
                 if (gs.Phase != TurnPhase.GameOver)
                 {
