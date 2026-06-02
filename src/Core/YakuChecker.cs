@@ -643,9 +643,13 @@ namespace RiichiMahjong.Core
             return all;
         }
 
-        /// <summary>All individual tiles in the hand (flattened from all melds + pair).</summary>
+        /// <summary>All individual tiles in the hand (flattened from all melds + pair + extra singletons).</summary>
         private static List<Tile> AllTiles(HandDecomposition d)
-            => AllMelds(d).SelectMany(m => m.Tiles).ToList();
+        {
+            var tiles = AllMelds(d).SelectMany(m => m.Tiles).ToList();
+            if (d.OtherTiles != null) tiles.AddRange(d.OtherTiles);
+            return tiles;
+        }
 
         /// <summary>True if the meld is a pon (triplet) or kan of any type.</summary>
         private static bool IsPon(Meld m)

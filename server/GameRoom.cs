@@ -668,7 +668,9 @@ namespace RiichiServer
                     finally { _gameSem.Release(); }
 
                     await FlushOutboxAsync();
-                    if (ok) { await AdvanceDrawPhaseAsync(); return; }
+                    // ClaimDaiminkan draws the rinshan internally → game is already in ActionPhase,
+                    // not DrawPhase. Drive the CPU's post-kan discard from ActionPhase.
+                    if (ok) { await AdvanceFromActionPhaseAsync(); return; }
                 }
             }
 
@@ -1070,7 +1072,9 @@ namespace RiichiServer
                 }
                 if (_game.LastYakuResult != null)
                 {
-                    msg.YakuNames = _game.LastYakuResult.Yaku.Select(y => y.Name).ToArray();
+                    msg.YakuNames     = _game.LastYakuResult.Yaku.Select(y => y.Name).ToArray();
+                    msg.YakuFans      = _game.LastYakuResult.Yaku.Select(y => y.Fan).ToArray();
+                    msg.YakuIsYakuman = _game.LastYakuResult.Yaku.Select(y => y.IsYakuman).ToArray();
                 }
                 if (_game.LastWinContext != null)
                 {
@@ -1078,7 +1082,14 @@ namespace RiichiServer
                     msg.UraDoraCount = _game.LastWinContext.UraDoraCount;
                 }
 
-                // For exhaustive draw, reveal tenpai hands and send waiting tiles
+                // Reveal all hands for wins (tsumo/ron) — includes actual closed tiles
+                // so clients can show what everyone held, not just placeholder tiles.
+                if (reason is HandEndReason.Tsumo or HandEndReason.Ron)
+                {
+                    msg.RevealedHands = allHands;
+                }
+
+                // For exhaustive draw, reveal only tenpai hands and include waiting tiles
                 if (reason == HandEndReason.ExhaustiveDraw)
                 {
                     var tenpaiSet = new HashSet<int>(winners);

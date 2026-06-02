@@ -84,6 +84,8 @@ namespace RiichiMahjong.UI
         public int                     Fu             { get; set; }
         public int                     BasePoints     { get; set; }
         public string[]?               YakuNames      { get; set; }
+        public int[]?                  YakuFans       { get; set; }
+        public bool[]?                 YakuIsYakuman  { get; set; }
         public int                     DoraCount      { get; set; }
         public int                     UraDoraCount   { get; set; }
         public int                     WinnerSeat     { get; set; }
@@ -121,6 +123,14 @@ namespace RiichiMahjong.UI
         public int   LocalSeat    { get; private set; } = -1;
         public string RoomCode   { get; private set; } = "";
 
+        // ---- Buffered handDealt (may arrive before GameController loads) ------
+        // Stored so InitNetworkMode() can replay it if the scene change was still
+        // deferred when the packet was dispatched.
+        public record HandDealtPayload(List<Tile> YourTiles, int[] TileCounts, int[] Scores,
+            int DealerSeat, string RoundWind, int Counters, string[] Names, List<Tile>? DoraIndicators);
+        public HandDealtPayload? PendingHandDealt { get; private set; }
+        public void ClearPendingHandDealt() => PendingHandDealt = null;
+
         // ---- Lobby events ----------------------------------------------------
         public event Action<string, int, List<NetPlayerInfo>>? OnRoomCreated;  // code, seat, players
         public event Action<string, int, List<NetPlayerInfo>>? OnRoomJoined;   // code, seat, players
@@ -144,8 +154,8 @@ namespace RiichiMahjong.UI
         public event Action<bool>?                   OnFuritenChanged;  // isTemporaryFuriten
         public event Action?                         OnQueueJoined;     // entered matchmaking queue
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
-        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int, int, int, int>? OnHandEnded;
-        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, doraCount, uraDoraCount, winnerSeat, payerSeat
+        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int[], bool[], int, int, int, int>? OnHandEnded;
+        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, yakuFans, yakuIsYakuman, doraCount, uraDoraCount, winnerSeat, payerSeat
         public event Action<List<NetScoreEntry>>?    OnGameOver;        // scoreBoard
 
         // ---- Ryuukyoku reveal data (populated before OnHandEnded fires) ------
@@ -346,6 +356,7 @@ namespace RiichiMahjong.UI
 
                 case "gameStarted":
                     LocalSeat = msg.YourSeat;
+                    PendingHandDealt = null;   // clear stale buffer from any previous game
                     // For matchmade games there is no prior roomJoined, so the server
                     // includes the room code here for reconnection support.
                     if (!string.IsNullOrEmpty(msg.Code)) RoomCode = msg.Code;
@@ -358,6 +369,16 @@ namespace RiichiMahjong.UI
 
                 case "handDealt":
                     var yourTiles = (msg.YourTiles ?? new()).Select(d => d.ToTile()).ToList();
+                    var handDoraTiles = msg.DoraIndicators?.Select(d => d.ToTile()).ToList();
+                    PendingHandDealt = new HandDealtPayload(
+                        yourTiles,
+                        msg.TileCounts ?? Array.Empty<int>(),
+                        msg.Scores     ?? Array.Empty<int>(),
+                        msg.DealerSeat,
+                        msg.RoundWind  ?? "East",
+                        msg.Counters,
+                        msg.Names      ?? Array.Empty<string>(),
+                        handDoraTiles);
                     OnHandDealt?.Invoke(
                         yourTiles,
                         msg.TileCounts  ?? Array.Empty<int>(),
@@ -366,8 +387,8 @@ namespace RiichiMahjong.UI
                         msg.RoundWind   ?? "East",
                         msg.Counters,
                         msg.Names       ?? Array.Empty<string>());
-                    if (msg.DoraIndicators != null)
-                        OnDoraUpdated?.Invoke(msg.DoraIndicators.Select(d => d.ToTile()).ToList());
+                    if (handDoraTiles != null)
+                        OnDoraUpdated?.Invoke(handDoraTiles);
                     break;
 
                 case "tileDrawn":
@@ -412,11 +433,13 @@ namespace RiichiMahjong.UI
                         .Select(row => row.Select(d => d.ToTile()).ToList())
                         .ToList();
                     OnHandEnded?.Invoke(
-                        msg.Reason     ?? "",
-                        msg.Winners    ?? Array.Empty<int>(),
-                        msg.ScoreBoard ?? new(),
+                        msg.Reason        ?? "",
+                        msg.Winners       ?? Array.Empty<int>(),
+                        msg.ScoreBoard    ?? new(),
                         msg.Han, msg.Fu, msg.BasePoints,
-                        msg.YakuNames  ?? Array.Empty<string>(),
+                        msg.YakuNames     ?? Array.Empty<string>(),
+                        msg.YakuFans      ?? Array.Empty<int>(),
+                        msg.YakuIsYakuman ?? Array.Empty<bool>(),
                         msg.DoraCount,
                         msg.UraDoraCount,
                         msg.WinnerSeat,

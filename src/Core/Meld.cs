@@ -86,8 +86,10 @@ namespace RiichiMahjong.Core
         /// True if this meld is considered "open" (breaks full concealment of the hand).
         /// KanClosed is declared but does NOT open the hand.
         /// </summary>
-        public bool IsOpen => Type is MeldType.Chi or MeldType.Pon
-                                    or MeldType.KanOpen or MeldType.KanExtended;
+        // Chi and Pon are open only when called from another player's discard (Source != None).
+        // WinChecker creates concealed sequences/triplets with Source=None — those are NOT open.
+        public bool IsOpen => ((Type is MeldType.Chi or MeldType.Pon) && Source != ClaimSource.None)
+                                    || Type is MeldType.KanOpen or MeldType.KanExtended;
 
         /// <summary>True for any kind of Kan (open, closed, or extended).</summary>
         public bool IsKan => Type is MeldType.KanOpen or MeldType.KanClosed or MeldType.KanExtended;

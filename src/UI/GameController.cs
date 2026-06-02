@@ -232,10 +232,26 @@ namespace RiichiMahjong.UI
 
         private void InitNetworkMode()
         {
-            _humanSeat = NetworkManager.Instance!.LocalSeat;
+            var nm = NetworkManager.Instance!;
+            _humanSeat = nm.LocalSeat;
             foreach (var ml in _netMelds) ml.Clear();
             SubscribeNetworkEvents();
-            _hud.SetStatus("Waiting for hand to be dealt…");
+
+            // handDealt may have arrived while the scene change was still deferred.
+            // Replay it now that we're subscribed; clear the buffer so it isn't replayed again.
+            var pending = nm.PendingHandDealt;
+            if (pending != null)
+            {
+                nm.ClearPendingHandDealt();
+                Net_OnHandDealt(pending.YourTiles, pending.TileCounts, pending.Scores,
+                    pending.DealerSeat, pending.RoundWind, pending.Counters, pending.Names);
+                if (pending.DoraIndicators != null)
+                    Net_OnDoraUpdated(pending.DoraIndicators);
+            }
+            else
+            {
+                _hud.SetStatus("Waiting for hand to be dealt…");
+            }
         }
 
         // =====================================================================
@@ -556,8 +572,8 @@ namespace RiichiMahjong.UI
         }
 
         private void Net_OnHandEnded(string reason, int[] winners, List<NetScoreEntry> scoreBoard,
-            int han, int fu, int basePoints, string[] yakuNames, int doraCount, int uraDoraCount,
-            int winnerSeat, int payerSeat)
+            int han, int fu, int basePoints, string[] yakuNames, int[] yakuFans, bool[] yakuIsYakuman,
+            int doraCount, int uraDoraCount, int winnerSeat, int payerSeat)
         {
             StopActionCountdown();
             ExitRiichiMode();
@@ -569,7 +585,20 @@ namespace RiichiMahjong.UI
                 _hud.ClearLastDiscardHighlight(ToVisualSeat(_netLastDiscarderSeat));
             _playerHand.ClearClaimTileHighlights();
 
-            // Reveal hands — in network mode opponents just flip their face-down tiles
+            // Reveal hands — rebuild opponent hands with actual tiles before flipping.
+            // RevealedHands is now sent by the server for all win types so opponents
+            // show their real hand rather than Man(1) placeholders.
+            var revealedForWin = NetworkManager.Instance?.LastRevealedHands;
+            for (int gs = 0; gs < 4; gs++)
+            {
+                if (gs == _humanSeat) continue;  // own hand is already correct
+                if (revealedForWin != null && gs < revealedForWin.Count
+                    && revealedForWin[gs].Count > 0)
+                {
+                    // Rebuild with actual tiles, then reveal
+                    GetHandDisplay(gs).Rebuild(revealedForWin[gs], _netMelds[gs], drawnTile: null);
+                }
+            }
             for (int i = 0; i < 4; i++)
                 GetHandDisplay(i).RevealAll();
 
@@ -617,16 +646,18 @@ namespace RiichiMahjong.UI
                 SoundManager.Instance?.Play(isTsumo ? Sound.WinTsumo : Sound.WinRon);
 
                 // Capture everything the scoring panel needs before the lambda
-                string[]        capturedNames     = _netNames;
-                int[]           capturedScores    = (int[])_netScores.Clone();
-                int             capturedWinner    = winnerSeat;
-                int             capturedDealer    = _netDealerSeat;
-                string[]        capturedYaku      = yakuNames;
-                int             capturedHan       = han;
-                int             capturedFu        = fu;
-                int             capturedDora      = doraCount;
-                int             capturedUraDora   = uraDoraCount;
-                int             capturedBase      = basePoints;
+                string[]        capturedNames       = _netNames;
+                int[]           capturedScores      = (int[])_netScores.Clone();
+                int             capturedWinner      = winnerSeat;
+                int             capturedDealer      = _netDealerSeat;
+                string[]        capturedYaku        = yakuNames;
+                int[]           capturedYakuFans    = yakuFans;
+                bool[]          capturedYakuYakuman = yakuIsYakuman;
+                int             capturedHan         = han;
+                int             capturedFu          = fu;
+                int             capturedDora        = doraCount;
+                int             capturedUraDora     = uraDoraCount;
+                int             capturedBase        = basePoints;
 
                 _hud.ShowWinCall(isTsumo, winnerName, onComplete: () =>
                     _hud.ShowScoringPanelNet(
@@ -638,6 +669,8 @@ namespace RiichiMahjong.UI
                         winnerSeat:     capturedWinner,
                         dealerSeat:     capturedDealer,
                         yakuNames:      capturedYaku,
+                        yakuFans:       capturedYakuFans,
+                        yakuIsYakuman:  capturedYakuYakuman,
                         han:            capturedHan,
                         fu:             capturedFu,
                         doraCount:      capturedDora,

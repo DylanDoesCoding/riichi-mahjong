@@ -321,9 +321,11 @@ namespace RiichiMahjong.Core
             PendingDiscard = tile;
             DiscarderIndex = playerIndex;
 
-            // Ippatsu window expires on the riichi player's own next discard.
-            // (BreakAllIppatsu handles the meld-call path; this handles the draw-pass path.)
-            player.Hand.ClearIppatsu();
+            // Ippatsu window expires on the riichi player's own next discard, but NOT on
+            // the riichi declaration discard itself (RiichiBetTurn == TurnNumber on that discard).
+            // BreakAllIppatsu handles the meld-call path; this handles the draw-pass path.
+            if (player.Hand.IsRiichi && player.RiichiBetTurn != TurnNumber)
+                player.Hand.ClearIppatsu();
 
 			// Record in the discarding player's own furiten tracker.
 			// Checks whether this discard matches any of the player's own historical discards
