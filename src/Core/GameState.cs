@@ -317,7 +317,13 @@ namespace RiichiMahjong.Core
 
             // Riichi lock: player may only discard the tile they just drew.
             // (Exceptions — tsumo and ankan — are handled by their own methods.)
-            if (player.Hand.IsRiichi && tile != player.Hand.DrawnTile)
+            //
+            // IMPORTANT: on the very turn riichi is declared (RiichiBetTurn == TurnNumber),
+            // DeclareRiichi() has already validated the discard candidate and sets IsRiichi
+            // before calling Discard() internally. We must bypass the lock on that turn so
+            // the riichi discard is not blocked — including when DrawnTile is null (dealer
+            // who received their 14 tiles via AddTiles() at game start).
+            if (player.Hand.IsRiichi && player.RiichiBetTurn != TurnNumber && tile != player.Hand.DrawnTile)
                 return false;
 
             if (!player.Hand.RemoveTile(tile)) return false;

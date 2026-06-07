@@ -184,6 +184,102 @@ static class RiichiTests
             Test("Riichi: forced discard of non-winning drawn tile succeeds", discardOk);
         }
 
+        // =====================================================================
+        // 8. GameState.DeclareRiichi — dealer (DrawnTile = null) regression
+        //    Bug: DeclareRiichi set hand.IsRiichi=true then called Discard() which
+        //    rejected any tile when DrawnTile==null, freezing the game.
+        // =====================================================================
+        {
+            var game = MakeGame();
+            var h0   = game.Players[0].Hand;
+            h0.Reset();
+            // Dealer has 14 tiles from AddTiles() — DrawnTile is null.
+            SetupTenpaiHand(h0);              // 13-tile tenpai hand; DrawnTile=null
+            var riichiDiscard = Tile.Man(8);  // discard 8m to stay tenpai on 6m/9m
+            h0.AddTiles(new[] { riichiDiscard });  // simulate 14th tile via AddTiles (DrawnTile stays null)
+
+            bool declared = game.DeclareRiichi(0, riichiDiscard);
+            Test("DeclareRiichi (dealer, DrawnTile=null): returns true", declared);
+            Test("DeclareRiichi (dealer, DrawnTile=null): phase is ClaimWindow",
+                 game.Phase == TurnPhase.ClaimWindow);
+            Test("DeclareRiichi (dealer, DrawnTile=null): hand.IsRiichi set",
+                 game.Players[0].Hand.IsRiichi);
+        }
+
+        // =====================================================================
+        // 9. GameState.DeclareRiichi — non-drawn tile discard regression
+        //    Player declares riichi discarding a tile from their original 13
+        //    (not the drawn tile). Previously the riichi lock blocked this.
+        //
+        //    Hand: 1m2m3m 4m5m6m 7m8m9m 1p2p3p 1s | drawn: 5s
+        //    Discarding 1s (non-drawn) leaves tenpai on 5s tanki.
+        //    Discarding 5s (drawn)     leaves tenpai on 1s tanki.
+        //    We test the non-drawn case.
+        // =====================================================================
+        {
+            var game = MakeGame();
+            var h0   = game.Players[0].Hand;
+            h0.Reset();
+            // 13 tiles: four complete sets + lone Sou(1) tanki wait
+            h0.AddTiles(new[]
+            {
+                Tile.Man(1), Tile.Man(2), Tile.Man(3),
+                Tile.Man(4), Tile.Man(5), Tile.Man(6),
+                Tile.Man(7), Tile.Man(8), Tile.Man(9),
+                Tile.Pin(1), Tile.Pin(2), Tile.Pin(3),
+                Tile.Sou(1),                            // tanki wait
+            });
+            h0.AddTile(Tile.Sou(5));     // drawn tile (different from riichi discard)
+            // DrawnTile = Sou(5); declaring riichi discarding Sou(1) instead
+            // → remaining: 4 sequences + Sou(5) tanki → tenpai ✓
+
+            bool declared = game.DeclareRiichi(0, Tile.Sou(1));
+            Test("DeclareRiichi (non-drawn discard): returns true", declared);
+            Test("DeclareRiichi (non-drawn discard): phase is ClaimWindow",
+                 game.Phase == TurnPhase.ClaimWindow);
+            Test("DeclareRiichi (non-drawn discard): hand.IsRiichi set",
+                 game.Players[0].Hand.IsRiichi);
+        }
+
+        // =====================================================================
+        // 10. After GameState.DeclareRiichi, the claim window resolves and the
+        //     next player gets their draw (full game-loop continuation test).
+        //     Uses the same non-drawn-tile discard scenario as test 9.
+        // =====================================================================
+        {
+            var game = MakeGame();
+            var h0   = game.Players[0].Hand;
+            h0.Reset();
+            h0.AddTiles(new[]
+            {
+                Tile.Man(1), Tile.Man(2), Tile.Man(3),
+                Tile.Man(4), Tile.Man(5), Tile.Man(6),
+                Tile.Man(7), Tile.Man(8), Tile.Man(9),
+                Tile.Pin(1), Tile.Pin(2), Tile.Pin(3),
+                Tile.Sou(1),
+            });
+            h0.AddTile(Tile.Sou(5));  // DrawnTile = Sou(5), riichi discard = Sou(1)
+
+            int riichiEventFired   = 0;
+            int discardEventFired  = 0;
+            game.OnRiichiDeclared += _ => riichiEventFired++;
+            game.OnTileDiscarded  += (_, _) => discardEventFired++;
+
+            bool declared = game.DeclareRiichi(0, Tile.Sou(1));
+            Test("DeclareRiichi game-loop: returns true", declared);
+            Test("DeclareRiichi game-loop: OnRiichiDeclared fired once", riichiEventFired == 1);
+            Test("DeclareRiichi game-loop: OnTileDiscarded fired once",  discardEventFired == 1);
+            Test("DeclareRiichi game-loop: ClaimWindow opened",
+                 game.Phase == TurnPhase.ClaimWindow);
+
+            // Simulate AI passing on all claims — no one can claim a riichi discard here
+            game.PassAllClaims();
+            Test("DeclareRiichi game-loop: DrawPhase after PassAllClaims",
+                 game.Phase == TurnPhase.DrawPhase);
+            Test("DeclareRiichi game-loop: next player is seat 1",
+                 game.CurrentPlayerIndex == 1);
+        }
+
         Console.WriteLine();
         return (pass, fail);
     }
