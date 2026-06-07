@@ -30,11 +30,12 @@ namespace RiichiMahjong.UI
         // ---- Multiplayer -----------------------------------------------------
 
         /// <summary>
-        /// Per-session UUID sent to the server on connect so a disconnected player
-        /// can reclaim their seat if they reconnect within the same app session.
-        /// Generated once at startup; a full game restart gets a new UUID.
+        /// Persistent UUID sent to the server on connect so a disconnected player
+        /// can reclaim their seat even after restarting the game client.
+        /// Generated once and saved to disk; the same UUID is reused across sessions
+        /// so a cold-start reconnect still works as long as the server room is alive.
         /// </summary>
-        public static string PlayerUuid { get; } = System.Guid.NewGuid().ToString("N");
+        public static string PlayerUuid { get; private set; } = "";
 
         /// <summary>Display name used in multiplayer lobbies. Saved to disk.</summary>
         public static string PlayerName { get; set; } = "";
@@ -51,13 +52,24 @@ namespace RiichiMahjong.UI
         public static void Load()
         {
             var cfg = new Godot.ConfigFile();
-            if (cfg.Load(ConfigPath) != Godot.Error.Ok) return;
+            bool configExists = cfg.Load(ConfigPath) == Godot.Error.Ok;
 
-            PlayerName    = (string)cfg.GetValue("player",  "name",       "");
-            ServerUrl     = (string)cfg.GetValue("player",  "serverUrl",  "wss://riichi-mahjong-server.onrender.com/ws");
-            UseBlackTiles = (bool)  cfg.GetValue("display", "blackTiles", false);
-            MusicVolume   = (float) cfg.GetValue("audio",   "music",      0.6f);
-            SfxVolume     = (float) cfg.GetValue("audio",   "sfx",        1.0f);
+            PlayerName    = configExists ? (string)cfg.GetValue("player",  "name",       "") : "";
+            ServerUrl     = configExists ? (string)cfg.GetValue("player",  "serverUrl",  "wss://riichi-mahjong-server.onrender.com/ws") : "wss://riichi-mahjong-server.onrender.com/ws";
+            UseBlackTiles = configExists ? (bool)  cfg.GetValue("display", "blackTiles", false) : false;
+            MusicVolume   = configExists ? (float) cfg.GetValue("audio",   "music",      0.6f) : 0.6f;
+            SfxVolume     = configExists ? (float) cfg.GetValue("audio",   "sfx",        1.0f) : 1.0f;
+
+            // UUID: load from disk so the player can rejoin after a game client restart.
+            // If no UUID is saved yet, generate one and immediately persist it.
+            string savedUuid = configExists ? (string)cfg.GetValue("player", "uuid", "") : "";
+            if (string.IsNullOrEmpty(savedUuid))
+            {
+                savedUuid = System.Guid.NewGuid().ToString("N");
+                cfg.SetValue("player", "uuid", savedUuid);
+                cfg.Save(ConfigPath);
+            }
+            PlayerUuid = savedUuid;
         }
 
         /// <summary>
@@ -68,6 +80,7 @@ namespace RiichiMahjong.UI
             var cfg = new Godot.ConfigFile();
             cfg.SetValue("player",  "name",       PlayerName);
             cfg.SetValue("player",  "serverUrl",  ServerUrl);
+            cfg.SetValue("player",  "uuid",       PlayerUuid);
             cfg.SetValue("display", "blackTiles", UseBlackTiles);
             cfg.SetValue("audio",   "music",      MusicVolume);
             cfg.SetValue("audio",   "sfx",        SfxVolume);
