@@ -983,7 +983,9 @@ namespace RiichiMahjong.UI
                 rotNames[vs]  = _netNames[i];
                 rotScores[vs] = _netScores[i];
             }
-            _hud.UpdateAll(rotNames, rotScores, ToVisualSeat(_netDealerSeat), _netRoundWind, _netCounters);
+            // All Last (オーラス): South round and absolute dealer seat 3 = final hand of hanchan.
+            bool isAllLast = _netRoundWind == "South" && _netDealerSeat == 3;
+            _hud.UpdateAll(rotNames, rotScores, ToVisualSeat(_netDealerSeat), _netRoundWind, _netCounters, isAllLast);
 
             // Furiten indicator — only shown while waiting (no drawn tile, 13 tiles in hand).
             // Permanent furiten: own discard matches a current wait — computed client-side.

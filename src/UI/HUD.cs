@@ -121,9 +121,10 @@ namespace RiichiMahjong.UI
 
         /// <summary>
         /// Refresh score/wind/round info from raw arrays (network mode — no GameState available).
+        /// <paramref name="isAllLast"/> = true when this is the final hand (South 4).
         /// </summary>
         public void UpdateAll(string[] names, int[] points, int dealerSeat,
-                              string roundWind, int counters)
+                              string roundWind, int counters, bool isAllLast = false)
         {
             string[] windLetters = { "E", "S", "W", "N" };
             for (int i = 0; i < 4; i++)
@@ -133,7 +134,7 @@ namespace RiichiMahjong.UI
                 int windOff = (i - dealerSeat + 4) % 4;
                 _windLabels[i].Text  = windLetters[windOff];
             }
-            _roundWindLabel.Text = $"{roundWind} Round";
+            _roundWindLabel.Text = isAllLast ? "All Last (オーラス)" : $"{roundWind} Round";
             _counterLabel.Text   = counters > 0 ? $"×{counters}" : "";
         }
 
@@ -168,7 +169,8 @@ namespace RiichiMahjong.UI
                 _windLabels[i].Text  = wind.ToString()[..1];  // "E", "S", "W", "N"
             }
 
-            _roundWindLabel.Text = $"{game.RoundWind} Round";
+            bool isAllLast = game.RoundWind == WindDirection.South && game.DealerIndex == 3;
+            _roundWindLabel.Text = isAllLast ? "All Last (オーラス)" : $"{game.RoundWind} Round";
             _counterLabel.Text   = game.Counters > 0 ? $"×{game.Counters}" : "";
 
             // Dora indicator tiles — show each indicator as an actual tile image
