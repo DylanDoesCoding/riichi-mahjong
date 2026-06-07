@@ -826,13 +826,15 @@ namespace RiichiMahjong.Core
 			Players[winner].Points    += score.RonPayment + score.CounterBonus + score.RiichiBetsWon;
 			RiichiBetsOnTable          = 0;
 
-			// Counter management
+			// Fire the event BEFORE advancing dealer so the UI snapshot
+			// captures this hand's dealer/round-wind, not the next hand's.
+			Phase = TurnPhase.HandEnd;
+			OnHandEnd?.Invoke(HandEndReason.Ron, new[] { winner });
+
+			// Advance dealer AFTER the event so BeginNextHand() gets correct state.
 			bool dealerWon = winner == DealerIndex;
 			if (dealerWon) Counters++;
 			else           { Counters = 0; AdvanceDealer(); }
-
-			Phase = TurnPhase.HandEnd;
-			OnHandEnd?.Invoke(HandEndReason.Ron, new[] { winner });
 		}
 
 		/// <summary>
@@ -864,11 +866,6 @@ namespace RiichiMahjong.Core
 			}
 			RiichiBetsOnTable = 0;
 
-			// Counter management — dealer wins if either winner is the dealer
-			bool dealerWon = winners.Any(w => w.winner == DealerIndex);
-			if (dealerWon) Counters++;
-			else           { Counters = 0; AdvanceDealer(); }
-
 			// Store first winner's data for the scoring panel
 			var (firstSeat, firstYaku, firstCtx, firstScore) = scores[0];
 			LastScoreResult   = firstScore;
@@ -877,8 +874,15 @@ namespace RiichiMahjong.Core
 			LastWinnerSeat    = firstSeat;
 			LastDiscarderSeat = discarder;
 
+			// Fire the event BEFORE advancing dealer so the UI snapshot
+			// captures this hand's dealer/round-wind, not the next hand's.
 			Phase = TurnPhase.HandEnd;
 			OnHandEnd?.Invoke(HandEndReason.Ron, winners.Select(w => w.winner).ToArray());
+
+			// Advance dealer AFTER the event so BeginNextHand() gets correct state.
+			bool dealerWon = winners.Any(w => w.winner == DealerIndex);
+			if (dealerWon) Counters++;
+			else           { Counters = 0; AdvanceDealer(); }
 		}
 
 		private void ResolveTsumo(int winner, YakuCheckResult yakuResult, WinCheckResult winCheck)
@@ -907,11 +911,14 @@ namespace RiichiMahjong.Core
 			Players[winner].Points += score.RiichiBetsWon + score.CounterBonus;
 			RiichiBetsOnTable       = 0;
 
-			if (dealerWon) Counters++;
-			else           { Counters = 0; AdvanceDealer(); }
-
+			// Fire the event BEFORE advancing dealer so the UI snapshot
+			// captures this hand's dealer/round-wind, not the next hand's.
 			Phase = TurnPhase.HandEnd;
 			OnHandEnd?.Invoke(HandEndReason.Tsumo, new[] { winner });
+
+			// Advance dealer AFTER the event so BeginNextHand() gets correct state.
+			if (dealerWon) Counters++;
+			else           { Counters = 0; AdvanceDealer(); }
 		}
 
 		private void ResolveExhaustiveDraw()
@@ -953,12 +960,14 @@ namespace RiichiMahjong.Core
 					}
 				}
 
+				// Fire the event BEFORE advancing dealer so the UI snapshot
+				// captures this hand's dealer/round-wind, not the next hand's.
+				Phase = TurnPhase.HandEnd;
+				OnHandEnd?.Invoke(HandEndReason.NagashiMangan, nagashiWinners.ToArray());
+
 				// Dealer stays if they won nagashi; otherwise rotate
 				if (nagashiWinners.Contains(DealerIndex)) Counters++;
 				else AdvanceDealer();
-
-				Phase = TurnPhase.HandEnd;
-				OnHandEnd?.Invoke(HandEndReason.NagashiMangan, nagashiWinners.ToArray());
 				return;
 			}
 
@@ -988,17 +997,18 @@ namespace RiichiMahjong.Core
 				foreach (int i in notenPlayers)  Players[i].Points -= perNoten;
 			}
 
-			// Counter placed if dealer is tenpai; riichi bets stay on table
-			if (tenpaiPlayers.Contains(DealerIndex))
-				Counters++;
-			// Else: dealer rotates (handled in AdvanceDealer)
-
-			// Dealer stays if they were tenpai
-			if (!tenpaiPlayers.Contains(DealerIndex))
-				AdvanceDealer();
-
+			// Fire the event BEFORE advancing dealer so the UI snapshot
+			// captures this hand's dealer/round-wind, not the next hand's.
 			Phase = TurnPhase.HandEnd;
 			OnHandEnd?.Invoke(HandEndReason.ExhaustiveDraw, tenpaiPlayers.ToArray());
+
+			// Counter placed if dealer is tenpai; riichi bets stay on table.
+			// Dealer stays if they were tenpai; otherwise rotate.
+			// Advance state AFTER the event so BeginNextHand() gets correct values.
+			if (tenpaiPlayers.Contains(DealerIndex))
+				Counters++;
+			else
+				AdvanceDealer();
 		}
 
 		// =====================================================================
