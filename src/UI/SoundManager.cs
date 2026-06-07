@@ -58,9 +58,10 @@ namespace RiichiMahjong.UI
             int count = Enum.GetValues<Sound>().Length;
             _streams = new AudioStream?[count];
 
-            // Build each sound directly as an AudioStreamWAV (no file I/O needed)
-            _streams[(int)Sound.TileDiscard]    = BuildStream(() => BuildTileClack(0.95f));
-            _streams[(int)Sound.TileDraw]       = BuildStream(() => BuildTileClack(0.55f, 0.85f));
+            // Tile clack — load from asset; fall back to synthesised if missing
+            var clackAsset = GD.Load<AudioStream>("res://Assets/Sounds/UpdatedMahjong_tile_Clack.mp3");
+            _streams[(int)Sound.TileDiscard]    = clackAsset ?? BuildStream(() => BuildTileClack(0.95f));
+            _streams[(int)Sound.TileDraw]       = clackAsset ?? BuildStream(() => BuildTileClack(0.55f, 0.85f));
             _streams[(int)Sound.Riichi]         = BuildStream(BuildRiichi);
             _streams[(int)Sound.WinTsumo]       = BuildStream(() => BuildWinFanfare(true));
             _streams[(int)Sound.WinRon]         = BuildStream(() => BuildWinFanfare(false));
