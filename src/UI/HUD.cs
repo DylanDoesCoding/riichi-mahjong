@@ -33,6 +33,7 @@ namespace RiichiMahjong.UI
         [Signal] public delegate void KyuushuPressedEventHandler();
         [Signal] public delegate void NextHandPressedEventHandler();
         [Signal] public delegate void MenuPressedEventHandler();
+        [Signal] public delegate void YakuReferencePressedEventHandler();      // opens hand-reference overlay
         [Signal] public delegate void ScoringContinuePressedEventHandler();   // kept for compat
         [Signal] public delegate void ScoringNextHandPressedEventHandler();
         [Signal] public delegate void ScoringMenuPressedEventHandler();
@@ -1724,6 +1725,28 @@ namespace RiichiMahjong.UI
 
             btn.Pressed += () => EmitSignal(SignalName.MenuPressed);
             AddChild(btn);
+
+            // Yaku reference button — top-left, just below the menu button
+            var yakuBtn = new Button { Text = "?" };
+            yakuBtn.SetAnchorsAndOffsetsPreset(LayoutPreset.TopLeft);
+            yakuBtn.OffsetLeft   = 8;
+            yakuBtn.OffsetTop    = 50;
+            yakuBtn.OffsetRight  = 48;
+            yakuBtn.OffsetBottom = 84;
+            yakuBtn.TooltipText  = "Yaku Reference";
+            yakuBtn.AddThemeFontSizeOverride("font_size", 18);
+
+            var yakuStyle = new StyleBoxFlat();
+            yakuStyle.BgColor = new Color(0.18f, 0.28f, 0.50f);
+            yakuStyle.SetCornerRadiusAll(6);
+            yakuBtn.AddThemeStyleboxOverride("normal", yakuStyle);
+            var yakuHover = (StyleBoxFlat)yakuStyle.Duplicate();
+            yakuHover.BgColor = yakuStyle.BgColor.Lightened(0.18f);
+            yakuBtn.AddThemeStyleboxOverride("hover", yakuHover);
+            yakuBtn.AddThemeColorOverride("font_color", Colors.White);
+
+            yakuBtn.Pressed += () => EmitSignal(SignalName.YakuReferencePressed);
+            AddChild(yakuBtn);
         }
 
         private static Button MakeButton(string text, Color color)

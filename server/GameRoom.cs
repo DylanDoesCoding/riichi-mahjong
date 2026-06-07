@@ -58,6 +58,9 @@ namespace RiichiServer
         // ---- Next-hand gate ---------------------------------------------------
         // Human host must send NextHand before we advance
         private TaskCompletionSource<bool>? _nextHandTcs;
+        // Set to true if host sends "nextHand" before the TCS is created (during the
+        // initial result-display pause), so the early click isn't silently dropped.
+        private bool _nextHandPending = false;
 
         // =====================================================================
         public GameRoom(string code)
@@ -324,7 +327,11 @@ namespace RiichiServer
                     break;
 
                 case ClientMessageType.NextHand:
-                    if (IsHost(conn)) _nextHandTcs?.TrySetResult(true);
+                    if (IsHost(conn))
+                    {
+                        _nextHandPending = true;          // capture even if TCS not live yet
+                        _nextHandTcs?.TrySetResult(true); // signal immediately if TCS is ready
+                    }
                     break;
 
                 case ClientMessageType.Kyuushu:
@@ -791,7 +798,40 @@ namespace RiichiServer
 
             if (_connections[seat] != null)
             {
-                // Human seat — wait for their discard/tsumo/riichi/kan message.
+                var hand = _game.Players[seat].Hand;
+
+                // Riichi auto-discard: a player in riichi can only discard the drawn tile,
+                // so if they cannot tsumo and cannot legally ankan, the server discards
+                // for them immediately — no wait timer needed.
+                if (hand.IsRiichi)
+                {
+                    bool canTsumo = _game.WinChecker_CanWinTsumo(seat);
+                    bool canAnkan = hand.DrawnTile != null
+                                 && _game.Wall.KanCount < 4
+                                 && hand.CanRiichiAnkan(hand.DrawnTile);
+
+                    if (!canTsumo && !canAnkan)
+                    {
+                        await Task.Delay(AiThinkMs);   // brief pause so it feels natural
+                        await _gameSem.WaitAsync();
+                        try
+                        {
+                            var drawn = _game.Players[seat].Hand.DrawnTile;
+                            if (drawn != null) _game.Discard(seat, drawn);
+                        }
+                        finally { _gameSem.Release(); }
+
+                        await FlushOutboxAsync();
+
+                        if (_game.Phase == TurnPhase.ClaimWindow)
+                            await HandleClaimWindowAsync();
+                        else if (_game.Phase == TurnPhase.DrawPhase)
+                            await AdvanceDrawPhaseAsync();
+                        return;
+                    }
+                }
+
+                // Human seat (not in forced-discard riichi) — wait for their message.
                 // HandlePlayerActionAsync will drive things forward.
                 return;
             }
@@ -892,11 +932,20 @@ namespace RiichiServer
             // Give players time to see the scoring panel
             await Task.Delay(HandResultPauseMs);
 
-            // Wait for host to send "nextHand" (or auto-advance after a longer pause)
-            _nextHandTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var timeout  = Task.Delay(TimeSpan.FromSeconds(30));
-            await Task.WhenAny(_nextHandTcs.Task, timeout);
-            _nextHandTcs = null;
+            // No gate needed when no humans are connected — advance straight away.
+            if (_playerCount > 0)
+            {
+                // If the host already clicked "Next Hand" during the display pause, skip the wait.
+                if (!_nextHandPending)
+                {
+                    // Wait for host to send "nextHand" (or auto-advance after a longer pause)
+                    _nextHandTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var timeout  = Task.Delay(TimeSpan.FromSeconds(30));
+                    await Task.WhenAny(_nextHandTcs.Task, timeout);
+                    _nextHandTcs = null;
+                }
+                _nextHandPending = false;
+            }
 
             if (_game == null || _game.Phase == TurnPhase.GameOver) return;
 
@@ -915,6 +964,7 @@ namespace RiichiServer
         private void OnNewHand_Handler()
         {
             if (_game == null) return;
+            _nextHandPending = false;  // clear stale flag from previous hand
 
             // Send each player their own tiles (filtered — never send others' tiles)
             for (int s = 0; s < MaxPlayers; s++)

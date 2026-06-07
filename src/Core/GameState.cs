@@ -314,6 +314,12 @@ namespace RiichiMahjong.Core
             IsRinshanDraw = false;   // discard clears the rinshan flag
 
             var player = Players[playerIndex];
+
+            // Riichi lock: player may only discard the tile they just drew.
+            // (Exceptions — tsumo and ankan — are handled by their own methods.)
+            if (player.Hand.IsRiichi && tile != player.Hand.DrawnTile)
+                return false;
+
             if (!player.Hand.RemoveTile(tile)) return false;
 
             // Record discard

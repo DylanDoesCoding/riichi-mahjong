@@ -168,6 +168,7 @@ namespace RiichiMahjong.UI
             _hud.KyuushuPressed         += OnHumanKyuushu;
             _hud.NextHandPressed        += OnNextHand;
             _hud.MenuPressed            += ReturnToMenu;
+            _hud.YakuReferencePressed   += OpenYakuReference;
             _hud.ScoringNextHandPressed += OnNextHand;
             _hud.ScoringMenuPressed     += ReturnToMenu;
 
@@ -2268,6 +2269,22 @@ namespace RiichiMahjong.UI
             _bgMusic?.Stop();
             if (_isNetworkMode) NetworkManager.Instance?.Disconnect();
             GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
+        }
+
+        private YakuReferenceOverlay? _yakuOverlay;
+
+        private void OpenYakuReference()
+        {
+            if (_yakuOverlay != null) return;   // already open
+            _yakuOverlay = YakuReferenceOverlay.Create();
+            _yakuOverlay.CloseRequested += CloseYakuReference;
+            AddChild(_yakuOverlay);
+        }
+
+        private void CloseYakuReference()
+        {
+            _yakuOverlay?.QueueFree();
+            _yakuOverlay = null;
         }
 
         /// <summary>

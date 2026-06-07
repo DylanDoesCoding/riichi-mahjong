@@ -1954,6 +1954,11 @@ static class Program
             }
         }
 
+        // ---- Riichi rules (separate file) ---
+        var (rPass, rFail) = RiichiTests.Run();
+        pass += rPass;
+        fail += rFail;
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         if (fail > 0)
         {
