@@ -14,10 +14,17 @@ namespace RiichiServer
         // Characters used for room codes — no O/0/I/1 to avoid confusion
         private const string CodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-        public GameRoom CreateRoom()
+        // Hard cap on concurrent rooms so a client opening many sockets
+        // cannot exhaust server memory by spamming createRoom.
+        private const int MaxRooms = 200;
+
+        /// <summary>Create a new room, or null if the server is at capacity.</summary>
+        public GameRoom? CreateRoom()
         {
             lock (_lock)
             {
+                if (_rooms.Count >= MaxRooms) return null;
+
                 string code;
                 do { code = GenerateCode(); } while (_rooms.ContainsKey(code));
 
@@ -29,6 +36,7 @@ namespace RiichiServer
 
         public GameRoom? FindRoom(string code)
         {
+            if (string.IsNullOrEmpty(code) || code.Length > 12) return null;
             lock (_lock)
                 return _rooms.TryGetValue(code.ToUpperInvariant(), out var r) ? r : null;
         }

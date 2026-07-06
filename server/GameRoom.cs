@@ -33,8 +33,11 @@ namespace RiichiServer
         private readonly PlayerConnection?[] _connections = new PlayerConnection?[MaxPlayers];
         private readonly string[]            _names       = ["CPU 1", "CPU 2", "CPU 3", "CPU 4"];
         private readonly string?[]           _playerUuids = new string?[MaxPlayers];  // for reconnection
+        private readonly object              _lobbyLock   = new();  // guards seats/names/uuids/host
         private int                          _hostSeat    = 0;
         private int                          _playerCount = 0;   // humans currently in lobby
+        private int                          _startedFlag = 0;   // Interlocked guard against double start
+        private volatile bool                _abandoned   = false; // all humans left mid-game — stop the loop
 
         // ---- Game logic -------------------------------------------------------
         private GameState?  _game;
@@ -50,10 +53,15 @@ namespace RiichiServer
         private readonly List<(int seat, ServerMessage msg)> _outbox = new();
 
         // ---- Claim window coordination ----------------------------------------
-        // Set by OnTileDiscarded_Handler; completed by human claim/pass action
-        private TaskCompletionSource<string>? _claimTcs;   // value = "pon"|"chi"|"ron"|"kan"|"pass"
-        private CancellationTokenSource?      _claimCts;
-        private int                           _claimWindowSeat = -1;  // human seat waiting
+        // Built by HandleClaimWindowAsync. Each eligible human's response is
+        // recorded under _claimLock; the TCS completes when every eligible seat
+        // has responded. Responses from seats that were not offered a claim are
+        // ignored, so one client can neither close nor steal another player's
+        // claim window.
+        private readonly object _claimLock = new();
+        private Dictionary<int, (bool ron, bool pon, bool chi, bool kan)>  _claimEligible  = new();
+        private Dictionary<int, (string action, TileDto? t1, TileDto? t2)> _claimResponses = new();
+        private TaskCompletionSource<bool>? _claimAllTcs;
 
         // ---- Next-hand gate ---------------------------------------------------
         // Human host must send NextHand before we advance
@@ -79,42 +87,54 @@ namespace RiichiServer
         {
             if (GameStarted) return -1;
 
-            for (int seat = 0; seat < MaxPlayers; seat++)
+            lock (_lobbyLock)
             {
-                if (_connections[seat] == null)
+                for (int seat = 0; seat < MaxPlayers; seat++)
                 {
-                    _connections[seat]   = conn;
-                    _names[seat]         = conn.DisplayName;
-                    _playerUuids[seat]   = conn.PlayerUuid;
-                    conn.Seat            = seat;
-                    _playerCount++;
-                    if (_playerCount == 1) _hostSeat = seat;
-                    return seat;
+                    if (_connections[seat] == null)
+                    {
+                        _connections[seat]   = conn;
+                        _names[seat]         = conn.DisplayName;
+                        _playerUuids[seat]   = conn.PlayerUuid;
+                        conn.Seat            = seat;
+                        _playerCount++;
+                        if (_playerCount == 1) _hostSeat = seat;
+                        return seat;
+                    }
                 }
+                return -1;   // full
             }
-            return -1;   // full
         }
 
         public void RemovePlayer(PlayerConnection conn)
         {
             int seat = conn.Seat;
             if (seat < 0 || seat >= MaxPlayers) return;
-            if (_connections[seat] != conn) return;
 
-            _connections[seat] = null;
-            _playerCount--;
-
-            // Re-assign host if needed
-            if (seat == _hostSeat)
+            lock (_lobbyLock)
             {
-                for (int s = 0; s < MaxPlayers; s++)
+                if (_connections[seat] != conn) return;
+
+                _connections[seat] = null;
+                _playerCount--;
+
+                // Re-assign host if needed
+                if (seat == _hostSeat)
                 {
-                    if (_connections[s] != null) { _hostSeat = s; break; }
+                    for (int s = 0; s < MaxPlayers; s++)
+                    {
+                        if (_connections[s] != null) { _hostSeat = s; break; }
+                    }
                 }
+
+                // Stop driving the game loop once no humans remain — the room is
+                // about to be removed and CPU-vs-CPU play would just burn cycles.
+                if (GameStarted && _playerCount <= 0)
+                    _abandoned = true;
             }
 
-            // If game is running, let claim/next-hand waiters know
-            _claimTcs?.TrySetResult("pass");
+            // A departed player can no longer respond to an open claim window
+            RecordClaimResponse(seat, "pass", null, null);
             _nextHandTcs?.TrySetResult(true);
         }
 
@@ -130,21 +150,24 @@ namespace RiichiServer
         {
             if (GameStarted) return false;
 
-            int seat = Array.IndexOf(_playerUuids, uuid);
-            if (seat < 0) return false;
+            lock (_lobbyLock)
+            {
+                int seat = Array.IndexOf(_playerUuids, uuid);
+                if (seat < 0) return false;
 
-            // Only reclaim if the slot is genuinely empty (player fully disconnected)
-            if (_connections[seat] != null) return false;
+                // Only reclaim if the slot is genuinely empty (player fully disconnected)
+                if (_connections[seat] != null) return false;
 
-            newConn.Seat        = seat;
-            newConn.DisplayName = _names[seat];
-            _connections[seat]  = newConn;
-            _playerCount++;
+                newConn.Seat        = seat;
+                newConn.DisplayName = _names[seat];
+                _connections[seat]  = newConn;
+                _playerCount++;
 
-            // Restore host if this was the host seat and no-one else claimed it
-            if (_playerCount == 1) _hostSeat = seat;
+                // Restore host if this was the host seat and no-one else claimed it
+                if (_playerCount == 1) _hostSeat = seat;
 
-            return true;
+                return true;
+            }
         }
 
         /// <summary>
@@ -155,27 +178,36 @@ namespace RiichiServer
         {
             if (_game == null) return false;
 
-            // Find the seat that belongs to this UUID
-            int seat = -1;
-            for (int s = 0; s < MaxPlayers; s++)
+            PlayerConnection? old;
+            lock (_lobbyLock)
             {
-                if (_playerUuids[s] == uuid) { seat = s; break; }
-            }
-            if (seat < 0) return false;
+                // Find the seat that belongs to this UUID
+                int s2 = -1;
+                for (int s = 0; s < MaxPlayers; s++)
+                {
+                    if (_playerUuids[s] == uuid) { s2 = s; break; }
+                }
+                if (s2 < 0) return false;
 
-            // Swap in the new connection
-            newConn.Seat        = seat;
-            newConn.DisplayName = _names[seat];
-            _connections[seat]  = newConn;
-            _playerCount        = Array.IndexOf(_connections, null) < 0
-                                  ? MaxPlayers
-                                  : _connections.Count(c => c != null);
+                // Swap in the new connection. If the old socket is still open
+                // (zombie connection, or the same UUID connecting twice) it gets
+                // closed below — exactly one live connection may hold a seat.
+                old = _connections[s2];
+                newConn.Seat        = s2;
+                newConn.DisplayName = _names[s2];
+                _connections[s2]    = newConn;
+                _playerCount        = _connections.Count(c => c != null);
+            }
+            int seat = newConn.Seat;
+
+            if (old != null && old != newConn && old.IsAlive)
+                await old.CloseAsync();
 
             // Build and send a full state snapshot under the lock
             await _gameSem.WaitAsync();
             try
             {
-                _outbox.Add((seat, BuildStateSnapshot(seat)));
+                Enqueue((seat, BuildStateSnapshot(seat)));
             }
             finally { _gameSem.Release(); }
 
@@ -239,6 +271,10 @@ namespace RiichiServer
 
         public async Task StartGameAsync()
         {
+            // A duplicate startGame message (or a matchmaking race) must not spawn
+            // a second concurrent game loop over the same GameState.
+            if (Interlocked.Exchange(ref _startedFlag, 1) == 1) return;
+
             GameStarted = true;
 
             // Build player names — CPU fills empty seats
@@ -304,26 +340,27 @@ namespace RiichiServer
                     break;
 
                 case ClientMessageType.Pon:
-                    _claimWindowSeat = seat;
-                    _claimTcs?.TrySetResult("pon");
+                    RecordClaimResponse(seat, "pon", null, null);
                     break;
 
                 case ClientMessageType.Chi:
-                    _claimWindowSeat = seat;
-                    _claimTcs?.TrySetResult("chi");
+                    RecordClaimResponse(seat, "chi", msg.T1, msg.T2);
                     break;
 
                 case ClientMessageType.Ron:
-                    _claimWindowSeat = seat;
-                    _claimTcs?.TrySetResult("ron");
+                    RecordClaimResponse(seat, "ron", null, null);
                     break;
 
                 case ClientMessageType.Kan:
+                    // No tile during a claim window = daiminkan claim; otherwise
+                    // it's an ankan/kakan on the player's own turn.
+                    if (msg.Tile == null && RecordClaimResponse(seat, "kan", null, null))
+                        break;
                     await HandleKanAsync(seat, msg.Tile);
                     break;
 
                 case ClientMessageType.Pass:
-                    _claimTcs?.TrySetResult("pass");
+                    RecordClaimResponse(seat, "pass", null, null);
                     break;
 
                 case ClientMessageType.NextHand:
@@ -349,17 +386,18 @@ namespace RiichiServer
             if (_game == null || tileDto == null) return;
 
             await _gameSem.WaitAsync();
-            bool ok;
+            bool ok = false;
             try
             {
                 var tile = tileDto.FindIn(_game.Players[seat].Hand.ClosedTiles);
-                if (tile == null) { _gameSem.Release(); return; }
-
-                ok = isRiichi
-                    ? _game.DeclareRiichi(seat, tile)
-                    : _game.Discard(seat, tile);
+                if (tile != null)
+                {
+                    ok = isRiichi
+                        ? _game.DeclareRiichi(seat, tile)
+                        : _game.Discard(seat, tile);
+                }
             }
-            finally { if (_gameSem.CurrentCount == 0) _gameSem.Release(); }
+            finally { _gameSem.Release(); }
 
             await FlushOutboxAsync();
             if (ok && _game.Phase == TurnPhase.ClaimWindow)
@@ -371,8 +409,14 @@ namespace RiichiServer
             if (_game == null) return;
 
             await _gameSem.WaitAsync();
-            bool ok;
-            try   { ok = _game.DeclareTsumo(); }
+            bool ok = false;
+            try
+            {
+                // DeclareTsumo() acts on the current player, so only that seat's
+                // own message may trigger it.
+                if (seat == _game.CurrentPlayerIndex)
+                    ok = _game.DeclareTsumo();
+            }
             finally { _gameSem.Release(); }
 
             await FlushOutboxAsync();
@@ -466,7 +510,7 @@ namespace RiichiServer
 
         private async Task HandleClaimWindowAsync()
         {
-            if (_game == null) return;
+            if (_game == null || _abandoned) return;
 
             var pendingTile = _game.PendingDiscard!;
             var discarder   = _game.DiscarderIndex;
@@ -476,6 +520,17 @@ namespace RiichiServer
 
             if (eligibleHumans.Count > 0)
             {
+                TaskCompletionSource<bool> allTcs;
+                lock (_claimLock)
+                {
+                    _claimEligible = eligibleHumans.ToDictionary(
+                        e => e.seat,
+                        e => (e.canRon, e.canPon, e.canChi, e.canKan));
+                    _claimResponses = new();
+                    allTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _claimAllTcs = allTcs;
+                }
+
                 // Tell eligible humans about the claim window
                 foreach (var (s, canRon, canPon, canChi, canKan) in eligibleHumans)
                 {
@@ -491,40 +546,73 @@ namespace RiichiServer
                     });
                 }
 
-                // Wait for a human claim or timeout
-                _claimTcs        = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-                _claimCts        = new CancellationTokenSource();
-                _claimWindowSeat = -1;
+                // Wait until every eligible human responds, or the window times out.
+                // Waiting for all responses (rather than the first) means one player
+                // passing cannot close the window on another player's ron, and two
+                // humans ronning the same tile are both honoured.
+                await Task.WhenAny(allTcs.Task, Task.Delay(TimeSpan.FromSeconds(ClaimWindowSeconds)));
 
-                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(ClaimWindowSeconds), _claimCts.Token);
-                var claimTask   = _claimTcs.Task;
-
-                string claimResult = "pass";
-                try
+                Dictionary<int, (string action, TileDto? t1, TileDto? t2)> responses;
+                lock (_claimLock)
                 {
-                    var winner = await Task.WhenAny(timeoutTask, claimTask);
-                    if (winner == claimTask)
-                        claimResult = claimTask.Result;
-                }
-                catch (OperationCanceledException) { }
-                finally
-                {
-                    _claimCts.Cancel();
-                    _claimTcs = null;
-                    _claimCts = null;
+                    responses       = _claimResponses;
+                    _claimEligible  = new();
+                    _claimResponses = new();
+                    _claimAllTcs    = null;
                 }
 
-                // Apply human claim if any
-                if (claimResult != "pass" && _claimWindowSeat >= 0)
+                // Resolve by claim priority: ron (possibly multiple) > kan > pon > chi
+                var ronSeats = responses.Where(kv => kv.Value.action == "ron")
+                                        .Select(kv => kv.Key).ToList();
+                if (ronSeats.Count > 0 && await ApplyHumanRonAsync(ronSeats, pendingTile))
+                    return;
+
+                foreach (var claimType in new[] { "kan", "pon", "chi" })
                 {
-                    bool applied = await ApplyHumanClaimAsync(_claimWindowSeat, claimResult, pendingTile);
-                    if (applied) return;   // game advanced in ApplyHumanClaim
+                    foreach (var kv in responses.Where(kv => kv.Value.action == claimType))
+                    {
+                        if (await ApplyHumanClaimAsync(kv.Key, claimType, pendingTile,
+                                                       kv.Value.t1, kv.Value.t2))
+                            return;
+                    }
                 }
             }
 
             // No human acted — let AI resolve
             await Task.Delay(AiClaimMs);
             await ResolveAiClaimsAsync();
+        }
+
+        /// <summary>
+        /// Record an eligible player's response to the open claim window.
+        /// Returns false (recording nothing) when no window is open, the seat was
+        /// not offered a claim, the seat already responded, or the claim type was
+        /// not one offered to that seat.
+        /// </summary>
+        private bool RecordClaimResponse(int seat, string action, TileDto? t1, TileDto? t2)
+        {
+            lock (_claimLock)
+            {
+                if (_claimAllTcs == null) return false;
+                if (!_claimEligible.TryGetValue(seat, out var can)) return false;
+                if (_claimResponses.ContainsKey(seat)) return false;
+
+                bool allowed = action switch
+                {
+                    "ron"  => can.ron,
+                    "pon"  => can.pon,
+                    "chi"  => can.chi,
+                    "kan"  => can.kan,
+                    "pass" => true,
+                    _      => false,
+                };
+                if (!allowed) return false;
+
+                _claimResponses[seat] = (action, t1, t2);
+                if (_claimResponses.Count == _claimEligible.Count)
+                    _claimAllTcs.TrySetResult(true);
+                return true;
+            }
         }
 
         private List<(int seat, bool canRon, bool canPon, bool canChi, bool canKan)> GetEligibleClaimers(Tile tile, int discarder)
@@ -562,7 +650,40 @@ namespace RiichiServer
             return result;
         }
 
-        private async Task<bool> ApplyHumanClaimAsync(int seat, string claimType, Tile pendingTile)
+        private async Task<bool> ApplyHumanRonAsync(List<int> humanRonSeats, Tile pendingTile)
+        {
+            if (_game == null) return false;
+
+            await _gameSem.WaitAsync();
+            bool ok;
+            try
+            {
+                // Include any AI seats that simultaneously want to ron on the same
+                // tile so ClaimRonMulti can detect double-ron and sanchahou correctly.
+                var candidates = new List<int>(humanRonSeats);
+                int discarderIdx = _game.DiscarderIndex;
+                for (int i = 1; i <= 3; i++)
+                {
+                    int s = (discarderIdx + i) % 4;
+                    if (candidates.Contains(s)) continue;   // already included
+                    if (_connections[s] != null) continue;  // human seat — only rons they declared
+                    var h = _game.Players[s].Hand;
+                    if (_ai[s].ShouldClaimRon(pendingTile, h, _game, s))
+                        candidates.Add(s);
+                }
+                ok = _game.ClaimRonMulti(candidates.ToArray());
+            }
+            finally { _gameSem.Release(); }
+
+            await FlushOutboxAsync();
+
+            if (!ok) return false;
+            await WaitForNextHandAsync();
+            return true;
+        }
+
+        private async Task<bool> ApplyHumanClaimAsync(int seat, string claimType, Tile pendingTile,
+                                                      TileDto? t1, TileDto? t2)
         {
             if (_game == null) return false;
 
@@ -572,34 +693,26 @@ namespace RiichiServer
             {
                 switch (claimType)
                 {
-                    case "ron":
-                    {
-                        // Include any AI seats that simultaneously want to ron on the same tile.
-                        // This lets ClaimRonMulti detect double-ron and sanchahou correctly.
-                        // Other human seats are skipped — they had the claim window and can
-                        // respond separately; forcing their ron would bypass their choice.
-                        var candidates = new List<int> { seat };
-                        int discarderIdx = _game.DiscarderIndex;
-                        for (int i = 1; i <= 3; i++)
-                        {
-                            int s = (discarderIdx + i) % 4;
-                            if (s == seat) continue;               // already included
-                            if (_connections[s] != null) continue; // other human seat
-                            var h = _game.Players[s].Hand;
-                            if (_ai[s].ShouldClaimRon(pendingTile, h, _game, s))
-                                candidates.Add(s);
-                        }
-                        ok = _game.ClaimRonMulti(candidates.ToArray());
-                        break;
-                    }
                     case "pon":
                         ok = _game.ClaimPon(seat);
                         break;
                     case "chi":
-                        var combo = _ai[seat].BestChiCombination(pendingTile, _game.Players[seat].Hand);
-                        if (combo != null)
-                            ok = _game.ClaimChi(seat, combo.Value.t1, combo.Value.t2);
+                    {
+                        // Use the combination the client chose when provided; fall
+                        // back to the AI's pick if absent or invalid.
+                        var hand = _game.Players[seat].Hand;
+                        var c1   = t1?.FindIn(hand.ClosedTiles);
+                        var c2   = t2?.FindIn(hand.ClosedTiles);
+                        if (c1 != null && c2 != null && !ReferenceEquals(c1, c2))
+                            ok = _game.ClaimChi(seat, c1, c2);
+                        if (!ok)
+                        {
+                            var combo = _ai[seat].BestChiCombination(pendingTile, hand);
+                            if (combo != null)
+                                ok = _game.ClaimChi(seat, combo.Value.t1, combo.Value.t2);
+                        }
                         break;
+                    }
                     case "kan":
                         ok = _game.ClaimDaiminkan(seat);
                         break;
@@ -611,25 +724,18 @@ namespace RiichiServer
 
             if (!ok) return false;
 
-            if (claimType == "ron")
-            {
-                await WaitForNextHandAsync();
-            }
-            else if (_game.Phase == TurnPhase.ActionPhase)
-            {
-                // Pon/Chi — human must discard, wait for their discard message
-                // (HandleDiscardAsync will drive things forward)
-            }
-            else if (_game.Phase == TurnPhase.DrawPhase)
+            if (_game.Phase == TurnPhase.DrawPhase)
             {
                 await AdvanceDrawPhaseAsync();
             }
+            // Pon/Chi leave the game in ActionPhase — the claiming human must
+            // discard next; HandleDiscardAsync drives things forward from there.
             return true;
         }
 
         private async Task ResolveAiClaimsAsync()
         {
-            if (_game == null) return;
+            if (_game == null || _abandoned) return;
 
             var tile     = _game.PendingDiscard;
             if (tile == null) return;
@@ -767,7 +873,7 @@ namespace RiichiServer
 
         private async Task AdvanceDrawPhaseAsync()
         {
-            if (_game == null || _game.Phase != TurnPhase.DrawPhase) return;
+            if (_game == null || _abandoned || _game.Phase != TurnPhase.DrawPhase) return;
 
             int seat = _game.CurrentPlayerIndex;
 
@@ -792,7 +898,7 @@ namespace RiichiServer
 
         private async Task AdvanceFromActionPhaseAsync()
         {
-            if (_game == null) return;
+            if (_game == null || _abandoned) return;
 
             int seat = _game.CurrentPlayerIndex;
 
@@ -842,7 +948,7 @@ namespace RiichiServer
 
         private async Task RunCpuActionAsync(int seat)
         {
-            if (_game == null) return;
+            if (_game == null || _abandoned) return;
 
             await Task.Delay(AiThinkMs);
 
@@ -929,6 +1035,8 @@ namespace RiichiServer
 
         private async Task WaitForNextHandAsync()
         {
+            if (_abandoned) return;
+
             // Give players time to see the scoring panel
             await Task.Delay(HandResultPauseMs);
 
@@ -977,7 +1085,7 @@ namespace RiichiServer
                                            .Select(i => _game.Players[i].Points)
                                            .ToArray();
 
-                _outbox.Add((s, new ServerMessage
+                Enqueue((s, new ServerMessage
                 {
                     Type           = ServerMessageType.HandDealt,
                     YourSeat       = s,
@@ -1011,7 +1119,7 @@ namespace RiichiServer
                 if (s == seat)
                 {
                     // Send actual tile to the player who drew it
-                    _outbox.Add((s, new ServerMessage
+                    Enqueue((s, new ServerMessage
                     {
                         Type           = ServerMessageType.TileDrawn,
                         Seat           = seat,
@@ -1022,7 +1130,7 @@ namespace RiichiServer
                 else
                 {
                     // Everyone else just sees a face-down draw (count goes up)
-                    _outbox.Add((s, new ServerMessage
+                    Enqueue((s, new ServerMessage
                     {
                         Type           = ServerMessageType.TileDrawn,
                         Seat           = seat,
@@ -1044,7 +1152,7 @@ namespace RiichiServer
             // Broadcast discard to all players — discards are public
             for (int s = 0; s < MaxPlayers; s++)
             {
-                _outbox.Add((s, new ServerMessage
+                Enqueue((s, new ServerMessage
                 {
                     Type            = ServerMessageType.TileDiscarded,
                     Seat            = seat,
@@ -1061,7 +1169,7 @@ namespace RiichiServer
             var doraIndicators = _game!.Wall.DoraIndicators.Select(TileDto.From).ToList();
             for (int s = 0; s < MaxPlayers; s++)
             {
-                _outbox.Add((s, new ServerMessage
+                Enqueue((s, new ServerMessage
                 {
                     Type           = ServerMessageType.MeldDeclared,
                     Seat           = seat,
@@ -1075,7 +1183,7 @@ namespace RiichiServer
         {
             for (int s = 0; s < MaxPlayers; s++)
             {
-                _outbox.Add((s, new ServerMessage
+                Enqueue((s, new ServerMessage
                 {
                     Type = ServerMessageType.RiichiDeclared,
                     Seat = seat,
@@ -1155,7 +1263,7 @@ namespace RiichiServer
                         .ToList();
                 }
 
-                _outbox.Add((s, msg));
+                Enqueue((s, msg));
             }
         }
 
@@ -1173,7 +1281,7 @@ namespace RiichiServer
 
             for (int s = 0; s < MaxPlayers; s++)
             {
-                _outbox.Add((s, new ServerMessage
+                Enqueue((s, new ServerMessage
                 {
                     Type       = ServerMessageType.GameOver,
                     ScoreBoard = scoreBoard,
@@ -1185,10 +1293,23 @@ namespace RiichiServer
         // Outbox flush + send helpers
         // =====================================================================
 
+        /// <summary>Queue an outbound message (targetSeat -1 = broadcast). Thread-safe.</summary>
+        private void Enqueue((int seat, ServerMessage msg) item)
+        {
+            lock (_outbox) _outbox.Add(item);
+        }
+
         private async Task FlushOutboxAsync()
         {
-            var items = _outbox.ToList();
-            _outbox.Clear();
+            // The outbox is filled under _gameSem, but flushes run outside it and
+            // can overlap between the game loop and per-connection action handlers.
+            List<(int seat, ServerMessage msg)> items;
+            lock (_outbox)
+            {
+                if (_outbox.Count == 0) return;
+                items = new List<(int, ServerMessage)>(_outbox);
+                _outbox.Clear();
+            }
 
             foreach (var (targetSeat, msg) in items)
             {

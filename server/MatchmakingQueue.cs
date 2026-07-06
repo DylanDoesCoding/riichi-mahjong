@@ -49,17 +49,19 @@ namespace RiichiServer
         /// <summary>
         /// Add a player to the queue.  Immediately fires a match if 4 players
         /// are present; starts the fill timer on the first enqueue.
-        /// Returns false if the player is already in the queue.
+        /// Sends queueJoined to the player BEFORE any match fires so the client
+        /// never sees gameStarted arrive first.
+        /// Returns false if the player (connection or UUID) is already queued.
         /// </summary>
         public async Task<bool> JoinAsync(
             PlayerConnection conn, string displayName, string uuid)
         {
-            List<QueueEntry>? toMatch    = null;
-            bool              startTimer = false;
+            List<QueueEntry>?        toMatch  = null;
+            CancellationTokenSource? timerCts = null;
 
             lock (_lock)
             {
-                if (_queue.Any(q => q.Conn == conn)) return false;
+                if (_queue.Any(q => q.Conn == conn || q.Uuid == uuid)) return false;
 
                 _queue.Add(new QueueEntry(conn, displayName, uuid));
 
@@ -74,18 +76,28 @@ namespace RiichiServer
                 else if (_queue.Count == 1)
                 {
                     // First player in — start the fill-with-CPU countdown
-                    startTimer = true;
-                    _timerCts  = new CancellationTokenSource();
+                    _timerCts = new CancellationTokenSource();
+                    timerCts  = _timerCts;
                 }
             }
 
+            // Confirm queue entry first so this send is ordered before gameStarted.
+            await conn.SendAsync(new Messages.ServerMessage
+            {
+                Type = Messages.ServerMessageType.QueueJoined,
+            });
+
             if (toMatch != null)
             {
-                await MatchAsync(toMatch);
+                // Fire the match off this receive loop — StartGameAsync drives the
+                // game until the first human decision point and must not block the
+                // joining player's message pump.
+                var players = toMatch;
+                _ = Task.Run(() => MatchAsync(players));
             }
-            else if (startTimer)
+            else if (timerCts != null)
             {
-                var cts = _timerCts!;
+                var cts = timerCts;
                 _ = Task.Run(async () =>
                 {
                     try
@@ -151,6 +163,12 @@ namespace RiichiServer
         private async Task MatchAsync(List<QueueEntry> players)
         {
             var room = _rooms.CreateRoom();
+            if (room == null)
+            {
+                foreach (var p in players)
+                    await p.Conn.SendErrorAsync("Server is full — try again later.");
+                return;
+            }
 
             foreach (var p in players)
             {
