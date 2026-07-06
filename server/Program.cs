@@ -263,6 +263,9 @@ app.MapGet("/ws", async context =>
 // ---- Health check --------------------------------------------------------
 app.MapGet("/health", () => Results.Ok(new { status = "ok", time = DateTime.UtcNow }));
 
+// ---- Suppress favicon.ico 404 log spam from browsers ---------------------
+app.MapGet("/favicon.ico", () => Results.NoContent());
+
 app.Run();
 
 // ---- Helpers -------------------------------------------------------------

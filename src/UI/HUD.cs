@@ -33,6 +33,7 @@ namespace RiichiMahjong.UI
         [Signal] public delegate void KyuushuPressedEventHandler();
         [Signal] public delegate void NextHandPressedEventHandler();
         [Signal] public delegate void MenuPressedEventHandler();
+        [Signal] public delegate void YakuReferencePressedEventHandler();      // opens hand-reference overlay
         [Signal] public delegate void ScoringContinuePressedEventHandler();   // kept for compat
         [Signal] public delegate void ScoringNextHandPressedEventHandler();
         [Signal] public delegate void ScoringMenuPressedEventHandler();
@@ -120,9 +121,10 @@ namespace RiichiMahjong.UI
 
         /// <summary>
         /// Refresh score/wind/round info from raw arrays (network mode — no GameState available).
+        /// <paramref name="isAllLast"/> = true when this is the final hand (South 4).
         /// </summary>
         public void UpdateAll(string[] names, int[] points, int dealerSeat,
-                              string roundWind, int counters)
+                              string roundWind, int counters, bool isAllLast = false)
         {
             string[] windLetters = { "E", "S", "W", "N" };
             for (int i = 0; i < 4; i++)
@@ -132,7 +134,7 @@ namespace RiichiMahjong.UI
                 int windOff = (i - dealerSeat + 4) % 4;
                 _windLabels[i].Text  = windLetters[windOff];
             }
-            _roundWindLabel.Text = $"{roundWind} Round";
+            _roundWindLabel.Text = isAllLast ? "All Last (オーラス)" : $"{roundWind} Round";
             _counterLabel.Text   = counters > 0 ? $"×{counters}" : "";
         }
 
@@ -167,7 +169,8 @@ namespace RiichiMahjong.UI
                 _windLabels[i].Text  = wind.ToString()[..1];  // "E", "S", "W", "N"
             }
 
-            _roundWindLabel.Text = $"{game.RoundWind} Round";
+            bool isAllLast = game.RoundWind == WindDirection.South && game.DealerIndex == 3;
+            _roundWindLabel.Text = isAllLast ? "All Last (オーラス)" : $"{game.RoundWind} Round";
             _counterLabel.Text   = game.Counters > 0 ? $"×{game.Counters}" : "";
 
             // Dora indicator tiles — show each indicator as an actual tile image
@@ -1724,6 +1727,28 @@ namespace RiichiMahjong.UI
 
             btn.Pressed += () => EmitSignal(SignalName.MenuPressed);
             AddChild(btn);
+
+            // Yaku reference button — top-left, just below the menu button
+            var yakuBtn = new Button { Text = "?" };
+            yakuBtn.SetAnchorsAndOffsetsPreset(LayoutPreset.TopLeft);
+            yakuBtn.OffsetLeft   = 8;
+            yakuBtn.OffsetTop    = 50;
+            yakuBtn.OffsetRight  = 48;
+            yakuBtn.OffsetBottom = 84;
+            yakuBtn.TooltipText  = "Yaku Reference";
+            yakuBtn.AddThemeFontSizeOverride("font_size", 18);
+
+            var yakuStyle = new StyleBoxFlat();
+            yakuStyle.BgColor = new Color(0.18f, 0.28f, 0.50f);
+            yakuStyle.SetCornerRadiusAll(6);
+            yakuBtn.AddThemeStyleboxOverride("normal", yakuStyle);
+            var yakuHover = (StyleBoxFlat)yakuStyle.Duplicate();
+            yakuHover.BgColor = yakuStyle.BgColor.Lightened(0.18f);
+            yakuBtn.AddThemeStyleboxOverride("hover", yakuHover);
+            yakuBtn.AddThemeColorOverride("font_color", Colors.White);
+
+            yakuBtn.Pressed += () => EmitSignal(SignalName.YakuReferencePressed);
+            AddChild(yakuBtn);
         }
 
         private static Button MakeButton(string text, Color color)

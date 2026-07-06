@@ -40,13 +40,13 @@ namespace RiichiMahjong.UI
         private int    _reconnectAttempts     = 0;
         private float  _reconnectTimer        = 0f;
         private bool   _waitingForSocketOpen  = false;
-        private const int   MaxReconnectAttempts = 3;
-        private const float ReconnectRetryDelay  = 3.0f;  // seconds between attempts
-        private const float SocketOpenTimeout     = 5.0f;  // seconds to wait for WS to open
+        private const int   MaxReconnectAttempts = 4;
+        private const float SocketOpenTimeout    = 30.0f; // seconds per attempt — Render free tier can take ~30s to cold start
 
         // Reconnect overlay — shown while disconnected (built in code)
         private Control? _reconnectOverlay;
         private Label?   _reconnectStatusLabel;
+        private Button?  _reconnectRetryBtn;
 
         // ---- Network-mode display state -------------------------------------
         // Populated/updated by incoming server messages; drives HandDisplay + HUD.
@@ -168,6 +168,7 @@ namespace RiichiMahjong.UI
             _hud.KyuushuPressed         += OnHumanKyuushu;
             _hud.NextHandPressed        += OnNextHand;
             _hud.MenuPressed            += ReturnToMenu;
+            _hud.YakuReferencePressed   += OpenYakuReference;
             _hud.ScoringNextHandPressed += OnNextHand;
             _hud.ScoringMenuPressed     += ReturnToMenu;
 
@@ -274,6 +275,7 @@ namespace RiichiMahjong.UI
             nm.OnRejoinSuccess      += Net_OnRejoinSuccess;
             nm.OnDoraUpdated        += Net_OnDoraUpdated;
             nm.OnFuritenChanged     += Net_OnFuritenChanged;
+            nm.OnError              += Net_OnError;
         }
 
         private void UnsubscribeNetworkEvents()
@@ -293,6 +295,7 @@ namespace RiichiMahjong.UI
             nm.OnGameStateSnapshot -= Net_OnGameStateSnapshot;
             nm.OnRejoinSuccess     -= Net_OnRejoinSuccess;
             nm.OnFuritenChanged    -= Net_OnFuritenChanged;
+            nm.OnError             -= Net_OnError;
         }
 
         // =====================================================================
@@ -763,6 +766,27 @@ namespace RiichiMahjong.UI
             BeginReconnectAttempt();
         }
 
+        private void Net_OnError(string error)
+        {
+            // Only act on errors that arrive while we're trying to reconnect.
+            // Normal in-game errors (e.g. invalid action) are not relevant here.
+            if (!_isReconnecting) return;
+
+            // "not found" / "not recognised" / "game ended" all mean the room is gone —
+            // the server may have restarted (Render free tier sleeps after 15 min).
+            bool roomGone = error.Contains("not found")
+                         || error.Contains("recognised")
+                         || error.Contains("game ended")
+                         || error.Contains("UUID");
+
+            string msg = roomGone
+                ? "The room no longer exists — the server may have restarted.\n" +
+                  "Ask your friends to create a new room."
+                : $"Server error: {error}";
+
+            OnReconnectFailed(msg);
+        }
+
         private void Net_OnRejoinSuccess()
         {
             // Server accepted the rejoin — hide overlay, game resumes via Net_OnGameStateSnapshot
@@ -770,6 +794,7 @@ namespace RiichiMahjong.UI
             _waitingForSocketOpen = false;
             _reconnectOverlay?.QueueFree();
             _reconnectOverlay = null;
+            _reconnectRetryBtn = null;
         }
 
         private void Net_OnGameStateSnapshot(
@@ -866,17 +891,19 @@ namespace RiichiMahjong.UI
                 _reconnectStatusLabel.Text = text;
         }
 
-        private void OnReconnectFailed()
+        private void OnReconnectFailed(string? message = null)
         {
             _isReconnecting       = false;
             _waitingForSocketOpen = false;
-            SetReconnectStatus("Could not reconnect. Please return to the menu.");
-            // Show only the Menu button by removing the reconnect button
+            SetReconnectStatus(message ?? "Could not reach the server.\nYou can try again or return to the menu.");
+            // Reveal the retry button so the player can try again manually
+            if (_reconnectRetryBtn != null) _reconnectRetryBtn.Visible = true;
         }
 
         private void ShowReconnectOverlay(string status)
         {
             _reconnectOverlay?.QueueFree();
+            _reconnectRetryBtn = null;
 
             // Full-screen dim
             var overlay = new Control();
@@ -888,13 +915,13 @@ namespace RiichiMahjong.UI
             bg.Color = new Color(0f, 0f, 0f, 0.75f);
             overlay.AddChild(bg);
 
-            // Centred card
+            // Centred card — taller to fit the retry button row
             var card = new PanelContainer();
             card.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.Center);
-            card.OffsetLeft   = -220;
-            card.OffsetTop    = -100;
-            card.OffsetRight  =  220;
-            card.OffsetBottom =  100;
+            card.OffsetLeft   = -250;
+            card.OffsetTop    = -130;
+            card.OffsetRight  =  250;
+            card.OffsetBottom =  130;
 
             var style = new StyleBoxFlat();
             style.BgColor     = new Color(0.08f, 0.10f, 0.18f, 1f);
@@ -907,36 +934,84 @@ namespace RiichiMahjong.UI
 
             var vbox = new VBoxContainer();
             vbox.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
-            vbox.OffsetLeft   = 20;
+            vbox.OffsetLeft   = 22;
             vbox.OffsetTop    = 16;
-            vbox.OffsetRight  = -20;
+            vbox.OffsetRight  = -22;
             vbox.OffsetBottom = -16;
             vbox.Alignment    = BoxContainer.AlignmentMode.Center;
-            vbox.AddThemeConstantOverride("separation", 14);
+            vbox.AddThemeConstantOverride("separation", 10);
 
+            // Title
             var title = new Label { Text = "⚠  Disconnected" };
             title.HorizontalAlignment = HorizontalAlignment.Center;
             title.AddThemeFontSizeOverride("font_size", 20);
             title.AddThemeColorOverride("font_color", new Color(1f, 0.7f, 0.3f));
             vbox.AddChild(title);
 
+            // Room code — so players know which room they were in
+            var nm = NetworkManager.Instance;
+            if (nm != null && !string.IsNullOrEmpty(nm.RoomCode))
+            {
+                var roomLabel = new Label { Text = $"Room: {nm.RoomCode}" };
+                roomLabel.HorizontalAlignment = HorizontalAlignment.Center;
+                roomLabel.AddThemeFontSizeOverride("font_size", 13);
+                roomLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.78f, 1f));
+                vbox.AddChild(roomLabel);
+            }
+
+            // Status text — updated by SetReconnectStatus()
             _reconnectStatusLabel = new Label { Text = status };
             _reconnectStatusLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _reconnectStatusLabel.AutowrapMode        = Godot.TextServer.AutowrapMode.Word;
             _reconnectStatusLabel.AddThemeFontSizeOverride("font_size", 14);
             _reconnectStatusLabel.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1f));
             vbox.AddChild(_reconnectStatusLabel);
 
-            var menuBtn = new Button { Text = "← Return to Menu" };
-            menuBtn.CustomMinimumSize = new Vector2(200, 42);
-            menuBtn.AddThemeFontSizeOverride("font_size", 15);
-            var btnStyle = new StyleBoxFlat();
-            btnStyle.BgColor = new Color(0.25f, 0.28f, 0.38f);
-            btnStyle.CornerRadiusTopLeft    = btnStyle.CornerRadiusTopRight    =
-            btnStyle.CornerRadiusBottomLeft = btnStyle.CornerRadiusBottomRight = 6;
-            menuBtn.AddThemeStyleboxOverride("normal", btnStyle);
+            // Button row — Retry (hidden during auto-attempts) + Menu
+            var btnRow = new HBoxContainer();
+            btnRow.Alignment = BoxContainer.AlignmentMode.Center;
+            btnRow.AddThemeConstantOverride("separation", 12);
+            btnRow.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+
+            _reconnectRetryBtn = new Button { Text = "↺  Try Again" };
+            _reconnectRetryBtn.CustomMinimumSize = new Vector2(160, 44);
+            _reconnectRetryBtn.AddThemeFontSizeOverride("font_size", 14);
+            var retryStyle = new StyleBoxFlat();
+            retryStyle.BgColor = new Color(0.18f, 0.42f, 0.22f);
+            retryStyle.CornerRadiusTopLeft    = retryStyle.CornerRadiusTopRight    =
+            retryStyle.CornerRadiusBottomLeft = retryStyle.CornerRadiusBottomRight = 6;
+            _reconnectRetryBtn.AddThemeStyleboxOverride("normal", retryStyle);
+            var retryHover = (StyleBoxFlat)retryStyle.Duplicate();
+            retryHover.BgColor = retryStyle.BgColor.Lightened(0.2f);
+            _reconnectRetryBtn.AddThemeStyleboxOverride("hover", retryHover);
+            _reconnectRetryBtn.AddThemeColorOverride("font_color", Colors.White);
+            _reconnectRetryBtn.Visible = false;   // shown only after all auto-attempts fail
+            _reconnectRetryBtn.Pressed += () =>
+            {
+                _reconnectAttempts    = 0;
+                _isReconnecting       = true;
+                if (_reconnectRetryBtn != null) _reconnectRetryBtn.Visible = false;
+                SetReconnectStatus($"Reconnecting… (attempt 1/{MaxReconnectAttempts})");
+                BeginReconnectAttempt();
+            };
+
+            var menuBtn = new Button { Text = "← Menu" };
+            menuBtn.CustomMinimumSize = new Vector2(160, 44);
+            menuBtn.AddThemeFontSizeOverride("font_size", 14);
+            var menuStyle = new StyleBoxFlat();
+            menuStyle.BgColor = new Color(0.25f, 0.28f, 0.38f);
+            menuStyle.CornerRadiusTopLeft    = menuStyle.CornerRadiusTopRight    =
+            menuStyle.CornerRadiusBottomLeft = menuStyle.CornerRadiusBottomRight = 6;
+            menuBtn.AddThemeStyleboxOverride("normal", menuStyle);
+            var menuHover = (StyleBoxFlat)menuStyle.Duplicate();
+            menuHover.BgColor = menuStyle.BgColor.Lightened(0.2f);
+            menuBtn.AddThemeStyleboxOverride("hover", menuHover);
             menuBtn.AddThemeColorOverride("font_color", Colors.White);
             menuBtn.Pressed += ReturnToMenu;
-            vbox.AddChild(menuBtn);
+
+            btnRow.AddChild(_reconnectRetryBtn);
+            btnRow.AddChild(menuBtn);
+            vbox.AddChild(btnRow);
 
             card.AddChild(vbox);
             overlay.AddChild(card);
@@ -982,7 +1057,9 @@ namespace RiichiMahjong.UI
                 rotNames[vs]  = _netNames[i];
                 rotScores[vs] = _netScores[i];
             }
-            _hud.UpdateAll(rotNames, rotScores, ToVisualSeat(_netDealerSeat), _netRoundWind, _netCounters);
+            // All Last (オーラス): South round and absolute dealer seat 3 = final hand of hanchan.
+            bool isAllLast = _netRoundWind == "South" && _netDealerSeat == 3;
+            _hud.UpdateAll(rotNames, rotScores, ToVisualSeat(_netDealerSeat), _netRoundWind, _netCounters, isAllLast);
 
             // Furiten indicator — only shown while waiting (no drawn tile, 13 tiles in hand).
             // Permanent furiten: own discard matches a current wait — computed client-side.
@@ -1123,26 +1200,26 @@ namespace RiichiMahjong.UI
                     var nm = NetworkManager.Instance;
                     if (nm != null && nm.IsSocketConnected)
                     {
-                        // Socket is open — send rejoin request
+                        // Socket is open — send rejoin request with stored UUID + room code
                         _waitingForSocketOpen = false;
                         nm.SendRejoinRoom(nm.RoomCode);
-                        SetReconnectStatus("Reconnected — syncing game state…");
+                        SetReconnectStatus("Connected — syncing game state…");
                     }
                     else
                     {
                         _reconnectTimer -= (float)delta;
+                        // Show countdown so the player knows we're still trying
+                        int secsLeft = Mathf.Max(0, (int)_reconnectTimer);
+                        SetReconnectStatus(
+                            $"Reconnecting… (attempt {_reconnectAttempts}/{MaxReconnectAttempts}, {secsLeft}s)");
+
                         if (_reconnectTimer <= 0f)
                         {
                             // Timed out waiting for socket
                             if (_reconnectAttempts < MaxReconnectAttempts)
-                            {
-                                _reconnectTimer = ReconnectRetryDelay;
                                 BeginReconnectAttempt();
-                            }
                             else
-                            {
                                 OnReconnectFailed();
-                            }
                         }
                     }
                 }
@@ -2268,6 +2345,22 @@ namespace RiichiMahjong.UI
             _bgMusic?.Stop();
             if (_isNetworkMode) NetworkManager.Instance?.Disconnect();
             GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
+        }
+
+        private YakuReferenceOverlay? _yakuOverlay;
+
+        private void OpenYakuReference()
+        {
+            if (_yakuOverlay != null) return;   // already open
+            _yakuOverlay = YakuReferenceOverlay.Create();
+            _yakuOverlay.CloseRequested += CloseYakuReference;
+            AddChild(_yakuOverlay);
+        }
+
+        private void CloseYakuReference()
+        {
+            _yakuOverlay?.QueueFree();
+            _yakuOverlay = null;
         }
 
         /// <summary>
