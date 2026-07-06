@@ -13,7 +13,18 @@ namespace RiichiServer
 {
     public class PlayerConnection
     {
+        // A single game message is tiny (a few hundred bytes). Anything near this
+        // cap is not a legitimate client — drop the connection rather than buffer it.
+        private const int MaxMessageBytes = 16 * 1024;
+
+        // Rate limit: no legitimate client sends more than a few messages per second.
+        private const int RateLimitWindowSeconds = 5;
+        private const int RateLimitMaxMessages   = 40;
+
         private readonly WebSocket _ws;
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private DateTime _rateWindowStart = DateTime.UtcNow;
+        private int      _rateWindowCount = 0;
         private static readonly JsonSerializerOptions _jsonOpts = new()
         {
             PropertyNamingPolicy        = JsonNamingPolicy.CamelCase,
@@ -38,13 +49,18 @@ namespace RiichiServer
         public async Task SendAsync(ServerMessage msg, CancellationToken ct = default)
         {
             if (!IsAlive) return;
+            // Serialize sends — the game loop and per-connection receive loops can
+            // both send to the same socket, and WebSocket forbids concurrent sends.
+            await _sendLock.WaitAsync(ct);
             try
             {
+                if (!IsAlive) return;
                 var json  = JsonSerializer.Serialize(msg, _jsonOpts);
                 var bytes = Encoding.UTF8.GetBytes(json);
                 await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
             }
             catch { /* Connection already closed */ }
+            finally { _sendLock.Release(); }
         }
 
         public async Task SendErrorAsync(string message, CancellationToken ct = default)
@@ -60,6 +76,7 @@ namespace RiichiServer
         {
             var buffer = new byte[4096];
             var sb     = new StringBuilder();
+            int totalBytes = 0;
 
             while (true)
             {
@@ -76,10 +93,23 @@ namespace RiichiServer
                 if (result.MessageType == WebSocketMessageType.Close)
                     return null;
 
+                totalBytes += result.Count;
+                if (totalBytes > MaxMessageBytes)
+                {
+                    await CloseAsync();
+                    return null;
+                }
+
                 sb.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
 
                 if (result.EndOfMessage)
                 {
+                    if (RateLimitExceeded())
+                    {
+                        await CloseAsync();
+                        return null;
+                    }
+
                     var json = sb.ToString();
                     sb.Clear();
                     try
@@ -92,6 +122,17 @@ namespace RiichiServer
                     }
                 }
             }
+        }
+
+        private bool RateLimitExceeded()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _rateWindowStart).TotalSeconds > RateLimitWindowSeconds)
+            {
+                _rateWindowStart = now;
+                _rateWindowCount = 0;
+            }
+            return ++_rateWindowCount > RateLimitMaxMessages;
         }
 
         public async Task CloseAsync()

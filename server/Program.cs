@@ -70,9 +70,14 @@ app.MapGet("/ws", async context =>
                 switch (msg.Type)
                 {
                     case ClientMessageType.CreateRoom:
-                        conn.DisplayName = msg.DisplayName ?? "Player";
-                        conn.PlayerUuid  = msg.Uuid ?? conn.PlayerId;
+                        conn.DisplayName = CleanDisplayName(msg.DisplayName);
+                        conn.PlayerUuid  = CleanUuid(msg.Uuid) ?? conn.PlayerId;
                         room = rooms.CreateRoom();
+                        if (room == null)
+                        {
+                            await conn.SendErrorAsync("Server is full — try again later.");
+                            break;
+                        }
                         room.AddPlayer(conn);
 
                         await conn.SendAsync(new ServerMessage
@@ -105,8 +110,8 @@ app.MapGet("/ws", async context =>
                             break;
                         }
 
-                        conn.DisplayName = msg.DisplayName ?? "Player";
-                        conn.PlayerUuid  = msg.Uuid ?? conn.PlayerId;
+                        conn.DisplayName = CleanDisplayName(msg.DisplayName);
+                        conn.PlayerUuid  = CleanUuid(msg.Uuid) ?? conn.PlayerId;
                         int seat = room.AddPlayer(conn);
                         if (seat < 0)
                         {
@@ -146,7 +151,7 @@ app.MapGet("/ws", async context =>
                             break;
                         }
 
-                        conn.PlayerUuid = msg.Uuid;
+                        conn.PlayerUuid = CleanUuid(msg.Uuid)!;
 
                         if (!rejoinRoom.GameStarted)
                         {
@@ -189,21 +194,13 @@ app.MapGet("/ws", async context =>
                         break;
 
                     case ClientMessageType.JoinQueue:
-                        conn.DisplayName = msg.DisplayName ?? "Player";
-                        conn.PlayerUuid  = msg.Uuid ?? conn.PlayerId;
+                        conn.DisplayName = CleanDisplayName(msg.DisplayName);
+                        conn.PlayerUuid  = CleanUuid(msg.Uuid) ?? conn.PlayerId;
+                        // JoinAsync sends queueJoined itself (before any match fires)
                         bool added = await queue.JoinAsync(
                             conn, conn.DisplayName, conn.PlayerUuid);
-                        if (added)
-                        {
-                            await conn.SendAsync(new ServerMessage
-                            {
-                                Type = ServerMessageType.QueueJoined,
-                            });
-                        }
-                        else
-                        {
+                        if (!added)
                             await conn.SendErrorAsync("Already in the matchmaking queue.");
-                        }
                         break;
 
                     case ClientMessageType.LeaveQueue:
@@ -278,4 +275,23 @@ static async Task BroadcastToRoom(GameRoom room, PlayerConnection exclude, Serve
     // need to send lobby updates. Use a simple approach: the room exposes
     // a broadcast helper.
     await room.BroadcastExceptAsync(exclude, msg);
+}
+
+// Display names are echoed to every player in the room — cap the length and
+// strip control characters so a client can't inject junk into other UIs.
+static string CleanDisplayName(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return "Player";
+    var cleaned = new string(raw.Trim().Where(c => !char.IsControl(c)).ToArray());
+    if (cleaned.Length == 0) return "Player";
+    return cleaned.Length <= 20 ? cleaned : cleaned[..20];
+}
+
+// UUIDs are client-generated opaque identity tokens — bound the length so they
+// can't be abused as a storage channel.
+static string? CleanUuid(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return null;
+    var trimmed = raw.Trim();
+    return trimmed.Length <= 64 ? trimmed : trimmed[..64];
 }
