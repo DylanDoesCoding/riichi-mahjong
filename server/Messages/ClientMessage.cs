@@ -15,6 +15,11 @@ namespace RiichiServer.Messages
         public string?   Code        { get; set; }   // JoinRoom, RejoinRoom
         public string?   Uuid        { get; set; }   // All lobby messages — client-generated identity
 
+        // ---- Account fields -----------------------------------------------------
+        public string?   Username    { get; set; }   // Register, Login
+        public string?   Password    { get; set; }   // Register, Login
+        public string?   Token       { get; set; }   // Optional on all lobby messages — signed session token
+
         // ---- Game action fields -------------------------------------------------
         public TileDto?  Tile        { get; set; }   // Discard, Riichi, Ankan
         public TileDto?  T1          { get; set; }   // Chi — first hand tile
@@ -40,5 +45,7 @@ namespace RiichiServer.Messages
         public const string JoinQueue  = "joinQueue";   // enter matchmaking queue
         public const string LeaveQueue = "leaveQueue";  // cancel matchmaking
         public const string Kyuushu   = "kyuushu";     // declare Kyuushu Kyuuhai abortive draw
+        public const string Register  = "register";    // create account (username + password)
+        public const string Login     = "login";       // sign in, returns authOk with token
     }
 }

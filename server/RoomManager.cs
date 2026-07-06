@@ -10,6 +10,12 @@ namespace RiichiServer
         private readonly Dictionary<string, GameRoom> _rooms = new();
         private readonly object _lock = new();
         private readonly Random _rng  = new();
+        private readonly Auth.IAccountStore? _accounts;   // stats recording; null = guest-only
+
+        public RoomManager(Auth.IAccountStore? accounts = null)
+        {
+            _accounts = accounts;
+        }
 
         // Characters used for room codes — no O/0/I/1 to avoid confusion
         private const string CodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -28,7 +34,7 @@ namespace RiichiServer
                 string code;
                 do { code = GenerateCode(); } while (_rooms.ContainsKey(code));
 
-                var room = new GameRoom(code);
+                var room = new GameRoom(code, _accounts);
                 _rooms[code] = room;
                 return room;
             }

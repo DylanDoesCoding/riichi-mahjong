@@ -35,6 +35,7 @@ namespace RiichiServer
         public string      PlayerId    { get; }            // Server-generated connection ID
         public string      PlayerUuid  { get; set; } = ""; // Client-provided UUID (for reconnection)
         public string      DisplayName { get; set; } = "Player";
+        public long?       AccountId   { get; set; }       // Set when a valid session token is presented
         public int         Seat        { get; set; } = -1;
         public bool        IsAlive     => _ws.State == WebSocketState.Open;
 

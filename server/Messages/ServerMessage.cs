@@ -79,6 +79,13 @@ namespace RiichiServer.Messages
         /// </summary>
         public List<List<TileDto>>? TenpaiWaits   { get; set; }
 
+        // ---- Account / auth ----------------------------------------------
+        // Sent as "authOk" after a successful register or login.
+        public string? Token       { get; set; }   // signed session token — client persists it
+        public string? Username    { get; set; }   // canonical account name
+        public int     GamesPlayed { get; set; }
+        public int     GamesWon    { get; set; }
+
         // ---- Reconnection state snapshot --------------------------------
         // Sent as "gameStateSnapshot" when a player rejoins mid-game.
         // Carries the full current board state so the client can resync.
@@ -109,5 +116,6 @@ namespace RiichiServer.Messages
         public const string GameStateSnapshot   = "gameStateSnapshot";  // full resync on rejoin
         public const string FuritenChanged     = "furitenChanged";     // human entered temporary furiten
         public const string QueueJoined        = "queueJoined";        // player entered matchmaking queue
+        public const string AuthOk             = "authOk";             // register/login succeeded — carries token + stats
     }
 }

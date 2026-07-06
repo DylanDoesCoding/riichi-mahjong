@@ -98,6 +98,12 @@ All messages are JSON over WebSocket. The `type` field is the discriminator.
 | `kan` | `tile?` | Ankan/kakan (with tile) or daiminkan (no tile) |
 | `pass` | — | Player passes on claim window |
 | `nextHand` | — | Host advances to next hand |
+| `register` | `username`, `password` | Create an account (returns `authOk`) |
+| `login` | `username`, `password` | Sign in (returns `authOk` with token + stats) |
+
+All lobby messages (`createRoom`, `joinRoom`, `rejoinRoom`, `joinQueue`) additionally accept
+an optional `token`. A valid token overrides `displayName`/`uuid` with the account identity,
+so reconnection works across devices and the lobby always shows the account name.
 
 ### Server → Client
 
@@ -117,6 +123,7 @@ All messages are JSON over WebSocket. The `type` field is the discriminator.
 | `handEnded` | `reason`, `winners`, `scoreBoard`, `yakuNames` | All players |
 | `gameOver` | `scoreBoard` | All players |
 | `gameStateSnapshot` | `yourTiles`, `tileCounts`, `scores`, `discards`, `melds`, `riichiSeats`, `currentTurn` | Sent on successful rejoin |
+| `authOk` | `token`, `username`, `gamesPlayed`, `gamesWon` | Register/login success — client persists the token |
 | `error` | `error` | Sent to the relevant player |
 
 ---
@@ -219,4 +226,29 @@ Render auto-deploys on every push to `feature/multiplayer` via the Blueprint syn
 - [x] **Server hardening** — claim-window authorization (per-seat eligibility, all-respond
       resolution honouring simultaneous human ron), tsumo seat validation, message size/rate
       limits, serialized sends, input sanitization, room cap, double-start guard
-- [ ] **Persistent accounts** — replace session UUIDs with real logins
+- [x] **Persistent accounts** — optional username/password login with lifetime stats
+
+## Accounts
+
+Accounts are optional — guests play exactly as before. Signing in gives a persistent
+name, cross-device reconnection, and lifetime stats (games played / won / total points),
+which the server records automatically at game over.
+
+- Passwords: PBKDF2-SHA256 (100k iterations), never stored in plain text.
+- Sessions: HMAC-signed tokens (30-day expiry) saved in the client's `settings.cfg`.
+- Storage: Postgres — set `DATABASE_URL` (Supabase/Neon URI or Npgsql keyword string).
+  The `accounts` table is created automatically on first boot.
+
+### Server environment variables
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Postgres connection (URI or keyword form). Unset = guest-only mode. `memory` = non-persistent in-memory store (testing). |
+| `TOKEN_SIGNING_KEY` | Secret for session-token HMAC. Unset = random per-boot key (logins won't survive restarts). |
+
+### Enabling accounts on Render
+
+1. Create a free Postgres database (e.g. [supabase.com](https://supabase.com) or [neon.tech](https://neon.tech)) and copy its connection URI.
+2. Render dashboard → the service → **Environment** → add `DATABASE_URL` = the URI
+   and `TOKEN_SIGNING_KEY` = any long random string (e.g. `openssl rand -hex 32`).
+3. Redeploy. The startup log shows `[Auth] Account store ready.` when connected.

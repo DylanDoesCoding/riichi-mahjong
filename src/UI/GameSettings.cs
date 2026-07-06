@@ -43,6 +43,17 @@ namespace RiichiMahjong.UI
         /// <summary>WebSocket server URL for multiplayer. Defaults to the live Render server.</summary>
         public static string ServerUrl { get; set; } = "wss://riichi-mahjong-server.onrender.com/ws";
 
+        // ---- Account ---------------------------------------------------------
+
+        /// <summary>Signed session token from the server (empty = not logged in).
+        /// Sent with lobby messages so the server recognises the account.</summary>
+        public static string AuthToken { get; set; } = "";
+
+        /// <summary>Account username shown in the lobby while logged in.</summary>
+        public static string AuthUsername { get; set; } = "";
+
+        public static bool IsLoggedIn => AuthToken.Length > 0;
+
         // ---- Persistence -----------------------------------------------------
 
         /// <summary>
@@ -59,6 +70,8 @@ namespace RiichiMahjong.UI
             UseBlackTiles = configExists ? (bool)  cfg.GetValue("display", "blackTiles", false) : false;
             MusicVolume   = configExists ? (float) cfg.GetValue("audio",   "music",      0.6f) : 0.6f;
             SfxVolume     = configExists ? (float) cfg.GetValue("audio",   "sfx",        1.0f) : 1.0f;
+            AuthToken     = configExists ? (string)cfg.GetValue("account", "token",      "") : "";
+            AuthUsername  = configExists ? (string)cfg.GetValue("account", "username",   "") : "";
 
             // UUID: load from disk so the player can rejoin after a game client restart.
             // If no UUID is saved yet, generate one and immediately persist it.
@@ -84,6 +97,8 @@ namespace RiichiMahjong.UI
             cfg.SetValue("display", "blackTiles", UseBlackTiles);
             cfg.SetValue("audio",   "music",      MusicVolume);
             cfg.SetValue("audio",   "sfx",        SfxVolume);
+            cfg.SetValue("account", "token",      AuthToken);
+            cfg.SetValue("account", "username",   AuthUsername);
             cfg.Save(ConfigPath);
         }
 

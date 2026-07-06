@@ -12,10 +12,41 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RiichiServer;
+using RiichiServer.Auth;
 using RiichiServer.Messages;
 
+// ---- Accounts (optional) --------------------------------------------------
+// DATABASE_URL unset  → guest-only mode, register/login return a friendly error.
+// DATABASE_URL=memory → in-memory store (local testing only).
+// otherwise           → Postgres (Supabase/Neon/Render URI or keyword string).
+IAccountStore? accounts = null;
+var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
+if (!string.IsNullOrWhiteSpace(dbUrl))
+{
+    try
+    {
+        accounts = dbUrl.Trim().Equals("memory", StringComparison.OrdinalIgnoreCase)
+            ? new InMemoryAccountStore()
+            : new PostgresAccountStore(dbUrl.Trim());
+        await accounts.InitAsync();
+        Console.WriteLine("[Auth] Account store ready.");
+    }
+    catch (Exception ex)
+    {
+        // The game must stay playable for guests even if the DB is down.
+        Console.WriteLine($"[Auth] ERROR: account store init failed — accounts disabled. {ex.Message}");
+        accounts = null;
+    }
+}
+else
+{
+    Console.WriteLine("[Auth] DATABASE_URL not set — running guest-only (accounts disabled).");
+}
+
+var tokens = new TokenService(Environment.GetEnvironmentVariable("TOKEN_SIGNING_KEY"));
+
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddSingleton<RoomManager>();
+builder.Services.AddSingleton(new RoomManager(accounts));
 
 var app = builder.Build();
 
@@ -51,6 +82,27 @@ app.MapGet("/ws", async context =>
     var conn = new PlayerConnection(ws, Guid.NewGuid().ToString("N")[..8]);
 
     GameRoom? room = null;
+    int failedLogins = 0;
+
+    // Resolve the connection's identity for a lobby message: a valid session
+    // token wins (account name + stable "acct:<id>" uuid so reconnection works
+    // across devices); otherwise fall back to the guest displayName/uuid.
+    void ApplyIdentity(ClientMessage msg)
+    {
+        if (!string.IsNullOrEmpty(msg.Token)
+            && tokens.TryValidate(msg.Token, out long acctId, out string acctName))
+        {
+            conn.AccountId   = acctId;
+            conn.DisplayName = acctName;
+            conn.PlayerUuid  = "acct:" + acctId;
+        }
+        else
+        {
+            conn.AccountId   = null;
+            conn.DisplayName = CleanDisplayName(msg.DisplayName);
+            conn.PlayerUuid  = CleanUuid(msg.Uuid) ?? conn.PlayerId;
+        }
+    }
 
     try
     {
@@ -70,8 +122,7 @@ app.MapGet("/ws", async context =>
                 switch (msg.Type)
                 {
                     case ClientMessageType.CreateRoom:
-                        conn.DisplayName = CleanDisplayName(msg.DisplayName);
-                        conn.PlayerUuid  = CleanUuid(msg.Uuid) ?? conn.PlayerId;
+                        ApplyIdentity(msg);
                         room = rooms.CreateRoom();
                         if (room == null)
                         {
@@ -110,8 +161,7 @@ app.MapGet("/ws", async context =>
                             break;
                         }
 
-                        conn.DisplayName = CleanDisplayName(msg.DisplayName);
-                        conn.PlayerUuid  = CleanUuid(msg.Uuid) ?? conn.PlayerId;
+                        ApplyIdentity(msg);
                         int seat = room.AddPlayer(conn);
                         if (seat < 0)
                         {
@@ -137,8 +187,12 @@ app.MapGet("/ws", async context =>
                         break;
 
                     case ClientMessageType.RejoinRoom:
-                        // Player is reconnecting with their UUID + room code (lobby or mid-game)
-                        if (string.IsNullOrWhiteSpace(msg.Code) || string.IsNullOrWhiteSpace(msg.Uuid))
+                    {
+                        // Player is reconnecting with their identity + room code (lobby or
+                        // mid-game). Identity = session token when present, else guest UUID.
+                        bool hasToken = !string.IsNullOrEmpty(msg.Token);
+                        if (string.IsNullOrWhiteSpace(msg.Code)
+                            || (!hasToken && string.IsNullOrWhiteSpace(msg.Uuid)))
                         {
                             await conn.SendErrorAsync("Room code and UUID required to rejoin.");
                             break;
@@ -151,12 +205,27 @@ app.MapGet("/ws", async context =>
                             break;
                         }
 
-                        conn.PlayerUuid = CleanUuid(msg.Uuid)!;
+                        if (hasToken && tokens.TryValidate(msg.Token!, out long rjId, out string rjName))
+                        {
+                            conn.AccountId   = rjId;
+                            conn.DisplayName = rjName;
+                            conn.PlayerUuid  = "acct:" + rjId;
+                        }
+                        else
+                        {
+                            var rjUuid = CleanUuid(msg.Uuid);
+                            if (rjUuid == null)
+                            {
+                                await conn.SendErrorAsync("Room code and UUID required to rejoin.");
+                                break;
+                            }
+                            conn.PlayerUuid = rjUuid;
+                        }
 
                         if (!rejoinRoom.GameStarted)
                         {
                             // ---- Lobby reconnect ----------------------------------------
-                            if (!rejoinRoom.RejoinLobby(msg.Uuid, conn))
+                            if (!rejoinRoom.RejoinLobby(conn.PlayerUuid, conn))
                             {
                                 await conn.SendErrorAsync("Could not rejoin lobby — seat no longer available.");
                                 break;
@@ -183,7 +252,7 @@ app.MapGet("/ws", async context =>
                         else
                         {
                             // ---- Mid-game reconnect -------------------------------------
-                            bool rejoined = await rejoinRoom.RejoinAsync(msg.Uuid, conn);
+                            bool rejoined = await rejoinRoom.RejoinAsync(conn.PlayerUuid, conn);
                             if (!rejoined)
                             {
                                 await conn.SendErrorAsync("Could not rejoin — UUID not recognised or game ended.");
@@ -192,10 +261,10 @@ app.MapGet("/ws", async context =>
                             room = rejoinRoom;
                         }
                         break;
+                    }
 
                     case ClientMessageType.JoinQueue:
-                        conn.DisplayName = CleanDisplayName(msg.DisplayName);
-                        conn.PlayerUuid  = CleanUuid(msg.Uuid) ?? conn.PlayerId;
+                        ApplyIdentity(msg);
                         // JoinAsync sends queueJoined itself (before any match fires)
                         bool added = await queue.JoinAsync(
                             conn, conn.DisplayName, conn.PlayerUuid);
@@ -207,6 +276,81 @@ app.MapGet("/ws", async context =>
                         queue.Leave(conn);
                         // No specific response needed — client just goes back to the connect panel
                         break;
+
+                    case ClientMessageType.Register:
+                    {
+                        if (accounts == null)
+                        {
+                            await conn.SendErrorAsync("Accounts are not enabled on this server.");
+                            break;
+                        }
+
+                        var uname = msg.Username?.Trim() ?? "";
+                        if (!System.Text.RegularExpressions.Regex.IsMatch(uname, "^[A-Za-z0-9_-]{3,20}$"))
+                        {
+                            await conn.SendErrorAsync("Username must be 3-20 characters: letters, numbers, _ or -.");
+                            break;
+                        }
+                        if (msg.Password is not { Length: >= 8 and <= 72 })
+                        {
+                            await conn.SendErrorAsync("Password must be 8-72 characters.");
+                            break;
+                        }
+
+                        var created = await accounts.CreateAsync(uname, PasswordHasher.Hash(msg.Password));
+                        if (created == null)
+                        {
+                            await conn.SendErrorAsync("That username is already taken.");
+                            break;
+                        }
+
+                        conn.AccountId   = created.Id;
+                        conn.DisplayName = created.Username;
+                        conn.PlayerUuid  = "acct:" + created.Id;
+                        await conn.SendAsync(new ServerMessage
+                        {
+                            Type     = ServerMessageType.AuthOk,
+                            Token    = tokens.Create(created.Id, created.Username),
+                            Username = created.Username,
+                        });
+                        break;
+                    }
+
+                    case ClientMessageType.Login:
+                    {
+                        if (accounts == null)
+                        {
+                            await conn.SendErrorAsync("Accounts are not enabled on this server.");
+                            break;
+                        }
+
+                        var uname = msg.Username?.Trim() ?? "";
+                        var acct  = uname.Length > 0 ? await accounts.GetByUsernameAsync(uname) : null;
+                        if (acct == null || msg.Password == null
+                            || !PasswordHasher.Verify(msg.Password, acct.PasswordHash))
+                        {
+                            // Same message for unknown user and wrong password (no enumeration),
+                            // small delay + strike-out to blunt brute force.
+                            failedLogins++;
+                            await Task.Delay(400);
+                            await conn.SendErrorAsync("Invalid username or password.");
+                            if (failedLogins >= 5) await conn.CloseAsync();
+                            break;
+                        }
+
+                        conn.AccountId   = acct.Id;
+                        conn.DisplayName = acct.Username;
+                        conn.PlayerUuid  = "acct:" + acct.Id;
+                        await conn.SendAsync(new ServerMessage
+                        {
+                            Type        = ServerMessageType.AuthOk,
+                            Token       = tokens.Create(acct.Id, acct.Username),
+                            Username    = acct.Username,
+                            GamesPlayed = acct.GamesPlayed,
+                            GamesWon    = acct.GamesWon,
+                        });
+                        break;
+                    }
 
                     default:
                         await conn.SendErrorAsync("Join or create a room first.");
