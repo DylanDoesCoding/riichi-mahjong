@@ -213,6 +213,10 @@ Render auto-deploys on every push to `feature/multiplayer` via the Blueprint syn
 
 ## What's Next (Phase 2)
 
-- [ ] **Matchmaking** — server auto-creates rooms for solo queue players
-- [ ] **Dora indicators** — server doesn't currently send dora tiles in `handDealt`
+- [x] **Matchmaking** — `joinQueue`/`leaveQueue`; 4 players match instantly, 30 s fill timer adds CPUs
+- [x] **Dora indicators** — sent in `handDealt`, `meldDeclared`, and rinshan `tileDrawn`
+- [x] **Temporary furiten** — server sends `furitenChanged`; client clears it on next draw
+- [x] **Server hardening** — claim-window authorization (per-seat eligibility, all-respond
+      resolution honouring simultaneous human ron), tsumo seat validation, message size/rate
+      limits, serialized sends, input sanitization, room cap, double-start guard
 - [ ] **Persistent accounts** — replace session UUIDs with real logins
