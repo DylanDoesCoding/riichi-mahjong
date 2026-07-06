@@ -104,6 +104,12 @@ namespace RiichiMahjong.UI
         /// <summary>True when the server reports the human player entered temporary furiten.</summary>
         public bool                    IsTemporaryFuriten { get; set; }
 
+        // ---- Account / auth ---------------------------------------------------
+        public string?                 Token          { get; set; }
+        public string?                 Username       { get; set; }
+        public int                     GamesPlayed    { get; set; }
+        public int                     GamesWon       { get; set; }
+
         // ---- Ryuukyoku reveal -----------------------------------------------
         /// <summary>Closed tiles per seat at exhaustive draw. Empty inner list = noten.</summary>
         public List<List<NetTileDto>>? RevealedHands  { get; set; }
@@ -120,6 +126,8 @@ namespace RiichiMahjong.UI
 
         // ---- State -----------------------------------------------------------
         public bool  IsSocketConnected  { get; private set; }
+        /// <summary>True only once the WebSocket handshake has completed (safe to Send).</summary>
+        public bool  IsSocketOpen       => _socketOpen;
         public int   LocalSeat    { get; private set; } = -1;
         public string RoomCode   { get; private set; } = "";
 
@@ -153,6 +161,7 @@ namespace RiichiMahjong.UI
         public event Action<int, Tile, bool, bool, bool, bool>? OnClaimWindowOpened;
         public event Action<bool>?                   OnFuritenChanged;  // isTemporaryFuriten
         public event Action?                         OnQueueJoined;     // entered matchmaking queue
+        public event Action<string, int, int>?       OnAuthOk;          // username, gamesPlayed, gamesWon
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
         public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int[], bool[], int, int, int, int>? OnHandEnded;
         //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, yakuFans, yakuIsYakuman, doraCount, uraDoraCount, winnerSeat, payerSeat
@@ -272,14 +281,25 @@ namespace RiichiMahjong.UI
         // Outbound actions — called by LobbyUI / GameController
         // =====================================================================
 
+        // Session token included on every lobby message when logged in (null when
+        // not — the serializer omits null fields, so guests look exactly as before).
+        private static string? AuthTok
+            => GameSettings.AuthToken.Length > 0 ? GameSettings.AuthToken : null;
+
         public void CreateRoom(string displayName)
-            => Send(new { type = "createRoom", displayName, uuid = GameSettings.PlayerUuid });
+            => Send(new { type = "createRoom", displayName, uuid = GameSettings.PlayerUuid, token = AuthTok });
 
         public void JoinRoom(string code, string displayName)
-            => Send(new { type = "joinRoom", code, displayName, uuid = GameSettings.PlayerUuid });
+            => Send(new { type = "joinRoom", code, displayName, uuid = GameSettings.PlayerUuid, token = AuthTok });
 
         public void SendRejoinRoom(string code)
-            => Send(new { type = "rejoinRoom", code, uuid = GameSettings.PlayerUuid });
+            => Send(new { type = "rejoinRoom", code, uuid = GameSettings.PlayerUuid, token = AuthTok });
+
+        public void SendRegister(string username, string password)
+            => Send(new { type = "register", username, password });
+
+        public void SendLogin(string username, string password)
+            => Send(new { type = "login", username, password });
 
         public void StartGame()
             => Send(new { type = "startGame" });
@@ -317,7 +337,7 @@ namespace RiichiMahjong.UI
             => Send(new { type = "nextHand" });
 
         public void SendJoinQueue(string displayName)
-            => Send(new { type = "joinQueue", displayName, uuid = GameSettings.PlayerUuid });
+            => Send(new { type = "joinQueue", displayName, uuid = GameSettings.PlayerUuid, token = AuthTok });
 
         public void SendLeaveQueue()
             => Send(new { type = "leaveQueue" });
@@ -365,6 +385,14 @@ namespace RiichiMahjong.UI
 
                 case "queueJoined":
                     OnQueueJoined?.Invoke();
+                    break;
+
+                case "authOk":
+                    // Persist the session so the player stays logged in across restarts
+                    GameSettings.AuthToken    = msg.Token    ?? "";
+                    GameSettings.AuthUsername = msg.Username ?? "";
+                    GameSettings.Save();
+                    OnAuthOk?.Invoke(msg.Username ?? "", msg.GamesPlayed, msg.GamesWon);
                     break;
 
                 case "handDealt":

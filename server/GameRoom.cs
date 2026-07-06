@@ -70,10 +70,17 @@ namespace RiichiServer
         // initial result-display pause), so the early click isn't silently dropped.
         private bool _nextHandPending = false;
 
+        // ---- Accounts (lifetime stats) ------------------------------------------
+        // Snapshot of each seat's account id, captured at game start so stats are
+        // recorded even for players who disconnect before the game ends.
+        private readonly Auth.IAccountStore? _accounts;
+        private readonly long?[]             _accountIds = new long?[MaxPlayers];
+
         // =====================================================================
-        public GameRoom(string code)
+        public GameRoom(string code, Auth.IAccountStore? accounts = null)
         {
-            Code = code;
+            Code      = code;
+            _accounts = accounts;
         }
 
         // =====================================================================
@@ -279,8 +286,11 @@ namespace RiichiServer
 
             // Build player names — CPU fills empty seats
             for (int s = 0; s < MaxPlayers; s++)
+            {
                 if (_connections[s] == null)
                     _names[s] = $"CPU {s + 1}";
+                _accountIds[s] = _connections[s]?.AccountId;
+            }
 
             // Create GameState — humanSeat = -1 means no single "the" human;
             // the room itself knows which seats are networked.
@@ -1286,6 +1296,35 @@ namespace RiichiServer
                     Type       = ServerMessageType.GameOver,
                     ScoreBoard = scoreBoard,
                 }));
+            }
+
+            // Record lifetime stats for account players (fire-and-forget — this
+            // handler runs synchronously under _gameSem, so no IO here).
+            if (_accounts != null)
+            {
+                int topScore = Enumerable.Range(0, MaxPlayers).Max(s => _game.Players[s].Points);
+                var results  = new List<(long id, bool won, int points)>();
+                for (int s = 0; s < MaxPlayers; s++)
+                {
+                    if (_accountIds[s] is long id)
+                        results.Add((id, _game.Players[s].Points == topScore, _game.Players[s].Points));
+                }
+
+                if (results.Count > 0)
+                {
+                    var store = _accounts;
+                    _ = Task.Run(async () =>
+                    {
+                        foreach (var (id, won, points) in results)
+                        {
+                            try { await store.RecordGameResultAsync(id, won, points); }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[Auth] Failed to record stats for account {id}: {ex.Message}");
+                            }
+                        }
+                    });
+                }
             }
         }
 

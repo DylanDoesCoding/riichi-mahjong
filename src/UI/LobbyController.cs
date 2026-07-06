@@ -27,6 +27,16 @@ namespace RiichiMahjong.UI
         private LineEdit _joinCodeInput = null!;
         private Label   _connectStatus = null!;
 
+        // ---- Account widgets ---------------------------------------------------
+        private Control  _accountForm    = null!;  // username/password + Sign In / Register
+        private Control  _loggedInBox    = null!;  // "Signed in as X" + Sign Out
+        private LineEdit _accUserInput   = null!;
+        private LineEdit _accPassInput   = null!;
+        private Label    _loggedInLabel  = null!;
+
+        // Auth request waiting for the WebSocket handshake to finish
+        private (string kind, string user, string pass)? _pendingAuth;
+
         // ---- Waiting panel widgets -------------------------------------------
         private Label           _roomCodeLabel    = null!;
         private Label           _waitingStatus    = null!;
@@ -101,6 +111,7 @@ namespace RiichiMahjong.UI
             nm.OnConnected    += HandleConnected;
             nm.OnDisconnected += HandleDisconnected;
             nm.OnQueueJoined  += HandleQueueJoined;
+            nm.OnAuthOk       += HandleAuthOk;
         }
 
         public override void _ExitTree()
@@ -119,6 +130,7 @@ namespace RiichiMahjong.UI
             nm.OnConnected    -= HandleConnected;
             nm.OnDisconnected -= HandleDisconnected;
             nm.OnQueueJoined  -= HandleQueueJoined;
+            nm.OnAuthOk       -= HandleAuthOk;
         }
 
         // =====================================================================
@@ -127,7 +139,7 @@ namespace RiichiMahjong.UI
 
         private void BuildConnectPanel()
         {
-            _connectPanel = MakeCard(offsetV: -260, offsetH: -220, height: 520, width: 440);
+            _connectPanel = MakeCard(offsetV: -330, offsetH: -220, height: 660, width: 440);
 
             var vbox = MakeCardVBox(_connectPanel);
 
@@ -150,7 +162,11 @@ namespace RiichiMahjong.UI
             vbox.AddChild(MakeLabel("Server URL"));
             _serverInput = MakeLineEdit("ws://localhost:5000/ws", GameSettings.ServerUrl);
             vbox.AddChild(_serverInput);
-            vbox.AddChild(Spacer(14));
+            vbox.AddChild(Spacer(10));
+
+            // ---- Account (optional) — sign in for a persistent name + stats ----
+            BuildAccountSection(vbox);
+            vbox.AddChild(Spacer(10));
 
             // Quick Play (matchmaking)
             var quickPlayBtn = MakeButton("⚡  Quick Play", new Color(0.18f, 0.45f, 0.28f));
@@ -218,6 +234,58 @@ namespace RiichiMahjong.UI
                 GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
             };
             vbox.AddChild(backBtn);
+        }
+
+        private void BuildAccountSection(VBoxContainer vbox)
+        {
+            vbox.AddChild(MakeLabel("Account (optional)"));
+
+            // ---- Logged-out form: username + password, Sign In / Register ----
+            var form = new VBoxContainer();
+            form.AddThemeConstantOverride("separation", 6);
+
+            var credRow = new HBoxContainer();
+            credRow.AddThemeConstantOverride("separation", 8);
+            _accUserInput = MakeLineEdit("Username");
+            _accPassInput = MakeLineEdit("Password");
+            _accPassInput.Secret = true;
+            credRow.AddChild(_accUserInput);
+            credRow.AddChild(_accPassInput);
+            form.AddChild(credRow);
+
+            var btnRow = new HBoxContainer();
+            btnRow.AddThemeConstantOverride("separation", 8);
+            var loginBtn    = MakeButton("Sign In", new Color(0.20f, 0.35f, 0.60f));
+            var registerBtn = MakeButton("Register", new Color(0.25f, 0.30f, 0.45f));
+            loginBtn.Pressed    += () => StartAuth("login");
+            registerBtn.Pressed += () => StartAuth("register");
+            btnRow.AddChild(loginBtn);
+            btnRow.AddChild(registerBtn);
+            form.AddChild(btnRow);
+
+            _accountForm = form;
+            vbox.AddChild(form);
+
+            // ---- Logged-in view: status + Sign Out ----
+            var inBox = new HBoxContainer();
+            inBox.AddThemeConstantOverride("separation", 8);
+
+            _loggedInLabel = new Label();
+            _loggedInLabel.AddThemeFontSizeOverride("font_size", 15);
+            _loggedInLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.90f, 0.65f));
+            _loggedInLabel.VerticalAlignment = VerticalAlignment.Center;
+            _loggedInLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            inBox.AddChild(_loggedInLabel);
+
+            var logoutBtn = MakeButton("Sign Out", new Color(0.35f, 0.22f, 0.22f), minWidth: 110);
+            logoutBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
+            logoutBtn.Pressed += OnLogout;
+            inBox.AddChild(logoutBtn);
+
+            _loggedInBox = inBox;
+            vbox.AddChild(inBox);
+
+            UpdateAccountUi();
         }
 
         private void BuildWaitingPanel()
@@ -460,6 +528,104 @@ namespace RiichiMahjong.UI
         }
 
         // =====================================================================
+        // Account handlers
+        // =====================================================================
+
+        /// <summary>
+        /// Kick off a login/register request. The request is buffered until the
+        /// WebSocket handshake completes (Send() silently drops messages while
+        /// the socket is still connecting), then flushed from HandleConnected.
+        /// </summary>
+        private void StartAuth(string kind)
+        {
+            var user = _accUserInput.Text.Trim();
+            var pass = _accPassInput.Text;
+            if (user.Length == 0 || pass.Length == 0)
+            {
+                SetConnectStatus("Enter a username and password.");
+                return;
+            }
+
+            var nm = NetworkManager.Instance;
+            if (nm == null) return;
+
+            var url = _serverInput.Text.Trim();
+            if (url.Length == 0) url = "ws://localhost:5000/ws";
+            GameSettings.ServerUrl = url;
+            GameSettings.Save();
+
+            _pendingAuth = (kind, user, pass);
+
+            if (nm.IsSocketOpen)
+            {
+                FlushPendingAuth();
+            }
+            else if (!nm.IsSocketConnected)
+            {
+                var err = nm.Connect(url);
+                if (err != Error.Ok)
+                {
+                    _pendingAuth = null;
+                    SetConnectStatus($"Connection failed ({err}). Is the server running?");
+                    return;
+                }
+                SetConnectStatus("Connecting…");
+            }
+            // else: handshake in progress — HandleConnected flushes the request
+        }
+
+        private void FlushPendingAuth()
+        {
+            if (_pendingAuth is not { } p) return;
+            _pendingAuth = null;
+
+            if (p.kind == "login") NetworkManager.Instance?.SendLogin(p.user, p.pass);
+            else                   NetworkManager.Instance?.SendRegister(p.user, p.pass);
+            SetConnectStatus(p.kind == "login" ? "Signing in…" : "Creating account…");
+        }
+
+        private void HandleAuthOk(string username, int gamesPlayed, int gamesWon)
+        {
+            _accPassInput.Text = "";
+            UpdateAccountUi();
+            SetConnectStatus(gamesPlayed > 0
+                ? $"Signed in as {username} — {gamesPlayed} games, {gamesWon} wins."
+                : $"Signed in as {username}.");
+        }
+
+        private void OnLogout()
+        {
+            GameSettings.AuthToken    = "";
+            GameSettings.AuthUsername = "";
+            GameSettings.Save();
+            UpdateAccountUi();
+            SetConnectStatus("Signed out.");
+        }
+
+        /// <summary>Switch the account section between form and signed-in views.
+        /// While signed in the display name comes from the account, so the name
+        /// input mirrors it and is locked.</summary>
+        private void UpdateAccountUi()
+        {
+            bool loggedIn = GameSettings.IsLoggedIn;
+            _accountForm.Visible = !loggedIn;
+            _loggedInBox.Visible = loggedIn;
+
+            if (loggedIn)
+            {
+                _loggedInLabel.Text = $"Signed in as {GameSettings.AuthUsername}";
+                _nameInput.Text     = GameSettings.AuthUsername;
+                _nameInput.Editable = false;
+            }
+            else
+            {
+                _nameInput.Editable = true;
+                if (_nameInput.Text == GameSettings.AuthUsername)
+                    _nameInput.Text = GameSettings.PlayerName;
+            }
+        }
+
+        // =====================================================================
         // NetworkManager event handlers
         // =====================================================================
 
@@ -505,6 +671,9 @@ namespace RiichiMahjong.UI
             // If we're reconnecting to a lobby, send the rejoin immediately
             if (_reconnectCode.Length > 0)
                 NetworkManager.Instance?.SendRejoinRoom(_reconnectCode);
+
+            // Send any login/register that was waiting for the handshake
+            FlushPendingAuth();
         }
 
         private void HandleQueueJoined()
