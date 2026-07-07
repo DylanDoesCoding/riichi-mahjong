@@ -157,6 +157,8 @@ namespace RiichiMahjong.UI
 
             _playerHand.TileDiscarded += OnHumanTileDiscarded;
             _playerHand.TileSelected  += OnHumanTileSelected;
+            _playerHand.TileHovered   += OnHandTileHovered;
+            _playerHand.TileUnhovered += OnHandTileUnhovered;
 
             _hud.RiichiPressed          += OnHumanRiichi;
             _hud.TsumoPressed           += OnHumanTsumo;
@@ -443,6 +445,7 @@ namespace RiichiMahjong.UI
         private void Net_OnDoraUpdated(List<Tile> indicators)
         {
             _hud.UpdateDoraIndicators(indicators);
+            _playerHand.UpdateDoraGlows(indicators.Select(TileWall.GetDoraTile).ToList());
         }
 
         private void Net_OnFuritenChanged(bool isTemporaryFuriten)
@@ -576,7 +579,7 @@ namespace RiichiMahjong.UI
 
         private void Net_OnHandEnded(string reason, int[] winners, List<NetScoreEntry> scoreBoard,
             int han, int fu, int basePoints, string[] yakuNames, int[] yakuFans, bool[] yakuIsYakuman,
-            int doraCount, int uraDoraCount, int winnerSeat, int payerSeat)
+            int doraCount, int uraDoraCount, int redDoraCount, int winnerSeat, int payerSeat)
         {
             StopActionCountdown();
             ExitRiichiMode();
@@ -660,6 +663,7 @@ namespace RiichiMahjong.UI
                 int             capturedFu          = fu;
                 int             capturedDora        = doraCount;
                 int             capturedUraDora     = uraDoraCount;
+                int             capturedRedDora     = redDoraCount;
                 int             capturedBase        = basePoints;
 
                 _hud.ShowWinCall(isTsumo, winnerName, onComplete: () =>
@@ -678,6 +682,7 @@ namespace RiichiMahjong.UI
                         fu:             capturedFu,
                         doraCount:      capturedDora,
                         uraDoraCount:   capturedUraDora,
+                        redDoraCount:   capturedRedDora,
                         totalPointsWon: capturedBase));
             }
             else if (r == "abortivedraw")
@@ -1319,6 +1324,58 @@ namespace RiichiMahjong.UI
         }
 
         private void _btnNextVisible(bool v) => _hud.SetNextHandButtonVisible(v);
+
+        // =====================================================================
+        // Hand-tile hover: highlight matching discards + show remaining count
+        // =====================================================================
+
+        private void OnHandTileHovered(TileNode node)
+        {
+            var t = node.TileData;
+            if (t == null) return;
+
+            // Highlight every visible copy in the rivers + dora indicator row
+            int shown = _hud.SetDiscardMatchHighlights(t);
+
+            // Count the copies WE can see: rivers/indicators + own hand + revealed melds
+            int inHand, inMelds;
+            if (_isNetworkMode)
+            {
+                inHand  = _netMyTiles.Count(x => x == t);
+                inMelds = _netMelds.Sum(list => list.Sum(m => m.Tiles.Count(x => x == t)));
+            }
+            else
+            {
+                inHand  = _game.Players[_humanSeat].Hand.ClosedTiles.Count(x => x == t);
+                inMelds = _game.Players.Sum(p => p.Hand.OpenMelds.Sum(m => m.Tiles.Count(x => x == t)));
+            }
+
+            int unseen = System.Math.Max(0, 4 - shown - inHand - inMelds);
+            string discarded = shown > 0 ? $"{shown} visible on table, " : "";
+            _hud.ShowTileInfo($"{TileLabel(t)}  —  {discarded}{unseen} unseen");
+        }
+
+        private void OnHandTileUnhovered()
+        {
+            _hud.SetDiscardMatchHighlights(null);
+            _hud.HideTileInfo();
+        }
+
+        private static string TileLabel(Tile t) => t.Suit switch
+        {
+            TileSuit.Man    => $"{t.Value} Man",
+            TileSuit.Pin    => $"{t.Value} Pin",
+            TileSuit.Sou    => $"{t.Value} Sou",
+            TileSuit.Wind   => $"{(WindDirection)t.Value} Wind",
+            TileSuit.Dragon => (DragonType)t.Value switch
+            {
+                DragonType.White => "White Dragon",
+                DragonType.Green => "Green Dragon",
+                DragonType.Red   => "Red Dragon",
+                _                => "Dragon",
+            },
+            _ => "Tile",
+        };
 
         private void OnTileDrawn(int playerIndex)
         {
@@ -2249,6 +2306,8 @@ namespace RiichiMahjong.UI
         private void HudUpdateLocal()
         {
             _hud.UpdateAll(_game);
+            if (_game.Wall != null)
+                _playerHand.UpdateDoraGlows(_game.Wall.GetActiveDoraTiles());
             var player = _game.Players[_humanSeat];
             // Show furiten only while waiting (no drawn tile) and in tenpai —
             // that's the only phase where it can actually block a ron claim.

@@ -64,6 +64,7 @@ namespace RiichiServer.Messages
         public bool[]?           YakuIsYakuman { get; set; }  // yakuman flag per yaku
         public int               DoraCount     { get; set; }
         public int               UraDoraCount  { get; set; }
+        public int               RedDoraCount  { get; set; }  // red fives (akadora) in the winning hand
         public int               WinnerSeat    { get; set; }
         public int               PayerSeat     { get; set; }  // -1 for tsumo
 

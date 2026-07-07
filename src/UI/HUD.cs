@@ -155,6 +155,8 @@ namespace RiichiMahjong.UI
                     _doraTileNodes[i].Visible = false;
                 }
             }
+
+            SetActiveDoraFromIndicators(indicators);
         }
 
         /// <summary>Refresh all score/wind/round info from current game state.</summary>
@@ -191,6 +193,8 @@ namespace RiichiMahjong.UI
                         _doraTileNodes[i].Visible = false;
                     }
                 }
+
+                SetActiveDoraFromIndicators(indicators);
             }
         }
 
@@ -205,6 +209,7 @@ namespace RiichiMahjong.UI
             var node = new TileNode();
             node.SetTile(tile, faceDown: false);
             node.SetInteractive(false);
+            ApplyRiverDoraGlow(node);
 
             if (isRiichiDiscard)
             {
@@ -304,6 +309,102 @@ namespace RiichiMahjong.UI
 
             foreach (var stick in _riichiSticks)
                 stick.Visible = false;
+        }
+
+        // =====================================================================
+        // Dora glow + hover tile-matching
+        // =====================================================================
+
+        // Live dora tiles (indicator+1) — kept current by UpdateDoraIndicators/UpdateAll
+        private readonly List<Tile> _activeDoraTiles = new();
+        private Label? _tileInfoLabel;
+
+        private void SetActiveDoraFromIndicators(IReadOnlyList<Tile> indicators)
+        {
+            _activeDoraTiles.Clear();
+            foreach (var ind in indicators)
+                _activeDoraTiles.Add(TileWall.GetDoraTile(ind));
+
+            // A kan can reveal a new indicator mid-hand — refresh existing rivers
+            foreach (var pool in _discardPools)
+                foreach (var node in RiverTileNodes(pool))
+                    ApplyRiverDoraGlow(node);
+        }
+
+        private void ApplyRiverDoraGlow(TileNode node)
+        {
+            var t = node.TileData;
+            node.SetDoraGlow(t != null && (t.IsRedDora || _activeDoraTiles.Any(d => d == t)));
+        }
+
+        /// <summary>All TileNodes in a discard pool, including riichi-rotated wrappers.</summary>
+        private static IEnumerable<TileNode> RiverTileNodes(Node pool)
+        {
+            foreach (var child in pool.GetChildren())
+            {
+                if (child is TileNode tn) yield return tn;
+                else
+                    foreach (var inner in child.GetChildren())
+                        if (inner is TileNode itn) yield return itn;
+            }
+        }
+
+        /// <summary>
+        /// Cyan-highlight every visible copy of <paramref name="tile"/> in the four
+        /// discard rivers and the dora indicator row. Pass null to clear.
+        /// Returns the number of copies highlighted.
+        /// </summary>
+        public int SetDiscardMatchHighlights(Tile? tile)
+        {
+            int count = 0;
+
+            foreach (var pool in _discardPools)
+                foreach (var node in RiverTileNodes(pool))
+                {
+                    bool match = tile != null && node.TileData == tile;
+                    node.SetMatchHighlight(match);
+                    if (match) count++;
+                }
+
+            foreach (var dn in _doraTileNodes)
+            {
+                bool match = tile != null && dn.Visible && dn.TileData == tile;
+                dn.SetMatchHighlight(match);
+                if (match) count++;
+            }
+
+            return count;
+        }
+
+        /// <summary>Show the hover info line ("2 Sou — 1 discarded, 2 unseen").</summary>
+        public void ShowTileInfo(string text)
+        {
+            if (_tileInfoLabel == null)
+            {
+                _tileInfoLabel = new Label();
+                _tileInfoLabel.SetAnchorsAndOffsetsPreset(LayoutPreset.BottomLeft);
+                _tileInfoLabel.OffsetLeft   = 18;
+                _tileInfoLabel.OffsetTop    = -178;
+                _tileInfoLabel.OffsetRight  = 460;
+                _tileInfoLabel.OffsetBottom = -152;
+                _tileInfoLabel.MouseFilter  = MouseFilterEnum.Ignore;
+
+                var settings = new LabelSettings();
+                settings.FontSize     = 16;
+                settings.FontColor    = new Color(0.95f, 0.93f, 0.75f);
+                settings.OutlineSize  = 4;
+                settings.OutlineColor = new Color(0f, 0f, 0f, 0.85f);
+                _tileInfoLabel.LabelSettings = settings;
+
+                AddChild(_tileInfoLabel);
+            }
+            _tileInfoLabel.Text    = text;
+            _tileInfoLabel.Visible = true;
+        }
+
+        public void HideTileInfo()
+        {
+            if (_tileInfoLabel != null) _tileInfoLabel.Visible = false;
         }
 
         // ---- Button visibility ----------------------------------------------
@@ -1365,6 +1466,9 @@ namespace RiichiMahjong.UI
             if (ctx.DoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Dora", $"{ctx.DoraCount} han", new Color(1f, 0.80f, 0.30f)));
+            if (ctx.RedDoraCount > 0)
+                _scoringYakuRows.AddChild(MakeScoringRow(
+                    "  Red 5 (aka)", $"{ctx.RedDoraCount} han", new Color(1f, 0.35f, 0.30f)));
             if (ctx.IsRiichi && ctx.UraDoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Ura Dora", $"{ctx.UraDoraCount} han", new Color(1f, 0.70f, 0.20f)));
@@ -1470,6 +1574,7 @@ namespace RiichiMahjong.UI
             int      fu,
             int      doraCount,
             int      uraDoraCount,
+            int      redDoraCount,
             int      totalPointsWon)
         {
             // ── Title ──
@@ -1491,6 +1596,9 @@ namespace RiichiMahjong.UI
             if (doraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Dora", $"{doraCount} han", new Color(1f, 0.80f, 0.30f)));
+            if (redDoraCount > 0)
+                _scoringYakuRows.AddChild(MakeScoringRow(
+                    "  Red 5 (aka)", $"{redDoraCount} han", new Color(1f, 0.35f, 0.30f)));
             if (uraDoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
                     "  Ura Dora", $"{uraDoraCount} han", new Color(1f, 0.70f, 0.20f)));
