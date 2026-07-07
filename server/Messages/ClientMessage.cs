@@ -16,9 +16,13 @@ namespace RiichiServer.Messages
         public string?   Uuid        { get; set; }   // All lobby messages — client-generated identity
 
         // ---- Account fields -----------------------------------------------------
-        public string?   Username    { get; set; }   // Register, Login
+        public string?   Username    { get; set; }   // Register, Login, RequestReset, ResetPassword
         public string?   Password    { get; set; }   // Register, Login
         public string?   Token       { get; set; }   // Optional on all lobby messages — signed session token
+        public string?   OldPassword { get; set; }   // ChangePassword
+        public string?   NewPassword { get; set; }   // ChangePassword, ResetPassword
+        public string?   Email       { get; set; }   // SetEmail
+        public string?   ResetCode   { get; set; }   // ResetPassword — 6-digit emailed code
 
         // ---- Game action fields -------------------------------------------------
         public TileDto?  Tile        { get; set; }   // Discard, Riichi, Ankan
@@ -47,5 +51,9 @@ namespace RiichiServer.Messages
         public const string Kyuushu   = "kyuushu";     // declare Kyuushu Kyuuhai abortive draw
         public const string Register  = "register";    // create account (username + password)
         public const string Login     = "login";       // sign in, returns authOk with token
+        public const string ChangePassword = "changePassword"; // token + old + new password
+        public const string SetEmail       = "setEmail";       // token + email (for recovery)
+        public const string RequestReset   = "requestReset";   // username → emails a reset code
+        public const string ResetPassword  = "resetPassword";  // username + code + new password
     }
 }

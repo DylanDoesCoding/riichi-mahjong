@@ -29,13 +29,24 @@ namespace RiichiMahjong.UI
 
         // ---- Account widgets ---------------------------------------------------
         private Control  _accountForm    = null!;  // username/password + Sign In / Register
-        private Control  _loggedInBox    = null!;  // "Signed in as X" + Sign Out
+        private Control  _loggedInBox    = null!;  // "Signed in as X" + Manage + Sign Out
         private LineEdit _accUserInput   = null!;
         private LineEdit _accPassInput   = null!;
         private Label    _loggedInLabel  = null!;
 
-        // Auth request waiting for the WebSocket handshake to finish
-        private (string kind, string user, string pass)? _pendingAuth;
+        // Manage-account sub-panel (visible while signed in, toggled by Manage)
+        private Control  _manageBox        = null!;
+        private LineEdit _emailInput       = null!;
+        private LineEdit _oldPassInput     = null!;
+        private LineEdit _newPassInput     = null!;
+
+        // Forgot-password sub-panel (toggled from the login form)
+        private Control  _resetBox         = null!;
+        private LineEdit _resetCodeInput   = null!;
+        private LineEdit _resetNewPassInput = null!;
+
+        // Send waiting for the WebSocket handshake to finish (auth/manage actions)
+        private System.Action? _pendingSend;
 
         // ---- Waiting panel widgets -------------------------------------------
         private Label           _roomCodeLabel    = null!;
@@ -110,8 +121,9 @@ namespace RiichiMahjong.UI
             nm.OnGameStarted  += HandleGameStarted;
             nm.OnConnected    += HandleConnected;
             nm.OnDisconnected += HandleDisconnected;
-            nm.OnQueueJoined  += HandleQueueJoined;
-            nm.OnAuthOk       += HandleAuthOk;
+            nm.OnQueueJoined     += HandleQueueJoined;
+            nm.OnAuthOk          += HandleAuthOk;
+            nm.OnAccountMessage  += HandleAccountMessage;
         }
 
         public override void _ExitTree()
@@ -129,8 +141,9 @@ namespace RiichiMahjong.UI
             nm.OnGameStarted  -= HandleGameStarted;
             nm.OnConnected    -= HandleConnected;
             nm.OnDisconnected -= HandleDisconnected;
-            nm.OnQueueJoined  -= HandleQueueJoined;
-            nm.OnAuthOk       -= HandleAuthOk;
+            nm.OnQueueJoined     -= HandleQueueJoined;
+            nm.OnAuthOk          -= HandleAuthOk;
+            nm.OnAccountMessage  -= HandleAccountMessage;
         }
 
         // =====================================================================
@@ -257,11 +270,44 @@ namespace RiichiMahjong.UI
             btnRow.AddThemeConstantOverride("separation", 8);
             var loginBtn    = MakeButton("Sign In", new Color(0.20f, 0.35f, 0.60f));
             var registerBtn = MakeButton("Register", new Color(0.25f, 0.30f, 0.45f));
+            var forgotBtn   = MakeButton("Forgot?", new Color(0.30f, 0.28f, 0.20f), minWidth: 90);
+            forgotBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
             loginBtn.Pressed    += () => StartAuth("login");
             registerBtn.Pressed += () => StartAuth("register");
+            forgotBtn.Pressed   += () => { _resetBox.Visible = !_resetBox.Visible; };
             btnRow.AddChild(loginBtn);
             btnRow.AddChild(registerBtn);
+            btnRow.AddChild(forgotBtn);
             form.AddChild(btnRow);
+
+            // ---- Forgot-password flow (hidden until "Forgot?" is pressed) ----
+            var resetBox = new VBoxContainer();
+            resetBox.AddThemeConstantOverride("separation", 6);
+            resetBox.Visible = false;
+
+            var resetHint = MakeLabel("Enter your username above, then request a code:");
+            resetBox.AddChild(resetHint);
+
+            var sendCodeBtn = MakeButton("Send Reset Code", new Color(0.30f, 0.30f, 0.45f));
+            sendCodeBtn.Pressed += OnRequestReset;
+            resetBox.AddChild(sendCodeBtn);
+
+            var resetRow = new HBoxContainer();
+            resetRow.AddThemeConstantOverride("separation", 8);
+            _resetCodeInput    = MakeLineEdit("6-digit code");
+            _resetCodeInput.MaxLength = 6;
+            _resetNewPassInput = MakeLineEdit("New password");
+            _resetNewPassInput.Secret = true;
+            resetRow.AddChild(_resetCodeInput);
+            resetRow.AddChild(_resetNewPassInput);
+            resetBox.AddChild(resetRow);
+
+            var doResetBtn = MakeButton("Reset Password", new Color(0.20f, 0.40f, 0.30f));
+            doResetBtn.Pressed += OnResetPassword;
+            resetBox.AddChild(doResetBtn);
+
+            _resetBox = resetBox;
+            form.AddChild(resetBox);
 
             _accountForm = form;
             vbox.AddChild(form);
@@ -277,6 +323,11 @@ namespace RiichiMahjong.UI
             _loggedInLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
             inBox.AddChild(_loggedInLabel);
 
+            var manageBtn = MakeButton("Manage", new Color(0.22f, 0.30f, 0.45f), minWidth: 100);
+            manageBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
+            manageBtn.Pressed += () => { _manageBox.Visible = !_manageBox.Visible; };
+            inBox.AddChild(manageBtn);
+
             var logoutBtn = MakeButton("Sign Out", new Color(0.35f, 0.22f, 0.22f), minWidth: 110);
             logoutBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
             logoutBtn.Pressed += OnLogout;
@@ -284,6 +335,38 @@ namespace RiichiMahjong.UI
 
             _loggedInBox = inBox;
             vbox.AddChild(inBox);
+
+            // ---- Manage-account sub-panel (hidden until "Manage" is pressed) ----
+            var manageBox = new VBoxContainer();
+            manageBox.AddThemeConstantOverride("separation", 6);
+            manageBox.Visible = false;
+
+            var emailRow = new HBoxContainer();
+            emailRow.AddThemeConstantOverride("separation", 8);
+            _emailInput = MakeLineEdit("Recovery email");
+            var setEmailBtn = MakeButton("Set Email", new Color(0.22f, 0.35f, 0.40f), minWidth: 110);
+            setEmailBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
+            setEmailBtn.Pressed += OnSetEmail;
+            emailRow.AddChild(_emailInput);
+            emailRow.AddChild(setEmailBtn);
+            manageBox.AddChild(emailRow);
+
+            var passRow = new HBoxContainer();
+            passRow.AddThemeConstantOverride("separation", 8);
+            _oldPassInput = MakeLineEdit("Current password");
+            _oldPassInput.Secret = true;
+            _newPassInput = MakeLineEdit("New password");
+            _newPassInput.Secret = true;
+            passRow.AddChild(_oldPassInput);
+            passRow.AddChild(_newPassInput);
+            manageBox.AddChild(passRow);
+
+            var changePassBtn = MakeButton("Change Password", new Color(0.30f, 0.30f, 0.45f));
+            changePassBtn.Pressed += OnChangePassword;
+            manageBox.AddChild(changePassBtn);
+
+            _manageBox = manageBox;
+            vbox.AddChild(manageBox);
 
             UpdateAccountUi();
         }
@@ -532,10 +615,48 @@ namespace RiichiMahjong.UI
         // =====================================================================
 
         /// <summary>
-        /// Kick off a login/register request. The request is buffered until the
-        /// WebSocket handshake completes (Send() silently drops messages while
-        /// the socket is still connecting), then flushed from HandleConnected.
+        /// Run a send-action once the WebSocket is usable. Send() silently drops
+        /// messages while the handshake is in flight, so the action is buffered
+        /// and flushed from HandleConnected when needed.
         /// </summary>
+        private void SendWhenConnected(System.Action send)
+        {
+            var nm = NetworkManager.Instance;
+            if (nm == null) return;
+
+            var url = _serverInput.Text.Trim();
+            if (url.Length == 0) url = "ws://localhost:5000/ws";
+            GameSettings.ServerUrl = url;
+            GameSettings.Save();
+
+            if (nm.IsSocketOpen)
+            {
+                send();
+                return;
+            }
+
+            _pendingSend = send;
+            if (!nm.IsSocketConnected)
+            {
+                var err = nm.Connect(url);
+                if (err != Error.Ok)
+                {
+                    _pendingSend = null;
+                    SetConnectStatus($"Connection failed ({err}). Is the server running?");
+                    return;
+                }
+                SetConnectStatus("Connecting…");
+            }
+            // else: handshake in progress — HandleConnected flushes the action
+        }
+
+        private void FlushPendingSend()
+        {
+            var send = _pendingSend;
+            _pendingSend = null;
+            send?.Invoke();
+        }
+
         private void StartAuth(string kind)
         {
             var user = _accUserInput.Text.Trim();
@@ -546,47 +667,84 @@ namespace RiichiMahjong.UI
                 return;
             }
 
-            var nm = NetworkManager.Instance;
-            if (nm == null) return;
-
-            var url = _serverInput.Text.Trim();
-            if (url.Length == 0) url = "ws://localhost:5000/ws";
-            GameSettings.ServerUrl = url;
-            GameSettings.Save();
-
-            _pendingAuth = (kind, user, pass);
-
-            if (nm.IsSocketOpen)
+            SendWhenConnected(() =>
             {
-                FlushPendingAuth();
-            }
-            else if (!nm.IsSocketConnected)
-            {
-                var err = nm.Connect(url);
-                if (err != Error.Ok)
-                {
-                    _pendingAuth = null;
-                    SetConnectStatus($"Connection failed ({err}). Is the server running?");
-                    return;
-                }
-                SetConnectStatus("Connecting…");
-            }
-            // else: handshake in progress — HandleConnected flushes the request
+                if (kind == "login") NetworkManager.Instance?.SendLogin(user, pass);
+                else                 NetworkManager.Instance?.SendRegister(user, pass);
+                SetConnectStatus(kind == "login" ? "Signing in…" : "Creating account…");
+            });
         }
 
-        private void FlushPendingAuth()
+        private void OnSetEmail()
         {
-            if (_pendingAuth is not { } p) return;
-            _pendingAuth = null;
-
-            if (p.kind == "login") NetworkManager.Instance?.SendLogin(p.user, p.pass);
-            else                   NetworkManager.Instance?.SendRegister(p.user, p.pass);
-            SetConnectStatus(p.kind == "login" ? "Signing in…" : "Creating account…");
+            var email = _emailInput.Text.Trim();
+            if (email.Length == 0) { SetConnectStatus("Enter an email address."); return; }
+            SendWhenConnected(() =>
+            {
+                NetworkManager.Instance?.SendSetEmail(email);
+                SetConnectStatus("Saving email…");
+            });
         }
+
+        private void OnChangePassword()
+        {
+            var oldPass = _oldPassInput.Text;
+            var newPass = _newPassInput.Text;
+            if (oldPass.Length == 0 || newPass.Length == 0)
+            {
+                SetConnectStatus("Enter your current and new password.");
+                return;
+            }
+            SendWhenConnected(() =>
+            {
+                NetworkManager.Instance?.SendChangePassword(oldPass, newPass);
+                SetConnectStatus("Changing password…");
+            });
+        }
+
+        private void OnRequestReset()
+        {
+            var user = _accUserInput.Text.Trim();
+            if (user.Length == 0)
+            {
+                SetConnectStatus("Enter your username first.");
+                return;
+            }
+            SendWhenConnected(() =>
+            {
+                NetworkManager.Instance?.SendRequestReset(user);
+                SetConnectStatus("Requesting reset code…");
+            });
+        }
+
+        private void OnResetPassword()
+        {
+            var user    = _accUserInput.Text.Trim();
+            var code    = _resetCodeInput.Text.Trim();
+            var newPass = _resetNewPassInput.Text;
+            if (user.Length == 0 || code.Length == 0 || newPass.Length == 0)
+            {
+                SetConnectStatus("Enter your username, the emailed code, and a new password.");
+                return;
+            }
+            SendWhenConnected(() =>
+            {
+                NetworkManager.Instance?.SendResetPassword(user, code, newPass);
+                SetConnectStatus("Resetting password…");
+            });
+        }
+
+        private void HandleAccountMessage(string message)
+            => SetConnectStatus(message);
 
         private void HandleAuthOk(string username, int gamesPlayed, int gamesWon)
         {
-            _accPassInput.Text = "";
+            _accPassInput.Text      = "";
+            _oldPassInput.Text      = "";
+            _newPassInput.Text      = "";
+            _resetCodeInput.Text    = "";
+            _resetNewPassInput.Text = "";
+            _resetBox.Visible       = false;
             UpdateAccountUi();
             SetConnectStatus(gamesPlayed > 0
                 ? $"Signed in as {username} — {gamesPlayed} games, {gamesWon} wins."
@@ -610,6 +768,7 @@ namespace RiichiMahjong.UI
             bool loggedIn = GameSettings.IsLoggedIn;
             _accountForm.Visible = !loggedIn;
             _loggedInBox.Visible = loggedIn;
+            if (!loggedIn) _manageBox.Visible = false;
 
             if (loggedIn)
             {
@@ -672,8 +831,8 @@ namespace RiichiMahjong.UI
             if (_reconnectCode.Length > 0)
                 NetworkManager.Instance?.SendRejoinRoom(_reconnectCode);
 
-            // Send any login/register that was waiting for the handshake
-            FlushPendingAuth();
+            // Send any account action that was waiting for the handshake
+            FlushPendingSend();
         }
 
         private void HandleQueueJoined()

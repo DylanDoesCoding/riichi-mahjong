@@ -80,11 +80,13 @@ namespace RiichiServer.Messages
         public List<List<TileDto>>? TenpaiWaits   { get; set; }
 
         // ---- Account / auth ----------------------------------------------
-        // Sent as "authOk" after a successful register or login.
+        // Sent as "authOk" after a successful register, login, or password reset.
         public string? Token       { get; set; }   // signed session token — client persists it
         public string? Username    { get; set; }   // canonical account name
         public int     GamesPlayed { get; set; }
         public int     GamesWon    { get; set; }
+        // Sent as "accountOk" — confirmation text for account-management actions.
+        public string? Message     { get; set; }
 
         // ---- Reconnection state snapshot --------------------------------
         // Sent as "gameStateSnapshot" when a player rejoins mid-game.
@@ -117,5 +119,6 @@ namespace RiichiServer.Messages
         public const string FuritenChanged     = "furitenChanged";     // human entered temporary furiten
         public const string QueueJoined        = "queueJoined";        // player entered matchmaking queue
         public const string AuthOk             = "authOk";             // register/login succeeded — carries token + stats
+        public const string AccountOk          = "accountOk";          // account-management action succeeded — carries message
     }
 }

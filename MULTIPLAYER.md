@@ -100,6 +100,10 @@ All messages are JSON over WebSocket. The `type` field is the discriminator.
 | `nextHand` | — | Host advances to next hand |
 | `register` | `username`, `password` | Create an account (returns `authOk`) |
 | `login` | `username`, `password` | Sign in (returns `authOk` with token + stats) |
+| `changePassword` | `token`, `oldPassword`, `newPassword` | Requires current password; revokes all old tokens |
+| `setEmail` | `token`, `email` | Attach a recovery email |
+| `requestReset` | `username` | Emails a 6-digit reset code (uniform response, no enumeration) |
+| `resetPassword` | `username`, `resetCode`, `newPassword` | Consume the code; returns `authOk`, revokes old tokens |
 
 All lobby messages (`createRoom`, `joinRoom`, `rejoinRoom`, `joinQueue`) additionally accept
 an optional `token`. A valid token overrides `displayName`/`uuid` with the account identity,
@@ -123,7 +127,8 @@ so reconnection works across devices and the lobby always shows the account name
 | `handEnded` | `reason`, `winners`, `scoreBoard`, `yakuNames` | All players |
 | `gameOver` | `scoreBoard` | All players |
 | `gameStateSnapshot` | `yourTiles`, `tileCounts`, `scores`, `discards`, `melds`, `riichiSeats`, `currentTurn` | Sent on successful rejoin |
-| `authOk` | `token`, `username`, `gamesPlayed`, `gamesWon` | Register/login success — client persists the token |
+| `authOk` | `token`, `username`, `gamesPlayed`, `gamesWon` | Register/login/reset success — client persists the token |
+| `accountOk` | `message` | Account-management confirmation (email set, code sent) |
 | `error` | `error` | Sent to the relevant player |
 
 ---
@@ -236,8 +241,13 @@ which the server records automatically at game over.
 
 - Passwords: PBKDF2-SHA256 (100k iterations), never stored in plain text.
 - Sessions: HMAC-signed tokens (30-day expiry) saved in the client's `settings.cfg`.
+  Tokens carry a per-account version — changing or resetting the password bumps it,
+  instantly revoking every previously issued token on all devices.
+- Password reset: optional recovery email + 6-digit code (hashed at rest, 15-minute
+  expiry, 5 attempts max, 60 s resend cooldown, no username enumeration).
 - Storage: Postgres — set `DATABASE_URL` (Supabase/Neon URI or Npgsql keyword string).
-  The `accounts` table is created automatically on first boot.
+  The schema is created/migrated automatically on boot. A `steam_id` column is
+  reserved for a future Steam build (session-ticket auth, no passwords).
 
 ### Server environment variables
 
@@ -245,6 +255,9 @@ which the server records automatically at game over.
 |---|---|
 | `DATABASE_URL` | Postgres connection (URI or keyword form). Unset = guest-only mode. `memory` = non-persistent in-memory store (testing). |
 | `TOKEN_SIGNING_KEY` | Secret for session-token HMAC. Unset = random per-boot key (logins won't survive restarts). |
+| `RESEND_API_KEY` | Resend API key — enables password-reset emails. |
+| `EMAIL_FROM` | Sender address for reset emails (default `onboarding@resend.dev`). |
+| `EMAIL_MODE` | `console` = dev sender that prints mails to the server log. |
 
 ### Enabling accounts on Render
 

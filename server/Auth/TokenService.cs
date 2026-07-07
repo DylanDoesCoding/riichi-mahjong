@@ -35,17 +35,20 @@ namespace RiichiServer.Auth
             }
         }
 
-        public string Create(long accountId, string username)
+        /// <param name="tokenVersion">The account's current token version. Password
+        /// changes bump it, which invalidates every previously issued token.</param>
+        public string Create(long accountId, string username, int tokenVersion)
         {
             long expires  = DateTimeOffset.UtcNow.Add(Lifetime).ToUnixTimeSeconds();
-            string p64    = B64Url(Encoding.UTF8.GetBytes($"v1|{accountId}|{username}|{expires}"));
+            string p64    = B64Url(Encoding.UTF8.GetBytes($"v2|{accountId}|{username}|{expires}|{tokenVersion}"));
             return $"{p64}.{B64Url(Sign(p64))}";
         }
 
-        public bool TryValidate(string token, out long accountId, out string username)
+        public bool TryValidate(string token, out long accountId, out string username, out int tokenVersion)
         {
-            accountId = 0;
-            username  = "";
+            accountId    = 0;
+            username     = "";
+            tokenVersion = -1;
 
             var parts = token.Split('.');
             if (parts.Length != 2) return false;
@@ -62,9 +65,10 @@ namespace RiichiServer.Auth
             if (!CryptographicOperations.FixedTimeEquals(sig, Sign(parts[0]))) return false;
 
             var fields = payload.Split('|');
-            if (fields.Length != 4 || fields[0] != "v1") return false;
+            if (fields.Length != 5 || fields[0] != "v2") return false;
             if (!long.TryParse(fields[1], out accountId)) return false;
             if (!long.TryParse(fields[3], out long expires)) return false;
+            if (!int.TryParse(fields[4], out tokenVersion)) return false;
             if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expires) return false;
 
             username = fields[2];
