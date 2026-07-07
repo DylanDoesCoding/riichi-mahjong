@@ -1959,6 +1959,11 @@ static class Program
         pass += rPass;
         fail += rFail;
 
+        // ---- Rule guards: illegal plays must be rejected (separate file) ---
+        var (gPass, gFail) = RuleGuardTests.Run();
+        pass += gPass;
+        fail += gFail;
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         if (fail > 0)
         {
