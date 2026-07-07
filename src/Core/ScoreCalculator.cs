@@ -115,7 +115,8 @@ namespace RiichiMahjong.Core
 
             // ---- Step 1: Total fan ----
             int yakuFan  = yakuResult.YakuFan;
-            int dorFan   = ctx.DoraCount + ctx.KanDoraCount + (ctx.IsRiichi ? ctx.UraDoraCount : 0);
+            int dorFan   = ctx.DoraCount + ctx.KanDoraCount + ctx.RedDoraCount
+                         + (ctx.IsRiichi ? ctx.UraDoraCount : 0);
             result.TotalFan = yakuFan + dorFan;
 
             // ---- Step 2: Fu ----

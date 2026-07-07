@@ -1092,6 +1092,8 @@ namespace RiichiMahjong.Core
 				DoraCount       = CountDora(player, Wall.GetActiveDoraTiles()),
 				UraDoraCount    = player.DeclaredRiichi ? CountDora(player, Wall.GetUradDoraTiles()) : 0,
 				KanDoraCount    = 0,  // Included in DoraCount already via GetActiveDoraTiles
+				RedDoraCount    = player.Hand.ClosedTiles.Count(t => t.IsRedDora)
+				                + player.Hand.OpenMelds.Sum(m => m.Tiles.Count(t => t.IsRedDora)),
 			};
 		}
 
