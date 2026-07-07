@@ -411,6 +411,10 @@ namespace RiichiMahjong.Core
 			if (PendingDiscard == null) return false;
 			if (claimingPlayerIndex == DiscarderIndex) return false;
 
+			// Riichi players cannot call pon — the hand is locked.
+			// (Chi and daiminkan already enforce this; pon was missing the guard.)
+			if (Players[claimingPlayerIndex].DeclaredRiichi) return false;
+
 			var player = Players[claimingPlayerIndex];
 			int count = player.Hand.ClosedTiles.Count(t => t == PendingDiscard);
 			if (count < 2) return false;
@@ -454,6 +458,14 @@ namespace RiichiMahjong.Core
             if (!IsValidChi(t1, t2, PendingDiscard)) return false;
 
             var player = Players[claimingPlayerIndex];
+
+            // The claimer must actually hold both hand tiles — without this a
+            // buggy/malicious client could chi with phantom tiles and corrupt
+            // the hand. (t1 != t2 always holds for a valid run, so two simple
+            // containment checks suffice.)
+            if (!player.Hand.ClosedTiles.Any(t => t == t1)) return false;
+            if (!player.Hand.ClosedTiles.Any(t => t == t2)) return false;
+
             player.Hand.ApplyChi(t1, t2, PendingDiscard, ClaimSource.Left);
 
             BreakAllIppatsu();
