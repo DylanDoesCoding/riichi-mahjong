@@ -104,6 +104,7 @@ All messages are JSON over WebSocket. The `type` field is the discriminator.
 | `setEmail` | `token`, `email` | Attach a recovery email |
 | `requestReset` | `username` | Emails a 6-digit reset code (uniform response, no enumeration) |
 | `resetPassword` | `username`, `resetCode`, `newPassword` | Consume the code; returns `authOk`, revokes old tokens |
+| `getLeaderboard` | — | Top 20 accounts by wins (then total points); returns `leaderboard` |
 
 All lobby messages (`createRoom`, `joinRoom`, `rejoinRoom`, `joinQueue`) additionally accept
 an optional `token`. A valid token overrides `displayName`/`uuid` with the account identity,
@@ -129,6 +130,7 @@ so reconnection works across devices and the lobby always shows the account name
 | `gameStateSnapshot` | `yourTiles`, `tileCounts`, `scores`, `discards`, `melds`, `riichiSeats`, `currentTurn` | Sent on successful rejoin |
 | `authOk` | `token`, `username`, `gamesPlayed`, `gamesWon` | Register/login/reset success — client persists the token |
 | `accountOk` | `message` | Account-management confirmation (email set, code sent) |
+| `leaderboard` | `leaderboard[]` (rank, name, gamesPlayed, gamesWon, totalPoints) | Only accounts with ≥1 finished game |
 | `error` | `error` | Sent to the relevant player |
 
 ---

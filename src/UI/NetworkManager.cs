@@ -53,6 +53,15 @@ namespace RiichiMahjong.UI
         public int    Points { get; set; }
     }
 
+    public class NetLeaderboardEntry
+    {
+        public int    Rank        { get; set; }
+        public string Name        { get; set; } = "";
+        public int    GamesPlayed { get; set; }
+        public int    GamesWon    { get; set; }
+        public long   TotalPoints { get; set; }
+    }
+
     /// <summary>Flat server message — all fields optional, "type" is the discriminator.</summary>
     public class NetServerMessage
     {
@@ -111,6 +120,7 @@ namespace RiichiMahjong.UI
         public int                     GamesPlayed    { get; set; }
         public int                     GamesWon       { get; set; }
         public string?                 Message        { get; set; }   // accountOk confirmation text
+        public List<NetLeaderboardEntry>? Leaderboard { get; set; }
 
         // ---- Ryuukyoku reveal -----------------------------------------------
         /// <summary>Closed tiles per seat at exhaustive draw. Empty inner list = noten.</summary>
@@ -165,6 +175,7 @@ namespace RiichiMahjong.UI
         public event Action?                         OnQueueJoined;     // entered matchmaking queue
         public event Action<string, int, int>?       OnAuthOk;          // username, gamesPlayed, gamesWon
         public event Action<string>?                 OnAccountMessage;  // accountOk confirmation text
+        public event Action<List<NetLeaderboardEntry>>? OnLeaderboard;  // ranked top accounts
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
         public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int[], bool[], int, int, int, int, int>? OnHandEnded;
         //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, yakuFans, yakuIsYakuman, doraCount, uraDoraCount, redDoraCount, winnerSeat, payerSeat
@@ -316,6 +327,9 @@ namespace RiichiMahjong.UI
         public void SendResetPassword(string username, string resetCode, string newPassword)
             => Send(new { type = "resetPassword", username, resetCode, newPassword });
 
+        public void SendGetLeaderboard()
+            => Send(new { type = "getLeaderboard" });
+
         public void StartGame()
             => Send(new { type = "startGame" });
 
@@ -412,6 +426,10 @@ namespace RiichiMahjong.UI
 
                 case "accountOk":
                     OnAccountMessage?.Invoke(msg.Message ?? "");
+                    break;
+
+                case "leaderboard":
+                    OnLeaderboard?.Invoke(msg.Leaderboard ?? new());
                     break;
 
                 case "handDealt":

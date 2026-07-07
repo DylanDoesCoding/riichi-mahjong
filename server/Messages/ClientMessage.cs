@@ -55,5 +55,6 @@ namespace RiichiServer.Messages
         public const string SetEmail       = "setEmail";       // token + email (for recovery)
         public const string RequestReset   = "requestReset";   // username → emails a reset code
         public const string ResetPassword  = "resetPassword";  // username + code + new password
+        public const string GetLeaderboard = "getLeaderboard"; // top accounts by wins
     }
 }
