@@ -280,6 +280,48 @@ static class RiichiTests
                  game.CurrentPlayerIndex == 1);
         }
 
+        // =====================================================================
+        // Red dora (akadora) — red fives add +1 han each to the score
+        // =====================================================================
+        {
+            // Baseline context: tsumo win, no dora of any kind
+            YakuContext MakeCtx(int redDora) => new()
+            {
+                WinMethod    = WinMethod.Tsumo,
+                SeatWind     = WindDirection.South,
+                RoundWind    = WindDirection.East,
+                RedDoraCount = redDora,
+            };
+
+            // Winning hand: 234m 456p 678s 234s + 99p pair (closed tsumo)
+            var winTiles = new List<Tile>
+            {
+                Tile.Man(2), Tile.Man(3), Tile.Man(4),
+                Tile.Pin(4), Tile.Pin(5), Tile.Pin(6),
+                Tile.Sou(6), Tile.Sou(7), Tile.Sou(8),
+                Tile.Sou(2), Tile.Sou(3), Tile.Sou(4),
+                Tile.Pin(9), Tile.Pin(9),
+            };
+            var winCheck = WinChecker.Check(winTiles, new List<Meld>());
+            Test("Red dora: test hand is a valid win", winCheck.IsWin);
+            var decomp = winCheck.Decompositions[0];
+
+            var yaku0 = YakuChecker.Evaluate(decomp, MakeCtx(0));
+            var yaku2 = YakuChecker.Evaluate(decomp, MakeCtx(2));
+            Test("Red dora: hand has a base yaku (tsumo)", yaku0.HasYaku && yaku2.HasYaku);
+
+            var score0 = ScoreCalculator.Calculate(decomp, yaku0, MakeCtx(0));
+            var score2 = ScoreCalculator.Calculate(decomp, yaku2, MakeCtx(2));
+            Test("Red dora: 2 red fives add exactly 2 han",
+                 score2.TotalFan == score0.TotalFan + 2);
+            Test("Red dora: more han never pays less",
+                 score2.TotalPointsWon >= score0.TotalPointsWon);
+
+            // Red five equality: a red Man(5) equals a normal Man(5) for melds/waits
+            Test("Red dora: red 5 equals normal 5 (suit+value equality)",
+                 Tile.Man(5, isRedDora: true) == Tile.Man(5));
+        }
+
         Console.WriteLine();
         return (pass, fail);
     }

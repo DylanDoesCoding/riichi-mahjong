@@ -33,16 +33,22 @@ namespace RiichiMahjong.UI
 
         // ---- Internal --------------------------------------------------------
 
-        private BoxContainer       _inner        = null!;
-        private List<TileNode>     _tileNodes    = new();
-        private List<Control>      _meldControls = new();
-        private TileNode?          _selected     = null;
-        private TileNode?          _lifted       = null;
+        private BoxContainer       _inner         = null!;
+        private List<TileNode>     _tileNodes     = new();
+        private List<Control>      _meldControls  = new();
+        private List<TileNode>     _meldTileNodes = new();
+        private TileNode?          _selected      = null;
+        private TileNode?          _lifted        = null;
+
+        // Live dora tiles (indicator+1) — applied to nodes as they are (re)built
+        private List<Tile>         _activeDora    = new();
 
         // ---- Signals ---------------------------------------------------------
 
         [Signal] public delegate void TileSelectedEventHandler(TileNode tile);
         [Signal] public delegate void TileDiscardedEventHandler(TileNode tile);
+        [Signal] public delegate void TileHoveredEventHandler(TileNode tile);
+        [Signal] public delegate void TileUnhoveredEventHandler();
 
         // =====================================================================
         // Godot lifecycle
@@ -88,6 +94,7 @@ namespace RiichiMahjong.UI
             // Clear meld controls
             foreach (var c in _meldControls) c.QueueFree();
             _meldControls.Clear();
+            _meldTileNodes.Clear();
 
             // Rebuild closed tiles
             for (int i = 0; i < tiles.Count; i++)
@@ -129,6 +136,7 @@ namespace RiichiMahjong.UI
                         tNode.SetTile(tile, faceDown: tileDown);
                         tNode.SetInteractive(false);
                         meldBox.AddChild(tNode);
+                        _meldTileNodes.Add(tNode);
                     }
 
                     _inner.AddChild(meldBox);
@@ -257,6 +265,24 @@ namespace RiichiMahjong.UI
         public int   TileCount         => _tileNodes.Count;
 
         /// <summary>
+        /// Set the live dora list and refresh the gold glow on every visible
+        /// tile node (closed hand + melds). Red fives always glow.
+        /// </summary>
+        public void UpdateDoraGlows(IReadOnlyList<Tile> activeDora)
+        {
+            _activeDora = new List<Tile>(activeDora);
+            foreach (var node in _tileNodes)     ApplyDoraGlow(node);
+            foreach (var node in _meldTileNodes) ApplyDoraGlow(node);
+        }
+
+        private void ApplyDoraGlow(TileNode node)
+        {
+            if (FaceDown || node.TileData == null) { node.SetDoraGlow(false); return; }
+            var t = node.TileData;
+            node.SetDoraGlow(t.IsRedDora || _activeDora.Any(d => d == t));
+        }
+
+        /// <summary>
         /// Play the staggered deal-in animation on all current tile nodes.
         /// Call immediately after Rebuild().  Each tile scales and fades in
         /// from 75 % to 100 % with <paramref name="staggerSec"/> seconds of
@@ -301,7 +327,12 @@ namespace RiichiMahjong.UI
             node.SetTile(tile, FaceDown);
             node.SetInteractive(IsInteractive);
             if (IsInteractive)
-                node.TileClicked += OnTileClicked;
+            {
+                node.TileClicked  += OnTileClicked;
+                node.MouseEntered += () => EmitSignal(SignalName.TileHovered, node);
+                node.MouseExited  += () => EmitSignal(SignalName.TileUnhovered);
+            }
+            ApplyDoraGlow(node);
             return node;
         }
 

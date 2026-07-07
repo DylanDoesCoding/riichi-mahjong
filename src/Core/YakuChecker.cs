@@ -60,6 +60,7 @@ namespace RiichiMahjong.Core
         public int           DoraCount       { get; init; }   // Total dora in winning hand
         public int           UraDoraCount    { get; init; }   // Ura-dora (only if riichi)
         public int           KanDoraCount    { get; init; }   // Kan-dora in winning hand
+        public int           RedDoraCount    { get; init; }   // Red fives (akadora) in winning hand
         public Tile?         WinningTile     { get; init; }   // The tile that completed the hand
         public List<Meld>    OpenMelds       { get; init; } = new();
     }

@@ -88,6 +88,7 @@ namespace RiichiMahjong.UI
         public bool[]?                 YakuIsYakuman  { get; set; }
         public int                     DoraCount      { get; set; }
         public int                     UraDoraCount   { get; set; }
+        public int                     RedDoraCount   { get; set; }
         public int                     WinnerSeat     { get; set; }
         public int                     PayerSeat      { get; set; }
 
@@ -165,8 +166,8 @@ namespace RiichiMahjong.UI
         public event Action<string, int, int>?       OnAuthOk;          // username, gamesPlayed, gamesWon
         public event Action<string>?                 OnAccountMessage;  // accountOk confirmation text
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
-        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int[], bool[], int, int, int, int>? OnHandEnded;
-        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, yakuFans, yakuIsYakuman, doraCount, uraDoraCount, winnerSeat, payerSeat
+        public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int[], bool[], int, int, int, int, int>? OnHandEnded;
+        //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, yakuFans, yakuIsYakuman, doraCount, uraDoraCount, redDoraCount, winnerSeat, payerSeat
         public event Action<List<NetScoreEntry>>?    OnGameOver;        // scoreBoard
 
         // ---- Ryuukyoku reveal data (populated before OnHandEnded fires) ------
@@ -488,6 +489,7 @@ namespace RiichiMahjong.UI
                         msg.YakuIsYakuman ?? Array.Empty<bool>(),
                         msg.DoraCount,
                         msg.UraDoraCount,
+                        msg.RedDoraCount,
                         msg.WinnerSeat,
                         msg.PayerSeat);
                     break;
