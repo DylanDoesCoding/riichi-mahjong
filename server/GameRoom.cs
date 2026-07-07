@@ -19,9 +19,10 @@ namespace RiichiServer
     {
         // ---- Constants -------------------------------------------------------
         private const int  ClaimWindowSeconds = 8;
-        private const int  AiThinkMs          = 800;
-        private const int  AiClaimMs          = 400;
-        private const int  HandResultPauseMs  = 3000;   // Show score before next hand
+        private const int  AiThinkMs          = 400;    // CPU pause before acting
+        private const int  AiClaimMs          = 200;    // pause before AI claim resolution
+        private const int  HandResultPauseMs  = 500;    // minimum score-panel display before the
+                                                        // host's Next Hand click can take effect
         private const int  MaxPlayers         = 4;
 
         // ---- Identity --------------------------------------------------------
@@ -512,6 +513,8 @@ namespace RiichiServer
                 await HandleClaimWindowAsync();
             else if (_game.Phase == TurnPhase.DrawPhase)
                 await AdvanceDrawPhaseAsync();   // safety net — should not normally be reached
+            else if (_game.Phase == TurnPhase.HandEnd)
+                await WaitForNextHandAsync();    // suukaikan abort on the fourth kan
         }
 
         // =====================================================================
@@ -847,6 +850,12 @@ namespace RiichiServer
 
             if (wasChankan)
                 await AdvanceFromActionPhaseAsync();   // kakan player acts on rinshan tile
+            else if (_game.Phase == TurnPhase.HandEnd)
+            {
+                // PassAllClaims triggered an abortive draw (suufonren da,
+                // suucha riichi) — wait for the host instead of stalling.
+                await WaitForNextHandAsync();
+            }
             else
             {
                 await NotifyTemporaryFuritenAsync();
@@ -900,7 +909,13 @@ namespace RiichiServer
 
             await FlushOutboxAsync();
 
-            if (_game.Phase == TurnPhase.HandEnd) return;   // Exhaustive draw
+            if (_game.Phase == TurnPhase.HandEnd)
+            {
+                // Exhaustive draw — gate on the host's Next Hand like every other
+                // hand ending, otherwise the game stalls with nobody listening.
+                await WaitForNextHandAsync();
+                return;
+            }
             if (drawn == null) return;
 
             await AdvanceFromActionPhaseAsync();
