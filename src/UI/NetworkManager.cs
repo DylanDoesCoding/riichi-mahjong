@@ -109,6 +109,7 @@ namespace RiichiMahjong.UI
         public string?                 Username       { get; set; }
         public int                     GamesPlayed    { get; set; }
         public int                     GamesWon       { get; set; }
+        public string?                 Message        { get; set; }   // accountOk confirmation text
 
         // ---- Ryuukyoku reveal -----------------------------------------------
         /// <summary>Closed tiles per seat at exhaustive draw. Empty inner list = noten.</summary>
@@ -162,6 +163,7 @@ namespace RiichiMahjong.UI
         public event Action<bool>?                   OnFuritenChanged;  // isTemporaryFuriten
         public event Action?                         OnQueueJoined;     // entered matchmaking queue
         public event Action<string, int, int>?       OnAuthOk;          // username, gamesPlayed, gamesWon
+        public event Action<string>?                 OnAccountMessage;  // accountOk confirmation text
         //                  discarderSeat, tile, canRon, canPon, canChi, canKan
         public event Action<string, int[], List<NetScoreEntry>, int, int, int, string[], int[], bool[], int, int, int, int>? OnHandEnded;
         //                  reason, winners, scoreBoard, han, fu, basePoints, yakuNames, yakuFans, yakuIsYakuman, doraCount, uraDoraCount, winnerSeat, payerSeat
@@ -301,6 +303,18 @@ namespace RiichiMahjong.UI
         public void SendLogin(string username, string password)
             => Send(new { type = "login", username, password });
 
+        public void SendChangePassword(string oldPassword, string newPassword)
+            => Send(new { type = "changePassword", token = AuthTok, oldPassword, newPassword });
+
+        public void SendSetEmail(string email)
+            => Send(new { type = "setEmail", token = AuthTok, email });
+
+        public void SendRequestReset(string username)
+            => Send(new { type = "requestReset", username });
+
+        public void SendResetPassword(string username, string resetCode, string newPassword)
+            => Send(new { type = "resetPassword", username, resetCode, newPassword });
+
         public void StartGame()
             => Send(new { type = "startGame" });
 
@@ -393,6 +407,10 @@ namespace RiichiMahjong.UI
                     GameSettings.AuthUsername = msg.Username ?? "";
                     GameSettings.Save();
                     OnAuthOk?.Invoke(msg.Username ?? "", msg.GamesPlayed, msg.GamesWon);
+                    break;
+
+                case "accountOk":
+                    OnAccountMessage?.Invoke(msg.Message ?? "");
                     break;
 
                 case "handDealt":
