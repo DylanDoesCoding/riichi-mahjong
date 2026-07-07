@@ -1263,6 +1263,7 @@ namespace RiichiServer
                 {
                     msg.DoraCount    = _game.LastWinContext.DoraCount;
                     msg.UraDoraCount = _game.LastWinContext.UraDoraCount;
+                    msg.RedDoraCount = _game.LastWinContext.RedDoraCount;
                 }
 
                 // Reveal all hands for wins (tsumo/ron) — includes actual closed tiles

@@ -44,6 +44,8 @@ namespace RiichiMahjong.UI
         private Panel       _riichiDimOverlay    = null!;  // Dark dim: non-candidate in riichi mode
         private Panel       _claimHighlight      = null!;  // Orange pulse: tile is claimable (pon/chi/ron)
         private Tween?      _claimTween          = null;
+        private Panel       _doraGlow            = null!;  // Gold edge: tile is a live dora (or red 5)
+        private Panel       _matchHighlight      = null!;  // Cyan edge: matches the hovered hand tile
 
         // ---- Asset base path -------------------------------------------------
         // Use the SVG source files (Regular/ and Black/) rather than the PNG exports
@@ -187,6 +189,37 @@ namespace RiichiMahjong.UI
             claimStyle.CornerRadiusBottomLeft = claimStyle.CornerRadiusBottomRight = 4;
             _claimHighlight.AddThemeStyleboxOverride("panel", claimStyle);
             AddChild(_claimHighlight);
+
+            // Gold edge — this tile is a live dora (indicator+1) or a red five.
+            // Border-only so it stays readable under selection/claim overlays.
+            _doraGlow = new Panel();
+            _doraGlow.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _doraGlow.MouseFilter = MouseFilterEnum.Ignore;
+            _doraGlow.Visible     = false;
+            var doraStyle = new StyleBoxFlat();
+            doraStyle.BgColor     = new Color(1f, 0.80f, 0.20f, 0.10f);
+            doraStyle.BorderColor = new Color(1f, 0.78f, 0.15f, 0.95f);
+            doraStyle.BorderWidthTop    = doraStyle.BorderWidthBottom =
+            doraStyle.BorderWidthLeft   = doraStyle.BorderWidthRight  = 2;
+            doraStyle.CornerRadiusTopLeft    = doraStyle.CornerRadiusTopRight    =
+            doraStyle.CornerRadiusBottomLeft = doraStyle.CornerRadiusBottomRight = 4;
+            _doraGlow.AddThemeStyleboxOverride("panel", doraStyle);
+            AddChild(_doraGlow);
+
+            // Cyan edge — this tile matches the hand tile currently hovered
+            _matchHighlight = new Panel();
+            _matchHighlight.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _matchHighlight.MouseFilter = MouseFilterEnum.Ignore;
+            _matchHighlight.Visible     = false;
+            var matchStyle = new StyleBoxFlat();
+            matchStyle.BgColor     = new Color(0.20f, 0.80f, 1f, 0.22f);
+            matchStyle.BorderColor = new Color(0.25f, 0.85f, 1f, 1f);
+            matchStyle.BorderWidthTop    = matchStyle.BorderWidthBottom =
+            matchStyle.BorderWidthLeft   = matchStyle.BorderWidthRight  = 3;
+            matchStyle.CornerRadiusTopLeft    = matchStyle.CornerRadiusTopRight    =
+            matchStyle.CornerRadiusBottomLeft = matchStyle.CornerRadiusBottomRight = 4;
+            _matchHighlight.AddThemeStyleboxOverride("panel", matchStyle);
+            AddChild(_matchHighlight);
 
             Pressed += OnPressed;
             Refresh();
@@ -350,6 +383,20 @@ namespace RiichiMahjong.UI
                 _claimTween.TweenProperty(_claimHighlight, "self_modulate:a", 0.35f, 0.45f);
                 _claimTween.TweenProperty(_claimHighlight, "self_modulate:a", 1.00f, 0.45f);
             }
+        }
+
+        /// <summary>Gold edge marking this tile as a live dora (or red five).</summary>
+        public void SetDoraGlow(bool active)
+        {
+            if (_doraGlow == null) return;
+            _doraGlow.Visible = active && !FaceDown;
+        }
+
+        /// <summary>Cyan edge marking this tile as matching the hovered hand tile.</summary>
+        public void SetMatchHighlight(bool active)
+        {
+            if (_matchHighlight == null) return;
+            _matchHighlight.Visible = active && !FaceDown;
         }
 
         // =====================================================================
