@@ -21,6 +21,9 @@ namespace RiichiServer.Auth
     /// <summary>Pending password-reset code (hash at rest, bounded attempts).</summary>
     public record ResetCode(string CodeHash, DateTimeOffset ExpiresAt, int Attempts);
 
+    /// <summary>One row of the public leaderboard.</summary>
+    public record LeaderboardEntry(string Username, int GamesPlayed, int GamesWon, long TotalPoints);
+
     public interface IAccountStore
     {
         /// <summary>Prepare the backing store (creates the schema if needed).</summary>
@@ -36,6 +39,10 @@ namespace RiichiServer.Auth
 
         /// <summary>Add one finished game to the account's lifetime stats.</summary>
         Task RecordGameResultAsync(long accountId, bool won, int finalPoints);
+
+        /// <summary>Top accounts that have finished at least one game, ordered by
+        /// wins (desc) then total points (desc).</summary>
+        Task<List<LeaderboardEntry>> GetTopAsync(int count);
 
         // ---- Account management ---------------------------------------------
 

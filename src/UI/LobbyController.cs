@@ -20,6 +20,11 @@ namespace RiichiMahjong.UI
         // ---- Panels ----------------------------------------------------------
         private Control _connectPanel = null!;
         private Control _waitingPanel = null!;
+        private Control _leaderboardPanel = null!;
+
+        // ---- Leaderboard widgets ----------------------------------------------
+        private VBoxContainer _leaderboardRows   = null!;
+        private Label         _leaderboardStatus = null!;
 
         // ---- Connect panel widgets -------------------------------------------
         private LineEdit _nameInput   = null!;
@@ -106,6 +111,7 @@ namespace RiichiMahjong.UI
 
             BuildConnectPanel();
             BuildWaitingPanel();
+            BuildLeaderboardPanel();
 
             ShowConnect();
 
@@ -124,6 +130,7 @@ namespace RiichiMahjong.UI
             nm.OnQueueJoined     += HandleQueueJoined;
             nm.OnAuthOk          += HandleAuthOk;
             nm.OnAccountMessage  += HandleAccountMessage;
+            nm.OnLeaderboard     += HandleLeaderboard;
         }
 
         public override void _ExitTree()
@@ -144,6 +151,7 @@ namespace RiichiMahjong.UI
             nm.OnQueueJoined     -= HandleQueueJoined;
             nm.OnAuthOk          -= HandleAuthOk;
             nm.OnAccountMessage  -= HandleAccountMessage;
+            nm.OnLeaderboard     -= HandleLeaderboard;
         }
 
         // =====================================================================
@@ -238,7 +246,10 @@ namespace RiichiMahjong.UI
 
             vbox.AddChild(_searchingOverlay);
 
-            // Back to menu
+            // Bottom row: back to menu + leaderboard
+            var bottomRow = new HBoxContainer();
+            bottomRow.AddThemeConstantOverride("separation", 8);
+
             var backBtn = MakeButton("← Back to Menu", new Color(0.18f, 0.22f, 0.35f));
             backBtn.Pressed += () =>
             {
@@ -246,7 +257,86 @@ namespace RiichiMahjong.UI
                 NetworkManager.Instance?.ResetSession();
                 GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
             };
-            vbox.AddChild(backBtn);
+
+            var lbBtn = MakeButton("🏆 Leaderboard", new Color(0.40f, 0.32f, 0.12f));
+            lbBtn.Pressed += OnLeaderboardPressed;
+
+            bottomRow.AddChild(backBtn);
+            bottomRow.AddChild(lbBtn);
+            vbox.AddChild(bottomRow);
+        }
+
+        private void BuildLeaderboardPanel()
+        {
+            _leaderboardPanel = MakeCard(offsetV: -300, offsetH: -270, height: 600, width: 540);
+            _leaderboardPanel.Visible = false;
+
+            var vbox = MakeCardVBox(_leaderboardPanel);
+
+            var title = new Label { Text = "🏆  Leaderboard" };
+            title.HorizontalAlignment = HorizontalAlignment.Center;
+            title.AddThemeFontSizeOverride("font_size", 26);
+            title.AddThemeColorOverride("font_color", TextColor);
+            vbox.AddChild(title);
+            vbox.AddChild(new HSeparator());
+            vbox.AddChild(Spacer(6));
+
+            // Column header
+            vbox.AddChild(MakeLeaderboardRow("#", "Player", "Wins", "Games", "Win %", "Points",
+                DimText, bold: true));
+            vbox.AddChild(Spacer(2));
+
+            // Scrollable rows
+            var scroll = new ScrollContainer();
+            scroll.SizeFlagsVertical   = SizeFlags.ExpandFill;
+            scroll.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            scroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
+
+            _leaderboardRows = new VBoxContainer();
+            _leaderboardRows.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            _leaderboardRows.AddThemeConstantOverride("separation", 3);
+            scroll.AddChild(_leaderboardRows);
+            vbox.AddChild(scroll);
+
+            _leaderboardStatus = new Label { Text = "" };
+            _leaderboardStatus.HorizontalAlignment = HorizontalAlignment.Center;
+            _leaderboardStatus.AddThemeFontSizeOverride("font_size", 14);
+            _leaderboardStatus.AddThemeColorOverride("font_color", DimText);
+            vbox.AddChild(_leaderboardStatus);
+
+            vbox.AddChild(Spacer(4));
+            var closeBtn = MakeButton("← Back", new Color(0.18f, 0.22f, 0.35f));
+            closeBtn.Pressed += () => { ShowConnect(); };
+            vbox.AddChild(closeBtn);
+        }
+
+        /// <summary>One fixed-column leaderboard row.</summary>
+        private Control MakeLeaderboardRow(string rank, string name, string wins,
+            string games, string rate, string points, Color color, bool bold = false)
+        {
+            var row = new HBoxContainer();
+            row.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+            Label Cell(string text, int minWidth, HorizontalAlignment align, bool expand = false)
+            {
+                var lbl = new Label { Text = text };
+                lbl.AddThemeFontSizeOverride("font_size", bold ? 14 : 15);
+                lbl.AddThemeColorOverride("font_color", color);
+                lbl.HorizontalAlignment = align;
+                lbl.CustomMinimumSize   = new Vector2(minWidth, 0);
+                if (expand) lbl.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+                lbl.ClipText = true;
+                row.AddChild(lbl);
+                return lbl;
+            }
+
+            Cell(rank,   34,  HorizontalAlignment.Left);
+            Cell(name,   150, HorizontalAlignment.Left, expand: true);
+            Cell(wins,   52,  HorizontalAlignment.Right);
+            Cell(games,  56,  HorizontalAlignment.Right);
+            Cell(rate,   62,  HorizontalAlignment.Right);
+            Cell(points, 90,  HorizontalAlignment.Right);
+            return row;
         }
 
         private void BuildAccountSection(VBoxContainer vbox)
@@ -737,6 +827,58 @@ namespace RiichiMahjong.UI
         private void HandleAccountMessage(string message)
             => SetConnectStatus(message);
 
+        // =====================================================================
+        // Leaderboard
+        // =====================================================================
+
+        private void OnLeaderboardPressed()
+        {
+            SendWhenConnected(() =>
+            {
+                NetworkManager.Instance?.SendGetLeaderboard();
+                SetConnectStatus("Loading leaderboard…");
+            });
+        }
+
+        private void HandleLeaderboard(List<NetLeaderboardEntry> entries)
+        {
+            foreach (var child in _leaderboardRows.GetChildren())
+                child.QueueFree();
+
+            string self = GameSettings.AuthUsername;
+            foreach (var e in entries)
+            {
+                bool isSelf   = self.Length > 0
+                                && string.Equals(e.Name, self, System.StringComparison.OrdinalIgnoreCase);
+                var  color    = isSelf ? new Color(0.55f, 0.95f, 0.60f) : TextColor;
+                var  medal    = e.Rank switch { 1 => "🥇", 2 => "🥈", 3 => "🥉", _ => e.Rank.ToString() };
+                int  winRate  = e.GamesPlayed > 0
+                                ? (int)System.Math.Round(100.0 * e.GamesWon / e.GamesPlayed) : 0;
+
+                _leaderboardRows.AddChild(MakeLeaderboardRow(
+                    medal,
+                    isSelf ? $"{e.Name} (you)" : e.Name,
+                    e.GamesWon.ToString(),
+                    e.GamesPlayed.ToString(),
+                    $"{winRate}%",
+                    e.TotalPoints.ToString("N0"),
+                    color));
+            }
+
+            _leaderboardStatus.Text = entries.Count == 0
+                ? "No ranked games yet — sign in and finish an online game to appear here!"
+                : $"Top {entries.Count} players by wins";
+
+            ShowLeaderboard();
+        }
+
+        private void ShowLeaderboard()
+        {
+            _connectPanel.Visible     = false;
+            _waitingPanel.Visible     = false;
+            _leaderboardPanel.Visible = true;
+        }
+
         private void HandleAuthOk(string username, int gamesPlayed, int gamesWon)
         {
             _accPassInput.Text      = "";
@@ -905,15 +1047,17 @@ namespace RiichiMahjong.UI
 
         private void ShowConnect()
         {
-            _connectPanel.Visible = true;
-            _waitingPanel.Visible = false;
+            _connectPanel.Visible     = true;
+            _waitingPanel.Visible     = false;
+            _leaderboardPanel.Visible = false;
             HideSearching();
         }
 
         private void ShowWaiting()
         {
-            _connectPanel.Visible = false;
-            _waitingPanel.Visible = true;
+            _connectPanel.Visible     = false;
+            _waitingPanel.Visible     = true;
+            _leaderboardPanel.Visible = false;
             HideSearching();
         }
 

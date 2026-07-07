@@ -149,6 +149,27 @@ namespace RiichiServer.Auth
             await cmd.ExecuteNonQueryAsync();
         }
 
+        public async Task<List<LeaderboardEntry>> GetTopAsync(int count)
+        {
+            const string sql = """
+                SELECT username, games_played, games_won, total_points
+                FROM accounts
+                WHERE games_played > 0
+                ORDER BY games_won DESC, total_points DESC
+                LIMIT @n;
+                """;
+            await using var cmd = _db.CreateCommand(sql);
+            cmd.Parameters.AddWithValue("n", count);
+
+            var entries = new List<LeaderboardEntry>();
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                entries.Add(new LeaderboardEntry(
+                    reader.GetString(0), reader.GetInt32(1),
+                    reader.GetInt32(2), reader.GetInt64(3)));
+            return entries;
+        }
+
         // =====================================================================
         // Account management
         // =====================================================================

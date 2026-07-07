@@ -88,6 +88,8 @@ namespace RiichiServer.Messages
         public int     GamesWon    { get; set; }
         // Sent as "accountOk" — confirmation text for account-management actions.
         public string? Message     { get; set; }
+        // Sent as "leaderboard" — top accounts, already ranked.
+        public List<LeaderboardEntryDto>? Leaderboard { get; set; }
 
         // ---- Reconnection state snapshot --------------------------------
         // Sent as "gameStateSnapshot" when a player rejoins mid-game.
@@ -96,6 +98,16 @@ namespace RiichiServer.Messages
         public List<List<MeldDto>>?  Melds        { get; set; }  // [seat][meld]
         public int[]?                RiichiSeats  { get; set; }  // seats currently in riichi
         public int                   CurrentTurn  { get; set; }  // seat whose turn it is
+    }
+
+    /// <summary>One leaderboard row (rank assigned by the server).</summary>
+    public class LeaderboardEntryDto
+    {
+        public int    Rank        { get; set; }
+        public string Name        { get; set; } = "";
+        public int    GamesPlayed { get; set; }
+        public int    GamesWon    { get; set; }
+        public long   TotalPoints { get; set; }
     }
 
     /// <summary>Well-known Type string constants.</summary>
@@ -121,5 +133,6 @@ namespace RiichiServer.Messages
         public const string QueueJoined        = "queueJoined";        // player entered matchmaking queue
         public const string AuthOk             = "authOk";             // register/login succeeded — carries token + stats
         public const string AccountOk          = "accountOk";          // account-management action succeeded — carries message
+        public const string Leaderboard        = "leaderboard";        // top accounts by wins — carries Leaderboard list
     }
 }

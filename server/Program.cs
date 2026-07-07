@@ -562,6 +562,30 @@ app.MapGet("/ws", async context =>
                         break;
                     }
 
+                    case ClientMessageType.GetLeaderboard:
+                    {
+                        if (accounts == null)
+                        {
+                            await conn.SendErrorAsync("Accounts are not enabled on this server.");
+                            break;
+                        }
+
+                        var top = await accounts.GetTopAsync(20);
+                        await conn.SendAsync(new ServerMessage
+                        {
+                            Type        = ServerMessageType.Leaderboard,
+                            Leaderboard = top.Select((e, i) => new LeaderboardEntryDto
+                            {
+                                Rank        = i + 1,
+                                Name        = e.Username,
+                                GamesPlayed = e.GamesPlayed,
+                                GamesWon    = e.GamesWon,
+                                TotalPoints = e.TotalPoints,
+                            }).ToList(),
+                        });
+                        break;
+                    }
+
                     default:
                         await conn.SendErrorAsync("Join or create a room first.");
                         break;

@@ -60,6 +60,22 @@ namespace RiichiServer.Auth
             return Task.CompletedTask;
         }
 
+        public Task<List<LeaderboardEntry>> GetTopAsync(int count)
+        {
+            lock (_lock)
+            {
+                var entries = _byUsernameLc.Values
+                    .Where(r => r.GamesPlayed > 0)
+                    .OrderByDescending(r => r.GamesWon)
+                    .ThenByDescending(r => r.TotalPoints)
+                    .Take(count)
+                    .Select(r => new LeaderboardEntry(
+                        r.Username, r.GamesPlayed, r.GamesWon, r.TotalPoints))
+                    .ToList();
+                return Task.FromResult(entries);
+            }
+        }
+
         // =====================================================================
         // Account management
         // =====================================================================
