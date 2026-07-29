@@ -250,12 +250,19 @@ which the server records automatically at game over.
 - Storage: Postgres — set `DATABASE_URL` (Supabase/Neon URI or Npgsql keyword string).
   The schema is created/migrated automatically on boot. A `steam_id` column is
   reserved for a future Steam build (session-ticket auth, no passwords).
+- **Outage recovery:** the store is wrapped in `ResilientAccountStore`, which
+  retries the connection on demand (at most once every 15 s) and marks itself
+  unhealthy if an operation fails mid-life. A paused free-tier database — Supabase
+  pauses after ~7 days idle — therefore heals itself as soon as it wakes, with no
+  server restart. While it is down, guests play normally and signed-in players are
+  seated as guests rather than being refused; account actions report
+  "temporarily unavailable".
 
 ### Server environment variables
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Postgres connection (URI or keyword form). Unset = guest-only mode. `memory` = non-persistent in-memory store (testing). |
+| `DATABASE_URL` | Postgres connection (URI or keyword form). Unset = guest-only mode. `memory` = non-persistent in-memory store (testing). A database that is unreachable at boot does **not** disable accounts permanently — the store reconnects automatically on demand (see below). |
 | `TOKEN_SIGNING_KEY` | Secret for session-token HMAC. Unset = random per-boot key (logins won't survive restarts). |
 | `RESEND_API_KEY` | Resend API key — enables password-reset emails. |
 | `EMAIL_FROM` | Sender address for reset emails (default `onboarding@resend.dev`). |
