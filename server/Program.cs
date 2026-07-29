@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // Program.cs — ASP.NET Core WebSocket server for Riichi Mahjong multiplayer.
 //
 // Every player connects to  ws://host/ws
@@ -25,16 +25,23 @@ if (!string.IsNullOrWhiteSpace(dbUrl))
 {
     try
     {
-        accounts = dbUrl.Trim().Equals("memory", StringComparison.OrdinalIgnoreCase)
+        IAccountStore inner = dbUrl.Trim().Equals("memory", StringComparison.OrdinalIgnoreCase)
             ? new InMemoryAccountStore()
             : new PostgresAccountStore(dbUrl.Trim());
-        await accounts.InitAsync();
-        Console.WriteLine("[Auth] Account store ready.");
+
+        // Wrapped so a database outage (e.g. a free-tier Postgres paused for
+        // inactivity) is recovered from automatically on the next account
+        // operation — no server restart needed. InitAsync never throws; it
+        // logs whether the store came up or will keep retrying.
+        var resilient = new ResilientAccountStore(inner);
+        await resilient.InitAsync();
+        accounts = resilient;
     }
     catch (Exception ex)
     {
-        // The game must stay playable for guests even if the DB is down.
-        Console.WriteLine($"[Auth] ERROR: account store init failed — accounts disabled. {ex.Message}");
+        // Only an unusable DATABASE_URL lands here (the store could not even be
+        // constructed). That needs a config fix, so there is nothing to retry.
+        Console.WriteLine($"[Auth] ERROR: DATABASE_URL is unusable — accounts disabled. {ex.Message}");
         accounts = null;
     }
 }
@@ -116,13 +123,23 @@ app.MapGet("/ws", async context =>
         if (accounts != null && !string.IsNullOrEmpty(msg.Token)
             && tokens.TryValidate(msg.Token, out long acctId, out _, out int tver))
         {
-            var acct = await accounts.GetByIdAsync(acctId);
-            if (acct != null && acct.TokenVersion == tver)
+            try
             {
-                conn.AccountId   = acctId;
-                conn.DisplayName = acct.Username;
-                conn.PlayerUuid  = "acct:" + acctId;
-                return;
+                var acct = await accounts.GetByIdAsync(acctId);
+                if (acct != null && acct.TokenVersion == tver)
+                {
+                    conn.AccountId   = acctId;
+                    conn.DisplayName = acct.Username;
+                    conn.PlayerUuid  = "acct:" + acctId;
+                    return;
+                }
+            }
+            catch (AccountStoreUnavailableException)
+            {
+                // Database is down: we cannot confirm the token, but refusing to
+                // seat the player would break play for a transient outage.
+                // Fall through to guest identity — they keep playing, just
+                // without account stats for this session.
             }
         }
         conn.DisplayName = CleanDisplayName(msg.DisplayName);
@@ -137,6 +154,20 @@ app.MapGet("/ws", async context =>
         {
             await conn.SendErrorAsync("Accounts are not enabled on this server.");
             return null;
+        }
+        // Account changes genuinely need the database — unlike seating a player,
+        // there is no safe degraded behaviour, so report it and let them retry.
+        if (accounts is ResilientAccountStore { IsReady: false })
+        {
+            // Probe once so a recovered database is picked up immediately rather
+            // than reporting stale unavailability.
+            try   { await accounts.GetByIdAsync(0); }
+            catch (AccountStoreUnavailableException)
+            {
+                await conn.SendErrorAsync(
+                    "Accounts are temporarily unavailable — please try again in a moment.");
+                return null;
+            }
         }
         if (string.IsNullOrEmpty(m.Token)
             || !tokens.TryValidate(m.Token, out long id, out _, out int ver))
@@ -165,449 +196,460 @@ app.MapGet("/ws", async context =>
             if (room == null && pendingMatches.TryRemove(conn.PlayerId, out var matchedRoom))
                 room = matchedRoom;
 
-            if (room == null)
+            // Safety net: any account operation may find the database down.
+            // Report it as transient instead of dropping the connection — the
+            // store reconnects on its own, so a retry usually just works.
+            try
             {
-                // ---- Pre-game: lobby messages only --------------------------
-                switch (msg.Type)
+                if (room == null)
                 {
-                    case ClientMessageType.CreateRoom:
-                        await ApplyIdentityAsync(msg);
-                        room = rooms.CreateRoom();
-                        if (room == null)
-                        {
-                            await conn.SendErrorAsync("Server is full — try again later.");
-                            break;
-                        }
-                        room.AddPlayer(conn);
-
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type     = ServerMessageType.RoomCreated,
-                            Code     = room.Code,
-                            YourSeat = conn.Seat,
-                            Players  = room.GetPlayerList(),
-                        });
-                        break;
-
-                    case ClientMessageType.JoinRoom:
-                        if (string.IsNullOrWhiteSpace(msg.Code))
-                        {
-                            await conn.SendErrorAsync("Room code required.");
-                            break;
-                        }
-
-                        room = rooms.FindRoom(msg.Code);
-                        if (room == null)
-                        {
-                            await conn.SendErrorAsync($"Room '{msg.Code}' not found.");
-                            room = null;
-                            break;
-                        }
-                        if (room.GameStarted)
-                        {
-                            await conn.SendErrorAsync("That game has already started.");
-                            room = null;
-                            break;
-                        }
-
-                        await ApplyIdentityAsync(msg);
-                        int seat = room.AddPlayer(conn);
-                        if (seat < 0)
-                        {
-                            await conn.SendErrorAsync("Room is full.");
-                            room = null;
-                            break;
-                        }
-
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type     = ServerMessageType.RoomJoined,
-                            Code     = room.Code,
-                            YourSeat = seat,
-                            Players  = room.GetPlayerList(),
-                        });
-
-                        await BroadcastToRoom(room, conn, new ServerMessage
-                        {
-                            Type    = ServerMessageType.PlayerJoined,
-                            Seat    = seat,
-                            Players = room.GetPlayerList(),
-                        });
-                        break;
-
-                    case ClientMessageType.RejoinRoom:
+                    // ---- Pre-game: lobby messages only --------------------------
+                    switch (msg.Type)
                     {
-                        // Player is reconnecting with their identity + room code (lobby or
-                        // mid-game). Identity = session token when present, else guest UUID.
-                        bool hasToken = !string.IsNullOrEmpty(msg.Token);
-                        if (string.IsNullOrWhiteSpace(msg.Code)
-                            || (!hasToken && string.IsNullOrWhiteSpace(msg.Uuid)))
-                        {
-                            await conn.SendErrorAsync("Room code and UUID required to rejoin.");
-                            break;
-                        }
-
-                        var rejoinRoom = rooms.FindRoom(msg.Code);
-                        if (rejoinRoom == null)
-                        {
-                            await conn.SendErrorAsync($"Room '{msg.Code}' not found.");
-                            break;
-                        }
-
-                        await ApplyIdentityAsync(msg);
-                        if (conn.AccountId == null && string.IsNullOrWhiteSpace(msg.Uuid))
-                        {
-                            await conn.SendErrorAsync("Room code and UUID required to rejoin.");
-                            break;
-                        }
-
-                        if (!rejoinRoom.GameStarted)
-                        {
-                            // ---- Lobby reconnect ----------------------------------------
-                            if (!rejoinRoom.RejoinLobby(conn.PlayerUuid, conn))
+                        case ClientMessageType.CreateRoom:
+                            await ApplyIdentityAsync(msg);
+                            room = rooms.CreateRoom();
+                            if (room == null)
                             {
-                                await conn.SendErrorAsync("Could not rejoin lobby — seat no longer available.");
+                                await conn.SendErrorAsync("Server is full — try again later.");
                                 break;
                             }
-                            room = rejoinRoom;
+                            room.AddPlayer(conn);
 
-                            // Tell rejoining player their seat + current player list
                             await conn.SendAsync(new ServerMessage
                             {
-                                Type     = ServerMessageType.RoomJoined,
+                                Type     = ServerMessageType.RoomCreated,
                                 Code     = room.Code,
                                 YourSeat = conn.Seat,
                                 Players  = room.GetPlayerList(),
                             });
+                            break;
 
-                            // Tell remaining lobby players someone returned
+                        case ClientMessageType.JoinRoom:
+                            if (string.IsNullOrWhiteSpace(msg.Code))
+                            {
+                                await conn.SendErrorAsync("Room code required.");
+                                break;
+                            }
+
+                            room = rooms.FindRoom(msg.Code);
+                            if (room == null)
+                            {
+                                await conn.SendErrorAsync($"Room '{msg.Code}' not found.");
+                                room = null;
+                                break;
+                            }
+                            if (room.GameStarted)
+                            {
+                                await conn.SendErrorAsync("That game has already started.");
+                                room = null;
+                                break;
+                            }
+
+                            await ApplyIdentityAsync(msg);
+                            int seat = room.AddPlayer(conn);
+                            if (seat < 0)
+                            {
+                                await conn.SendErrorAsync("Room is full.");
+                                room = null;
+                                break;
+                            }
+
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type     = ServerMessageType.RoomJoined,
+                                Code     = room.Code,
+                                YourSeat = seat,
+                                Players  = room.GetPlayerList(),
+                            });
+
                             await BroadcastToRoom(room, conn, new ServerMessage
                             {
                                 Type    = ServerMessageType.PlayerJoined,
-                                Seat    = conn.Seat,
+                                Seat    = seat,
                                 Players = room.GetPlayerList(),
                             });
-                        }
-                        else
+                            break;
+
+                        case ClientMessageType.RejoinRoom:
                         {
-                            // ---- Mid-game reconnect -------------------------------------
-                            bool rejoined = await rejoinRoom.RejoinAsync(conn.PlayerUuid, conn);
-                            if (!rejoined)
+                            // Player is reconnecting with their identity + room code (lobby or
+                            // mid-game). Identity = session token when present, else guest UUID.
+                            bool hasToken = !string.IsNullOrEmpty(msg.Token);
+                            if (string.IsNullOrWhiteSpace(msg.Code)
+                                || (!hasToken && string.IsNullOrWhiteSpace(msg.Uuid)))
                             {
-                                await conn.SendErrorAsync("Could not rejoin — UUID not recognised or game ended.");
+                                await conn.SendErrorAsync("Room code and UUID required to rejoin.");
                                 break;
                             }
-                            room = rejoinRoom;
-                        }
-                        break;
-                    }
 
-                    case ClientMessageType.JoinQueue:
-                        await ApplyIdentityAsync(msg);
-                        // JoinAsync sends queueJoined itself (before any match fires)
-                        bool added = await queue.JoinAsync(
-                            conn, conn.DisplayName, conn.PlayerUuid);
-                        if (!added)
-                            await conn.SendErrorAsync("Already in the matchmaking queue.");
-                        break;
-
-                    case ClientMessageType.LeaveQueue:
-                        queue.Leave(conn);
-                        // No specific response needed — client just goes back to the connect panel
-                        break;
-
-                    case ClientMessageType.Register:
-                    {
-                        if (accounts == null)
-                        {
-                            await conn.SendErrorAsync("Accounts are not enabled on this server.");
-                            break;
-                        }
-
-                        var uname = msg.Username?.Trim() ?? "";
-                        if (!System.Text.RegularExpressions.Regex.IsMatch(uname, "^[A-Za-z0-9_-]{3,20}$"))
-                        {
-                            await conn.SendErrorAsync("Username must be 3-20 characters: letters, numbers, _ or -.");
-                            break;
-                        }
-                        if (msg.Password is not { Length: >= 8 and <= 72 })
-                        {
-                            await conn.SendErrorAsync("Password must be 8-72 characters.");
-                            break;
-                        }
-
-                        var created = await accounts.CreateAsync(uname, PasswordHasher.Hash(msg.Password));
-                        if (created == null)
-                        {
-                            await conn.SendErrorAsync("That username is already taken.");
-                            break;
-                        }
-
-                        conn.AccountId   = created.Id;
-                        conn.DisplayName = created.Username;
-                        conn.PlayerUuid  = "acct:" + created.Id;
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type     = ServerMessageType.AuthOk,
-                            Token    = tokens.Create(created.Id, created.Username, created.TokenVersion),
-                            Username = created.Username,
-                        });
-                        break;
-                    }
-
-                    case ClientMessageType.Login:
-                    {
-                        if (accounts == null)
-                        {
-                            await conn.SendErrorAsync("Accounts are not enabled on this server.");
-                            break;
-                        }
-
-                        var uname = msg.Username?.Trim() ?? "";
-                        var acct  = uname.Length > 0 ? await accounts.GetByUsernameAsync(uname) : null;
-                        if (acct == null || msg.Password == null
-                            || !PasswordHasher.Verify(msg.Password, acct.PasswordHash))
-                        {
-                            // Same message for unknown user and wrong password (no enumeration),
-                            // small delay + strike-out to blunt brute force.
-                            failedLogins++;
-                            await Task.Delay(400);
-                            await conn.SendErrorAsync("Invalid username or password.");
-                            if (failedLogins >= 5) await conn.CloseAsync();
-                            break;
-                        }
-
-                        conn.AccountId   = acct.Id;
-                        conn.DisplayName = acct.Username;
-                        conn.PlayerUuid  = "acct:" + acct.Id;
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type        = ServerMessageType.AuthOk,
-                            Token       = tokens.Create(acct.Id, acct.Username, acct.TokenVersion),
-                            Username    = acct.Username,
-                            GamesPlayed = acct.GamesPlayed,
-                            GamesWon    = acct.GamesWon,
-                        });
-                        break;
-                    }
-
-                    case ClientMessageType.ChangePassword:
-                    {
-                        var acct = await RequireAccountAsync(msg);
-                        if (acct == null) break;
-
-                        // A session token alone must not be enough to take over an
-                        // account — the current password is required as well.
-                        if (msg.OldPassword == null
-                            || !PasswordHasher.Verify(msg.OldPassword, acct.PasswordHash))
-                        {
-                            failedLogins++;
-                            await Task.Delay(400);
-                            await conn.SendErrorAsync("Current password is incorrect.");
-                            if (failedLogins >= 5) await conn.CloseAsync();
-                            break;
-                        }
-                        if (msg.NewPassword is not { Length: >= 8 and <= 72 })
-                        {
-                            await conn.SendErrorAsync("New password must be 8-72 characters.");
-                            break;
-                        }
-
-                        int newVer = await accounts!.UpdatePasswordAsync(
-                            acct.Id, PasswordHasher.Hash(msg.NewPassword));
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type        = ServerMessageType.AuthOk,
-                            Token       = tokens.Create(acct.Id, acct.Username, newVer),
-                            Username    = acct.Username,
-                            GamesPlayed = acct.GamesPlayed,
-                            GamesWon    = acct.GamesWon,
-                        });
-                        break;
-                    }
-
-                    case ClientMessageType.SetEmail:
-                    {
-                        var acct = await RequireAccountAsync(msg);
-                        if (acct == null) break;
-
-                        var email = msg.Email?.Trim() ?? "";
-                        if (email.Length > 254
-                            || !System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
-                        {
-                            await conn.SendErrorAsync("That doesn't look like a valid email address.");
-                            break;
-                        }
-
-                        if (!await accounts!.SetEmailAsync(acct.Id, email))
-                        {
-                            await conn.SendErrorAsync("Could not attach that email — it may already be in use.");
-                            break;
-                        }
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type    = ServerMessageType.AccountOk,
-                            Message = $"Recovery email set to {email}.",
-                        });
-                        break;
-                    }
-
-                    case ClientMessageType.RequestReset:
-                    {
-                        if (accounts == null || emailSender == null)
-                        {
-                            await conn.SendErrorAsync("Password reset is not available on this server.");
-                            break;
-                        }
-
-                        // The response is identical whether the account exists or has
-                        // an email (no enumeration), and the actual send happens off
-                        // this request path so timing doesn't leak either.
-                        var uname = msg.Username?.Trim() ?? "";
-                        var acct  = uname.Length > 0 ? await accounts.GetByUsernameAsync(uname) : null;
-                        if (acct?.Email is string emailTo)
-                        {
-                            // 60 s resend cooldown per account blunts email bombing
-                            var existing = await accounts.GetResetCodeAsync(acct.Id);
-                            var issuedAt = existing?.ExpiresAt - ResetCodeLifetime;
-                            if (existing == null || issuedAt < DateTimeOffset.UtcNow.AddSeconds(-60))
+                            var rejoinRoom = rooms.FindRoom(msg.Code);
+                            if (rejoinRoom == null)
                             {
-                                var code = System.Security.Cryptography.RandomNumberGenerator
-                                    .GetInt32(0, 1_000_000).ToString("D6");
-                                await accounts.SaveResetCodeAsync(
-                                    acct.Id, PasswordHasher.Hash(code),
-                                    DateTimeOffset.UtcNow.Add(ResetCodeLifetime));
+                                await conn.SendErrorAsync($"Room '{msg.Code}' not found.");
+                                break;
+                            }
 
-                                var (sender, user) = (emailSender, acct.Username);
-                                _ = Task.Run(async () =>
+                            await ApplyIdentityAsync(msg);
+                            if (conn.AccountId == null && string.IsNullOrWhiteSpace(msg.Uuid))
+                            {
+                                await conn.SendErrorAsync("Room code and UUID required to rejoin.");
+                                break;
+                            }
+
+                            if (!rejoinRoom.GameStarted)
+                            {
+                                // ---- Lobby reconnect ----------------------------------------
+                                if (!rejoinRoom.RejoinLobby(conn.PlayerUuid, conn))
                                 {
-                                    try
-                                    {
-                                        await sender.SendAsync(emailTo,
-                                            "Riichi Mahjong password reset",
-                                            $"Hi {user}, your password reset code is {code}. " +
-                                            "It expires in 15 minutes. If you didn't request this, you can ignore this email.");
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        Console.WriteLine($"[Email] send failed: {ex.Message}");
-                                    }
+                                    await conn.SendErrorAsync("Could not rejoin lobby — seat no longer available.");
+                                    break;
+                                }
+                                room = rejoinRoom;
+
+                                // Tell rejoining player their seat + current player list
+                                await conn.SendAsync(new ServerMessage
+                                {
+                                    Type     = ServerMessageType.RoomJoined,
+                                    Code     = room.Code,
+                                    YourSeat = conn.Seat,
+                                    Players  = room.GetPlayerList(),
+                                });
+
+                                // Tell remaining lobby players someone returned
+                                await BroadcastToRoom(room, conn, new ServerMessage
+                                {
+                                    Type    = ServerMessageType.PlayerJoined,
+                                    Seat    = conn.Seat,
+                                    Players = room.GetPlayerList(),
                                 });
                             }
-                        }
-
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type    = ServerMessageType.AccountOk,
-                            Message = "If that account has a recovery email, a reset code has been sent.",
-                        });
-                        break;
-                    }
-
-                    case ClientMessageType.ResetPassword:
-                    {
-                        if (accounts == null)
-                        {
-                            await conn.SendErrorAsync("Accounts are not enabled on this server.");
-                            break;
-                        }
-
-                        // One uniform failure message for every wrong path.
-                        const string bad = "Invalid or expired reset code.";
-                        var uname = msg.Username?.Trim() ?? "";
-                        var acct  = uname.Length > 0 ? await accounts.GetByUsernameAsync(uname) : null;
-                        var reset = acct != null ? await accounts.GetResetCodeAsync(acct.Id) : null;
-
-                        if (acct == null || reset == null || reset.ExpiresAt < DateTimeOffset.UtcNow)
-                        {
-                            if (acct != null) await accounts.DeleteResetCodeAsync(acct.Id);
-                            failedLogins++;
-                            await Task.Delay(400);
-                            await conn.SendErrorAsync(bad);
-                            if (failedLogins >= 5) await conn.CloseAsync();
-                            break;
-                        }
-
-                        // Count the attempt BEFORE verifying so racing guesses
-                        // cannot exceed the cap; 5 misses burns the code.
-                        int attempts = await accounts.IncrementResetAttemptsAsync(acct.Id);
-                        if (attempts > 5 || msg.ResetCode == null
-                            || !PasswordHasher.Verify(msg.ResetCode, reset.CodeHash))
-                        {
-                            if (attempts >= 5) await accounts.DeleteResetCodeAsync(acct.Id);
-                            failedLogins++;
-                            await Task.Delay(400);
-                            await conn.SendErrorAsync(bad);
-                            if (failedLogins >= 5) await conn.CloseAsync();
-                            break;
-                        }
-
-                        if (msg.NewPassword is not { Length: >= 8 and <= 72 })
-                        {
-                            await conn.SendErrorAsync("New password must be 8-72 characters.");
-                            break;
-                        }
-
-                        int rpVer = await accounts.UpdatePasswordAsync(
-                            acct.Id, PasswordHasher.Hash(msg.NewPassword));
-                        await accounts.DeleteResetCodeAsync(acct.Id);
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type        = ServerMessageType.AuthOk,
-                            Token       = tokens.Create(acct.Id, acct.Username, rpVer),
-                            Username    = acct.Username,
-                            GamesPlayed = acct.GamesPlayed,
-                            GamesWon    = acct.GamesWon,
-                        });
-                        break;
-                    }
-
-                    case ClientMessageType.GetLeaderboard:
-                    {
-                        if (accounts == null)
-                        {
-                            await conn.SendErrorAsync("Accounts are not enabled on this server.");
-                            break;
-                        }
-
-                        var top = await accounts.GetTopAsync(20);
-                        await conn.SendAsync(new ServerMessage
-                        {
-                            Type        = ServerMessageType.Leaderboard,
-                            Leaderboard = top.Select((e, i) => new LeaderboardEntryDto
+                            else
                             {
-                                Rank        = i + 1,
-                                Name        = e.Username,
-                                GamesPlayed = e.GamesPlayed,
-                                GamesWon    = e.GamesWon,
-                                TotalPoints = e.TotalPoints,
-                            }).ToList(),
-                        });
-                        break;
-                    }
+                                // ---- Mid-game reconnect -------------------------------------
+                                bool rejoined = await rejoinRoom.RejoinAsync(conn.PlayerUuid, conn);
+                                if (!rejoined)
+                                {
+                                    await conn.SendErrorAsync("Could not rejoin — UUID not recognised or game ended.");
+                                    break;
+                                }
+                                room = rejoinRoom;
+                            }
+                            break;
+                        }
 
-                    default:
-                        await conn.SendErrorAsync("Join or create a room first.");
-                        break;
+                        case ClientMessageType.JoinQueue:
+                            await ApplyIdentityAsync(msg);
+                            // JoinAsync sends queueJoined itself (before any match fires)
+                            bool added = await queue.JoinAsync(
+                                conn, conn.DisplayName, conn.PlayerUuid);
+                            if (!added)
+                                await conn.SendErrorAsync("Already in the matchmaking queue.");
+                            break;
+
+                        case ClientMessageType.LeaveQueue:
+                            queue.Leave(conn);
+                            // No specific response needed — client just goes back to the connect panel
+                            break;
+
+                        case ClientMessageType.Register:
+                        {
+                            if (accounts == null)
+                            {
+                                await conn.SendErrorAsync("Accounts are not enabled on this server.");
+                                break;
+                            }
+
+                            var uname = msg.Username?.Trim() ?? "";
+                            if (!System.Text.RegularExpressions.Regex.IsMatch(uname, "^[A-Za-z0-9_-]{3,20}$"))
+                            {
+                                await conn.SendErrorAsync("Username must be 3-20 characters: letters, numbers, _ or -.");
+                                break;
+                            }
+                            if (msg.Password is not { Length: >= 8 and <= 72 })
+                            {
+                                await conn.SendErrorAsync("Password must be 8-72 characters.");
+                                break;
+                            }
+
+                            var created = await accounts.CreateAsync(uname, PasswordHasher.Hash(msg.Password));
+                            if (created == null)
+                            {
+                                await conn.SendErrorAsync("That username is already taken.");
+                                break;
+                            }
+
+                            conn.AccountId   = created.Id;
+                            conn.DisplayName = created.Username;
+                            conn.PlayerUuid  = "acct:" + created.Id;
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type     = ServerMessageType.AuthOk,
+                                Token    = tokens.Create(created.Id, created.Username, created.TokenVersion),
+                                Username = created.Username,
+                            });
+                            break;
+                        }
+
+                        case ClientMessageType.Login:
+                        {
+                            if (accounts == null)
+                            {
+                                await conn.SendErrorAsync("Accounts are not enabled on this server.");
+                                break;
+                            }
+
+                            var uname = msg.Username?.Trim() ?? "";
+                            var acct  = uname.Length > 0 ? await accounts.GetByUsernameAsync(uname) : null;
+                            if (acct == null || msg.Password == null
+                                || !PasswordHasher.Verify(msg.Password, acct.PasswordHash))
+                            {
+                                // Same message for unknown user and wrong password (no enumeration),
+                                // small delay + strike-out to blunt brute force.
+                                failedLogins++;
+                                await Task.Delay(400);
+                                await conn.SendErrorAsync("Invalid username or password.");
+                                if (failedLogins >= 5) await conn.CloseAsync();
+                                break;
+                            }
+
+                            conn.AccountId   = acct.Id;
+                            conn.DisplayName = acct.Username;
+                            conn.PlayerUuid  = "acct:" + acct.Id;
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type        = ServerMessageType.AuthOk,
+                                Token       = tokens.Create(acct.Id, acct.Username, acct.TokenVersion),
+                                Username    = acct.Username,
+                                GamesPlayed = acct.GamesPlayed,
+                                GamesWon    = acct.GamesWon,
+                            });
+                            break;
+                        }
+
+                        case ClientMessageType.ChangePassword:
+                        {
+                            var acct = await RequireAccountAsync(msg);
+                            if (acct == null) break;
+
+                            // A session token alone must not be enough to take over an
+                            // account — the current password is required as well.
+                            if (msg.OldPassword == null
+                                || !PasswordHasher.Verify(msg.OldPassword, acct.PasswordHash))
+                            {
+                                failedLogins++;
+                                await Task.Delay(400);
+                                await conn.SendErrorAsync("Current password is incorrect.");
+                                if (failedLogins >= 5) await conn.CloseAsync();
+                                break;
+                            }
+                            if (msg.NewPassword is not { Length: >= 8 and <= 72 })
+                            {
+                                await conn.SendErrorAsync("New password must be 8-72 characters.");
+                                break;
+                            }
+
+                            int newVer = await accounts!.UpdatePasswordAsync(
+                                acct.Id, PasswordHasher.Hash(msg.NewPassword));
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type        = ServerMessageType.AuthOk,
+                                Token       = tokens.Create(acct.Id, acct.Username, newVer),
+                                Username    = acct.Username,
+                                GamesPlayed = acct.GamesPlayed,
+                                GamesWon    = acct.GamesWon,
+                            });
+                            break;
+                        }
+
+                        case ClientMessageType.SetEmail:
+                        {
+                            var acct = await RequireAccountAsync(msg);
+                            if (acct == null) break;
+
+                            var email = msg.Email?.Trim() ?? "";
+                            if (email.Length > 254
+                                || !System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+                            {
+                                await conn.SendErrorAsync("That doesn't look like a valid email address.");
+                                break;
+                            }
+
+                            if (!await accounts!.SetEmailAsync(acct.Id, email))
+                            {
+                                await conn.SendErrorAsync("Could not attach that email — it may already be in use.");
+                                break;
+                            }
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type    = ServerMessageType.AccountOk,
+                                Message = $"Recovery email set to {email}.",
+                            });
+                            break;
+                        }
+
+                        case ClientMessageType.RequestReset:
+                        {
+                            if (accounts == null || emailSender == null)
+                            {
+                                await conn.SendErrorAsync("Password reset is not available on this server.");
+                                break;
+                            }
+
+                            // The response is identical whether the account exists or has
+                            // an email (no enumeration), and the actual send happens off
+                            // this request path so timing doesn't leak either.
+                            var uname = msg.Username?.Trim() ?? "";
+                            var acct  = uname.Length > 0 ? await accounts.GetByUsernameAsync(uname) : null;
+                            if (acct?.Email is string emailTo)
+                            {
+                                // 60 s resend cooldown per account blunts email bombing
+                                var existing = await accounts.GetResetCodeAsync(acct.Id);
+                                var issuedAt = existing?.ExpiresAt - ResetCodeLifetime;
+                                if (existing == null || issuedAt < DateTimeOffset.UtcNow.AddSeconds(-60))
+                                {
+                                    var code = System.Security.Cryptography.RandomNumberGenerator
+                                        .GetInt32(0, 1_000_000).ToString("D6");
+                                    await accounts.SaveResetCodeAsync(
+                                        acct.Id, PasswordHasher.Hash(code),
+                                        DateTimeOffset.UtcNow.Add(ResetCodeLifetime));
+
+                                    var (sender, user) = (emailSender, acct.Username);
+                                    _ = Task.Run(async () =>
+                                    {
+                                        try
+                                        {
+                                            await sender.SendAsync(emailTo,
+                                                "Riichi Mahjong password reset",
+                                                $"Hi {user}, your password reset code is {code}. " +
+                                                "It expires in 15 minutes. If you didn't request this, you can ignore this email.");
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"[Email] send failed: {ex.Message}");
+                                        }
+                                    });
+                                }
+                            }
+
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type    = ServerMessageType.AccountOk,
+                                Message = "If that account has a recovery email, a reset code has been sent.",
+                            });
+                            break;
+                        }
+
+                        case ClientMessageType.ResetPassword:
+                        {
+                            if (accounts == null)
+                            {
+                                await conn.SendErrorAsync("Accounts are not enabled on this server.");
+                                break;
+                            }
+
+                            // One uniform failure message for every wrong path.
+                            const string bad = "Invalid or expired reset code.";
+                            var uname = msg.Username?.Trim() ?? "";
+                            var acct  = uname.Length > 0 ? await accounts.GetByUsernameAsync(uname) : null;
+                            var reset = acct != null ? await accounts.GetResetCodeAsync(acct.Id) : null;
+
+                            if (acct == null || reset == null || reset.ExpiresAt < DateTimeOffset.UtcNow)
+                            {
+                                if (acct != null) await accounts.DeleteResetCodeAsync(acct.Id);
+                                failedLogins++;
+                                await Task.Delay(400);
+                                await conn.SendErrorAsync(bad);
+                                if (failedLogins >= 5) await conn.CloseAsync();
+                                break;
+                            }
+
+                            // Count the attempt BEFORE verifying so racing guesses
+                            // cannot exceed the cap; 5 misses burns the code.
+                            int attempts = await accounts.IncrementResetAttemptsAsync(acct.Id);
+                            if (attempts > 5 || msg.ResetCode == null
+                                || !PasswordHasher.Verify(msg.ResetCode, reset.CodeHash))
+                            {
+                                if (attempts >= 5) await accounts.DeleteResetCodeAsync(acct.Id);
+                                failedLogins++;
+                                await Task.Delay(400);
+                                await conn.SendErrorAsync(bad);
+                                if (failedLogins >= 5) await conn.CloseAsync();
+                                break;
+                            }
+
+                            if (msg.NewPassword is not { Length: >= 8 and <= 72 })
+                            {
+                                await conn.SendErrorAsync("New password must be 8-72 characters.");
+                                break;
+                            }
+
+                            int rpVer = await accounts.UpdatePasswordAsync(
+                                acct.Id, PasswordHasher.Hash(msg.NewPassword));
+                            await accounts.DeleteResetCodeAsync(acct.Id);
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type        = ServerMessageType.AuthOk,
+                                Token       = tokens.Create(acct.Id, acct.Username, rpVer),
+                                Username    = acct.Username,
+                                GamesPlayed = acct.GamesPlayed,
+                                GamesWon    = acct.GamesWon,
+                            });
+                            break;
+                        }
+
+                        case ClientMessageType.GetLeaderboard:
+                        {
+                            if (accounts == null)
+                            {
+                                await conn.SendErrorAsync("Accounts are not enabled on this server.");
+                                break;
+                            }
+
+                            var top = await accounts.GetTopAsync(20);
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type        = ServerMessageType.Leaderboard,
+                                Leaderboard = top.Select((e, i) => new LeaderboardEntryDto
+                                {
+                                    Rank        = i + 1,
+                                    Name        = e.Username,
+                                    GamesPlayed = e.GamesPlayed,
+                                    GamesWon    = e.GamesWon,
+                                    TotalPoints = e.TotalPoints,
+                                }).ToList(),
+                            });
+                            break;
+                        }
+
+                        default:
+                            await conn.SendErrorAsync("Join or create a room first.");
+                            break;
+                    }
                 }
-            }
-            else if (!room.GameStarted)
-            {
-                // ---- Lobby phase (host controls) ----------------------------
-                if (msg.Type == ClientMessageType.StartGame && room.IsHost(conn))
+                else if (!room.GameStarted)
                 {
-                    // Fire-and-forget — the game loop runs independently
-                    _ = Task.Run(() => room.StartGameAsync());
+                    // ---- Lobby phase (host controls) ----------------------------
+                    if (msg.Type == ClientMessageType.StartGame && room.IsHost(conn))
+                    {
+                        // Fire-and-forget — the game loop runs independently
+                        _ = Task.Run(() => room.StartGameAsync());
+                    }
+                    else if (msg.Type != ClientMessageType.StartGame)
+                    {
+                        await room.HandlePlayerActionAsync(conn, msg);
+                    }
                 }
-                else if (msg.Type != ClientMessageType.StartGame)
+                else
                 {
+                    // ---- Game running -------------------------------------------
                     await room.HandlePlayerActionAsync(conn, msg);
                 }
             }
-            else
+            catch (AccountStoreUnavailableException)
             {
-                // ---- Game running -------------------------------------------
-                await room.HandlePlayerActionAsync(conn, msg);
+                await conn.SendErrorAsync(
+                    "Accounts are temporarily unavailable — please try again in a moment.");
             }
         }
     }
