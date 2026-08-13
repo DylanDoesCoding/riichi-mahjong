@@ -35,6 +35,13 @@ prioritise two specific asks from Dylan (§6) over general prettiness.
 | `src/UI/SoundManager.cs` | Audio bus + SFX catalogue. |
 | `MULTIPLAYER.md` | Architecture + full network protocol. Read before touching anything networked. |
 
+> **Gap: there are no screenshots of the current game anywhere in this doc or the repo.**
+> This is a *visual* brief with no images of what it's redesigning, which forces the
+> designer to reconstruct the look from ~4000 lines of layout code. Before starting, either
+> run the game and capture MainMenu / Lobby / GameTable mid-hand / scoring panel, or ask
+> Dylan for them. Adding them to `docs/` would make this the single biggest improvement to
+> this handoff.
+
 ---
 
 ## 3. Hard technical constraints
@@ -188,28 +195,56 @@ Each player should be able to customise **their own quadrant** of the table — 
 around their seat (score panel + river + nameplate region). Think of it as a personal
 play mat.
 
+**Dylan's steer (2026-08-13):** he wants to know *"what's customizable for each quadrant —
+such as an ashtray, or a beer, or coffee."* Read that as the target feeling: the quadrant
+should read as **a real person's spot at a real table**, with their stuff on it — not as a
+recoloured rectangle. Props are the point, not decoration around the edge. See the art-budget
+conflict in §10 before deciding how the props get made.
+
 Design questions to answer:
-- **What is customisable?** Mat texture/colour, nameplate frame, river backdrop, a
-  border motif, an avatar/emblem slot?
+- **What is customisable?** Propose a concrete slot list. Starting point, to be argued with:
+  | Slot | Examples |
+  |---|---|
+  | Mat surface | felt colour/weave, wood grain, tatami |
+  | Personal prop | ashtray, beer, coffee cup, teapot, snack bowl — Dylan's ask |
+  | Nameplate frame | plain, brass, neon, carved |
+  | River backdrop | subtle tint or pattern behind the discards |
+  | Emblem | small badge/sigil in a corner |
+  Say which slots are free and which are unlocked (the model is **mixed** — see §10).
+- **Where does a prop physically go?** This is the hard part and the reason to answer it
+  early: the quadrant rects are *tight* (side rivers only 165 × 160) and the layout is
+  fixed (§5, and the flat top-down metaphor is confirmed). A prop must sit somewhere that
+  is **never** occupied by tiles at maximum hand/river size — otherwise it either overlaps
+  gameplay or forces a layout change that was explicitly ruled out. Identify the safe
+  pockets first, then design props to fit them.
 - **Who sees it?** Recommended: **everyone sees each player's own choice** in that
   player's quadrant — it's social and it shows off. But note each client rotates seats,
   so a customisation must travel with the *player*, not the screen position.
 - **Where does it live?** Nothing in the current schema stores cosmetics. The `accounts`
   table (Postgres) and the `handDealt` / `gameStarted` protocol messages would both need
-  a field. Flag this as server work; don't assume it exists.
+  a field. Flag this as server work; don't assume it exists. **Note:** RLS is now enabled
+  on `public.accounts` with zero policies (server connects as `postgres`, which bypasses
+  RLS) — adding a cosmetics column is fine, but do not add permissive RLS policies to
+  "make it work".
 - **Guests?** Guests have no account to persist a choice to — either local-only
-  (`settings.cfg`, visible only to them) or accounts-only as a sign-in incentive.
-- **Constraint:** the quadrant rects above are *tight* (side rivers only 165 × 160).
-  Decorative framing must not eat tile space or push tiles under the score panels.
+  (`settings.cfg`, visible only to them) or accounts-only as a sign-in incentive. With the
+  mixed unlock model, guests plausibly get the free set locally and unlocks require an
+  account — which doubles as the sign-in incentive.
+- **Constraint:** decorative framing must not eat tile space or push tiles under the score
+  panels.
 
 Deliver: a mockup of one customised table (4 different quadrant styles at once, so we
-can see it not turn into noise), plus the list of customisable slots and what a "set"
-contains.
+can see it not turn into noise), plus the list of customisable slots, which are free vs
+unlocked, and what a "set" contains.
 
 ### 6.2 Touch-accurate tile hit areas ⭐
 
 **Tiles must be selectable reliably by touch** — Dylan called this out specifically and
 it's the main blocker for the mobile target.
+
+> **Confirmed 2026-08-13: mobile is a real touch build, not "must not break if resized".**
+> That makes this section a **hard blocker and the first deliverable**, ahead of §6.1 and
+> ahead of all general polish. Nothing below is optional.
 
 Current reality:
 - Hand tiles are `Button`s at 66 × 88 px on a **1920-wide reference canvas**. With
@@ -281,6 +316,15 @@ Sequenced by value-per-effort; each should be deliverable on its own.
 - **No information advantage.** Dora glow and hover-matching only surface what is
   already publicly visible; keep any new affordance to that same standard, or it becomes
   an unfair-advantage issue in ranked play.
+- **Colour must not be the only channel for rules-relevant information.** This follows
+  directly from the rule above. Today the gold dora glow, the cyan hover-match highlight,
+  and red-5 (aka) tiles all convey scoring-relevant state *purely through hue*. A
+  red/green or blue/yellow colourblind player cannot read them, which is the same
+  information asymmetry the previous bullet forbids — just applied to a subset of players.
+  Every state that affects scoring needs a second channel: outline weight, a corner badge,
+  a shape, a pattern. Check the palette against deuteranopia/protanopia/tritanopia, and
+  check it **on both tile themes** (`Regular` and `Black`), since a highlight that reads on
+  one may vanish on the other.
 - **Both tile themes.** `Regular` and `Black` must both keep working
   (`GameSettings.UseBlackTiles`); design against both, and note that highlight colours
   need to read on both.
@@ -288,21 +332,91 @@ Sequenced by value-per-effort; each should be deliverable on its own.
 
 ---
 
-## 10. Open questions for Dylan
+## 10. Decisions (answered by Dylan 2026-08-13)
 
-1. **Dolo identity** — is there existing branding (logo, palette, the meaning of "Dolo")
-   or is that part of this work?
-2. **Quadrant cosmetics** — unlockable (via achievements/wins) or free choice? That
-   decides whether this needs a progression system.
-3. **Mobile** — real touch build, or "must not break if resized"? Changes how hard the
-   §6.2 constraints bite.
-4. **Art budget** — commissioned assets/typeface, or design must stay within Godot
-   primitives + the existing tile pack?
-5. **Table metaphor** — keep the current flat top-down green felt, or move toward a
-   perspective/3D-ish table? Big scope difference.
+**All five questions are now answered. Nothing in this doc is blocked on Dylan.**
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Dolo identity | **Greenfield.** "Dolo" is Dylan's own gamertag; no existing brand assets. See below. |
+| 2 | Quadrant cosmetics | **Mix — some free, some unlocked.** A free starter set plus unlockables. |
+| 3 | Mobile | **Real touch build.** Phones/tablets are a shipping target. |
+| 4 | Art budget | **Godot primitives + the existing tile pack** — no commissions. *(See the conflict below.)* |
+| 5 | Table metaphor | **Keep the flat top-down felt and restyle it.** Same geometry, better execution. |
+
+**What each decision means for scope:**
+
+- **Mobile is real → §6.2 is a hard blocker, not a nice-to-have.** Minimum touch size,
+  zero-gap hit areas, the two-stage select, and a touch replacement for hover-matching all
+  have to be solved before this ships on a phone. Treat §6.2 as the first deliverable.
+- **Mixed unlock model → the progression system is in scope.** A free-only model would have
+  needed just a cosmetics field; "some unlocked" needs unlock criteria, server storage for
+  what each account owns, and a UI to browse/equip. Cost is close to fully-unlockable — plan
+  for it rather than discovering it later.
+- **Flat top-down stays → every layout number in §5 remains valid.** No perspective rework,
+  no forced `.tscn` migration. Lowest-risk path.
+
+### ⚠ Unresolved conflict: art budget vs. the quadrant prop idea
+
+Dylan's answer to Q4 was *"option 1, but ask for more details on what's customizable for
+each quadrant — such as an ashtray, or a beer, or coffee."*
+
+Those two halves pull against each other and the design must resolve it explicitly:
+
+- **Option 1** means the design stays inside Godot primitives (`StyleBoxFlat`, rounded
+  rects, borders, colour) plus the existing tile SVGs.
+- **An ashtray, a beer, a coffee cup are illustrated objects.** They cannot be drawn
+  convincingly with primitives, and there is currently **no icon set, no typeface, and no
+  prop art** in the project (§3).
+
+So the design should come back with one of:
+1. **Abstract-primitive props** — the vibe delivered through colour, mat pattern, border
+   motif and simple geometric emblems, no representational objects. Fits the budget as
+   stated.
+2. **Open-licence prop sprites** — a small set of free-licence 2D props (CC0/CC-BY). Costs
+   nothing but sourcing time, and gets the literal ashtray/beer/coffee Dylan is picturing.
+3. **A costed exception** — a short list of props worth commissioning, with a price, for
+   Dylan to approve or decline.
+
+**Recommend option 2**, and say so with examples. Dylan's instinct here is a good one: the
+props are what turn "a colour swatch" into "someone's actual table", which is the whole
+point of §6.1. Do not silently downgrade it to colour swatches.
+
+### Q1: Dolo identity — answered 2026-08-13
+
+**"Dolo" is Dylan's own username — the handle he uses across a lot of the games he plays.**
+
+What that means for the design:
+
+- **There is no existing brand to match.** No logo, no wordmark, no palette, no type
+  choice. Identity is **greenfield and in scope** — you are creating it, not applying it.
+- **It is a personal handle, not a studio or product name.** "Dolo Mahjong" reads as
+  *Dolo's mahjong table*, the way a regular's name ends up on their seat at a club. That
+  is a much warmer, more specific brief than a generic mahjong app, and it should push the
+  identity toward personal and lived-in rather than corporate or sleek.
+- **It dovetails with §6.1.** The personal-play-mat direction — your own mat, your own
+  props, your ashtray and your coffee — *is* the brand expressed as a feature. Design the
+  identity and the quadrant customisation as one idea, not two. If the game is named after
+  a person's handle, then "make the table yours" is the thesis, and the cosmetics system
+  is the product, not a bolt-on.
+- **Unblocks the half-done rename.** `project.godot` (`config/name="RiichiMahjong"`) and
+  the MainMenu title still say RIICHI MAHJONG, while `export_presets.cfg` already targets
+  `DoloMahjongDemo.exe` (§8). Settling the wordmark lets that be finished in one pass —
+  and note the title is currently `🀄 RIICHI MAHJONG`, an emoji standing in for a logo,
+  which is exactly what the identity work should replace.
+
+**Open sub-question for Dylan (nice-to-have, not blocking):** does "Dolo" carry a meaning
+you want the identity to lean on (e.g. the "solo dolo" sense of going it alone), or is it
+simply your handle with no story attached? Either is fine — it only changes whether the
+brand has a concept to hang on or is purely a name and a look.
 
 ---
 
-*Last updated: 2026-07-29. Repo state: all 14 PRs merged; master at the "self-healing
-account store" merge. Layout values read from source at that commit — re-verify against
-the code before implementing.*
+*Last updated: 2026-08-13 (Dylan's answers folded into §10, plus §6.1/§6.2 scope, the
+accessibility constraint in §9, and the screenshots gap in §2).*
+
+*Repo state: all 15 PRs merged; master `063b1be`. Layout values were re-verified against
+source on 2026-08-13 and are accurate: `TileNode.cs:31-32` (66 × 88), `HandDisplay.cs:71`
+(4 px hand separation), `HandDisplay.cs:30,32` (42 × 52 side tiles), `project.godot:27-33`
+(1920 × 1080 reference, 1024 × 576 window). Still re-check against the code before
+implementing.*
