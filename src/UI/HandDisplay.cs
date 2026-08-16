@@ -326,6 +326,11 @@ namespace RiichiMahjong.UI
             node.CustomMinimumSize = new Vector2(TileW, TileH);
             node.SetTile(tile, FaceDown);
             node.SetInteractive(IsInteractive);
+
+            // Side seats show the same back texture turned to face their own edge of
+            // the table, rather than a separate flat panel (pass 02).
+            if (Orientation is HandOrientation.Left or HandOrientation.Right)
+                node.SetSideways(true);
             if (IsInteractive)
             {
                 node.TileClicked  += OnTileClicked;

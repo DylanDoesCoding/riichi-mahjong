@@ -1,8 +1,9 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://src/UI/GameController.cs" id="1"]
 [ext_resource type="Script" path="res://src/UI/HUD.cs" id="2"]
 [ext_resource type="Script" path="res://src/UI/HandDisplay.cs" id="3"]
+[ext_resource type="Script" path="res://src/UI/TableFelt.cs" id="4"]
 
 [node name="GameTable" type="Node"]
 script = ExtResource("1")
@@ -22,7 +23,17 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0.10, 0.30, 0.15, 1)
+color = Color(0.078, 0.063, 0.047, 1)
+
+[node name="TableFelt" type="Control" parent="UI"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("4")
 
 [node name="PlayerHand" type="Control" parent="UI"]
 layout_mode = 1

@@ -36,6 +36,9 @@ namespace RiichiMahjong.UI
         public static readonly StringName BodySmall   = "DoloBodySmall";
         public static readonly StringName Dim         = "DoloDim";
 
+        /// <summary>Player name on a table nameplate - smaller than a screen name, still semibold.</summary>
+        public static readonly StringName PlateName = "DoloPlateName";
+
         public static readonly StringName Mono        = "DoloMono";
         public static readonly StringName MonoSmall   = "DoloMonoSmall";
         public static readonly StringName MonoNumber  = "DoloMonoNumber";
@@ -142,6 +145,7 @@ namespace RiichiMahjong.UI
             AddLabel(theme, Body,        Sans,         DoloTokens.SizeBody,        DoloTokens.BodyText);
             AddLabel(theme, BodySmall,   Sans,         DoloTokens.SizeBodySmall,   DoloTokens.BodyText);
             AddLabel(theme, Dim,         Sans,         DoloTokens.SizeBodySmall,   DoloTokens.DimText);
+            AddLabel(theme, PlateName,   SansSemiBold, DoloTokens.SizeRow,         DoloTokens.Ivory);
 
             AddLabel(theme, Mono,       MonoFont,         DoloTokens.SizeMonoLabel, DoloTokens.MonoLabel);
             AddLabel(theme, MonoSmall,  MonoFont,         DoloTokens.SizeMonoSmall, DoloTokens.MonoDim);

@@ -1,0 +1,163 @@
+// =============================================================================
+// TileOverlays.cs
+// Small drawn Controls that give tile states a second, non-colour channel.
+//
+// Pass 10 of the redesign requires every rules-relevant state to survive a full
+// greyscale strip: hue is retained for players who can see it, but nothing
+// depends on it.  A StyleBoxFlat can only give us fill and border, so the cues
+// that need a shape - a corner wedge, a hatch, a dashed edge - are drawn here.
+//
+// Each is a leaf Control that draws itself and ignores the mouse, so it can be
+// layered over a TileNode without disturbing hit testing.
+// =============================================================================
+
+using Godot;
+
+namespace RiichiMahjong.UI
+{
+    /// <summary>
+    /// Solid triangle in the top-right corner marking a live dora or a red five.
+    /// Pairs with the gold border: the border carries the hue, the wedge carries
+    /// the shape, and the wedge alone is enough in greyscale.
+    /// </summary>
+    public partial class DoraCornerWedge : Control
+    {
+        private const float WedgeSize = 12f;
+
+        public override void _Ready()
+        {
+            MouseFilter = MouseFilterEnum.Ignore;
+            SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        }
+
+        public override void _Draw()
+        {
+            float w = Size.X;
+            var points = new[]
+            {
+                new Vector2(w - WedgeSize, 0f),
+                new Vector2(w, 0f),
+                new Vector2(w, WedgeSize),
+            };
+            DrawColoredPolygon(points, DoloTokens.DoraGold);
+        }
+    }
+
+    /// <summary>
+    /// 135-degree hatch at 3px on a 6px pitch, drawn across furiten wait tiles.
+    /// Reads as "this one is barred to you" without relying on the red tint that
+    /// a protanope cannot separate from the tile body.
+    /// </summary>
+    public partial class HatchOverlay : Control
+    {
+        private const float Thickness = 3f;
+        private const float Pitch     = 6f;
+
+        public override void _Ready()
+        {
+            MouseFilter  = MouseFilterEnum.Ignore;
+            ClipContents = true;
+            SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        }
+
+        public override void _Draw()
+        {
+            float w = Size.X, h = Size.Y;
+
+            // 135 degrees: run bottom-left to top-right. Start the sweep far enough
+            // left that the first line still crosses the top-left corner.
+            for (float x = -h; x < w + h; x += Pitch)
+            {
+                DrawLine(new Vector2(x, h), new Vector2(x + h, 0f),
+                         DoloTokens.FuritenHatch, Thickness);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Dashed rectangular outline. Replaces the solid cyan fill that used to mark
+    /// a hover match, so the cue is a dash pattern first and a hue second.
+    /// </summary>
+    public partial class DashedRing : Control
+    {
+        private const float Dash      = 6f;
+        private const float Gap       = 4f;
+        private const float Thickness = 3f;
+        private const float Inset     = 1.5f;
+
+        private Color _color = DoloTokens.RiichiCyan;
+
+        /// <summary>Ring colour. Kept settable so the same shape serves several states.</summary>
+        public Color RingColor
+        {
+            get => _color;
+            set { _color = value; QueueRedraw(); }
+        }
+
+        public override void _Ready()
+        {
+            MouseFilter = MouseFilterEnum.Ignore;
+            SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        }
+
+        public override void _Draw()
+        {
+            float w = Size.X - Inset * 2f;
+            float h = Size.Y - Inset * 2f;
+            if (w <= 0 || h <= 0) return;
+
+            var topLeft     = new Vector2(Inset, Inset);
+            var topRight    = new Vector2(Inset + w, Inset);
+            var bottomRight = new Vector2(Inset + w, Inset + h);
+            var bottomLeft  = new Vector2(Inset, Inset + h);
+
+            DrawDashedEdge(topLeft, topRight);
+            DrawDashedEdge(topRight, bottomRight);
+            DrawDashedEdge(bottomRight, bottomLeft);
+            DrawDashedEdge(bottomLeft, topLeft);
+        }
+
+        private void DrawDashedEdge(Vector2 from, Vector2 to)
+        {
+            float length = from.DistanceTo(to);
+            if (length <= 0f) return;
+
+            var direction = (to - from) / length;
+            for (float travelled = 0f; travelled < length; travelled += Dash + Gap)
+            {
+                float dashEnd = Mathf.Min(travelled + Dash, length);
+                DrawLine(from + direction * travelled,
+                         from + direction * dashEnd,
+                         _color, Thickness);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The riichi stick laid on the felt: 52 x 5 ivory with a 1px dark outline.
+    /// One per declaring seat, positioned by TableFelt inside that seat's wedge.
+    /// </summary>
+    public partial class RiichiStick : Control
+    {
+        public const int StickWidth  = 52;
+        public const int StickHeight = 5;
+
+        public override void _Ready()
+        {
+            MouseFilter       = MouseFilterEnum.Ignore;
+            CustomMinimumSize = new Vector2(StickWidth, StickHeight);
+            Size              = new Vector2(StickWidth, StickHeight);
+        }
+
+        public override void _Draw()
+        {
+            var body = new Rect2(Vector2.Zero, new Vector2(StickWidth, StickHeight));
+            DrawRect(body, DoloTokens.RiichiStick);
+            DrawRect(body, new Color(0.08f, 0.06f, 0.05f, 0.9f), filled: false, width: 1f);
+
+            // The single red dot that marks a 1,000-point stick.
+            DrawCircle(new Vector2(StickWidth * 0.5f, StickHeight * 0.5f), 1.6f,
+                       new Color("#c0453f"));
+        }
+    }
+}
