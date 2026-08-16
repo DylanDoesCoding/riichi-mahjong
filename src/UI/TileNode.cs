@@ -32,6 +32,22 @@ namespace RiichiMahjong.UI
         public const int TileHeight = 88;
         public const int LiftAmount = 10;
 
+        /// <summary>
+        /// Every layer that draws the tile lives under this, inset from the button's own
+        /// rect. Two things follow from that, both required by design section 6.2:
+        ///
+        ///   - The visual gap between neighbouring tiles is padding inside each cell
+        ///     rather than container separation, so there is no dead strip for a tap to
+        ///     fall through. The whole cell is the hit rect.
+        ///   - Lifting a tile moves this root, not the button, so a selected tile does
+        ///     not drag its own hit rect upward and the confirming tap lands where the
+        ///     first one did.
+        /// </summary>
+        private Control _artRoot = null!;
+
+        private int _artInsetX;   // horizontal padding per side
+        private int _liftHeadroom; // vertical space reserved above the art for the lift
+
         // ---- Child nodes -----------------------------------------------------
 
         private Panel       _tileBody            = null!;  // White tile body shown behind artwork
@@ -80,6 +96,13 @@ namespace RiichiMahjong.UI
             SizeFlagsVertical   = SizeFlags.ShrinkCenter;
             Flat = true;
 
+            // The art root must exist before any layer is added to it.
+            _artRoot = new Control();
+            _artRoot.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _artRoot.MouseFilter = MouseFilterEnum.Ignore;
+            AddChild(_artRoot);
+            ApplyArtInset();
+
             // ---- Tile body panel (face-up background) ----
             // Provides a solid white/ivory background that the SVG artwork renders on top of.
             // Ensures strong contrast against the green table regardless of SVG transparency.
@@ -95,7 +118,7 @@ namespace RiichiMahjong.UI
             bodyStyle.CornerRadiusTopLeft    = bodyStyle.CornerRadiusTopRight    =
             bodyStyle.CornerRadiusBottomLeft = bodyStyle.CornerRadiusBottomRight = 3;
             _tileBody.AddThemeStyleboxOverride("panel", bodyStyle);
-            AddChild(_tileBody);
+            _artRoot.AddChild(_tileBody);
 
             // Tile image — fills the button, maintains aspect ratio
             _textureRect = new TextureRect();
@@ -103,7 +126,7 @@ namespace RiichiMahjong.UI
             _textureRect.ExpandMode  = TextureRect.ExpandModeEnum.IgnoreSize;
             _textureRect.StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered;
             _textureRect.MouseFilter = MouseFilterEnum.Ignore;
-            AddChild(_textureRect);
+            _artRoot.AddChild(_textureRect);
 
             // Top-left value label (1–9 for Man/Pin/Sou; hidden for honours and face-down)
             _valueLabel = new Label();
@@ -121,7 +144,7 @@ namespace RiichiMahjong.UI
             _valueLabelSettings.OutlineColor = new Color(1f, 1f, 1f, 1f);
             _valueLabel.LabelSettings = _valueLabelSettings;
 
-            AddChild(_valueLabel);
+            _artRoot.AddChild(_valueLabel);
 
             // Golden selection overlay (on top of the tile image)
             _selectionOverlay = new Panel();
@@ -140,7 +163,7 @@ namespace RiichiMahjong.UI
             selStyle.CornerRadiusBottomLeft  = 4;
             selStyle.CornerRadiusBottomRight = 4;
             _selectionOverlay.AddThemeStyleboxOverride("panel", selStyle);
-            AddChild(_selectionOverlay);
+            _artRoot.AddChild(_selectionOverlay);
 
             // Green glow overlay (riichi candidate)
             _riichiHighlight = new Panel();
@@ -155,7 +178,7 @@ namespace RiichiMahjong.UI
             riichiStyle.CornerRadiusTopLeft    = riichiStyle.CornerRadiusTopRight    =
             riichiStyle.CornerRadiusBottomLeft = riichiStyle.CornerRadiusBottomRight = 4;
             _riichiHighlight.AddThemeStyleboxOverride("panel", riichiStyle);
-            AddChild(_riichiHighlight);
+            _artRoot.AddChild(_riichiHighlight);
 
             // Dark dim overlay (non-candidate while riichi mode is active)
             _riichiDimOverlay = new Panel();
@@ -165,7 +188,7 @@ namespace RiichiMahjong.UI
             var dimStyle = new StyleBoxFlat();
             dimStyle.BgColor = new Color(0f, 0f, 0f, 0.45f);
             _riichiDimOverlay.AddThemeStyleboxOverride("panel", dimStyle);
-            AddChild(_riichiDimOverlay);
+            _artRoot.AddChild(_riichiDimOverlay);
 
             // Orange pulse overlay — shown on the pending discard tile during a claim window
             _claimHighlight = new Panel();
@@ -180,7 +203,7 @@ namespace RiichiMahjong.UI
             claimStyle.CornerRadiusTopLeft    = claimStyle.CornerRadiusTopRight    =
             claimStyle.CornerRadiusBottomLeft = claimStyle.CornerRadiusBottomRight = 4;
             _claimHighlight.AddThemeStyleboxOverride("panel", claimStyle);
-            AddChild(_claimHighlight);
+            _artRoot.AddChild(_claimHighlight);
 
             // Gold edge — this tile is a live dora (indicator+1) or a red five.
             // Border-only so it stays readable under selection/claim overlays.
@@ -196,21 +219,21 @@ namespace RiichiMahjong.UI
             doraStyle.CornerRadiusTopLeft    = doraStyle.CornerRadiusTopRight    =
             doraStyle.CornerRadiusBottomLeft = doraStyle.CornerRadiusBottomRight = 4;
             _doraGlow.AddThemeStyleboxOverride("panel", doraStyle);
-            AddChild(_doraGlow);
+            _artRoot.AddChild(_doraGlow);
 
             // Gold corner wedge — the half of the dora cue that survives greyscale.
             _doraWedge = new DoraCornerWedge { Visible = false };
-            AddChild(_doraWedge);
+            _artRoot.AddChild(_doraWedge);
 
             // Dashed edge — this tile matches the hand tile currently hovered.
             // Dashed rather than a solid cyan fill so the pattern, not the hue,
             // is what distinguishes it (pass 10).
             _matchRing = new DashedRing { Visible = false };
-            AddChild(_matchRing);
+            _artRoot.AddChild(_matchRing);
 
             // 135° hatch — this wait tile is barred by furiten.
             _furitenHatch = new HatchOverlay { Visible = false };
-            AddChild(_furitenHatch);
+            _artRoot.AddChild(_furitenHatch);
 
             // Dead wait — the face is dropped and the tile becomes a brass outline.
             _deadWaitOutline = new Panel();
@@ -220,7 +243,7 @@ namespace RiichiMahjong.UI
             var deadStyle = DoloStyles.Flat(DoloTokens.DeepField, DoloTokens.RadiusTile,
                                             DoloTokens.Brass, borderWidth: 2);
             _deadWaitOutline.AddThemeStyleboxOverride("panel", deadStyle);
-            AddChild(_deadWaitOutline);
+            _artRoot.AddChild(_deadWaitOutline);
 
             // "3 left" / "0 left" — the count that makes a dead wait unambiguous.
             _waitCountLabel = new Label();
@@ -239,7 +262,7 @@ namespace RiichiMahjong.UI
                 OutlineColor = new Color(0f, 0f, 0f, 0.85f),
             };
             _waitCountLabel.LabelSettings = countSettings;
-            AddChild(_waitCountLabel);
+            _artRoot.AddChild(_waitCountLabel);
 
             Pressed += OnPressed;
             Resized += ApplySideways;
@@ -268,18 +291,44 @@ namespace RiichiMahjong.UI
         {
             Selected = selected;
             Refresh();
-            Position = selected
-                ? new Vector2(Position.X, -LiftAmount)
-                : new Vector2(Position.X, 0);
+            ApplyArtInset();
         }
 
         public void SetLifted(bool lifted)
         {
             Lifted = lifted;
-            if (!Selected)
-                Position = lifted
-                    ? new Vector2(Position.X, -(LiftAmount / 2))
-                    : new Vector2(Position.X, 0);
+            ApplyArtInset();
+        }
+
+        /// <summary>
+        /// Define the hit cell and the artwork inside it. The cell is what the container
+        /// lays out and what a tap has to hit; the art is what the player sees.
+        /// </summary>
+        public void SetCellMetrics(Vector2I art, Vector2I cell)
+        {
+            CustomMinimumSize = new Vector2(cell.X, cell.Y);
+            _artInsetX        = Mathf.Max(0, (cell.X - art.X) / 2);
+            _liftHeadroom     = Mathf.Max(0, cell.Y - art.Y);
+            ApplyArtInset();
+        }
+
+        /// <summary>
+        /// Position the artwork inside the cell. At rest the art sits at the bottom with
+        /// the lift headroom above it; selected or lifted, it rises into that headroom.
+        /// The button's own rect never moves.
+        /// </summary>
+        private void ApplyArtInset()
+        {
+            if (_artRoot == null) return;
+
+            float rise = Selected ? _liftHeadroom
+                       : Lifted   ? _liftHeadroom * 0.5f
+                       : 0f;
+
+            _artRoot.OffsetLeft   =  _artInsetX;
+            _artRoot.OffsetRight  = -_artInsetX;
+            _artRoot.OffsetTop    =  _liftHeadroom - rise;
+            _artRoot.OffsetBottom = -rise;
         }
 
         public void SetInteractive(bool interactive)
@@ -492,7 +541,7 @@ namespace RiichiMahjong.UI
         {
             if (_textureRect == null) return;
 
-            var extent = Size == Vector2.Zero ? CustomMinimumSize : Size;
+            var extent = _artRoot.Size == Vector2.Zero ? CustomMinimumSize : _artRoot.Size;
             _textureRect.PivotOffset     = extent * 0.5f;
             _textureRect.RotationDegrees = _sideways ? 90f : 0f;
         }

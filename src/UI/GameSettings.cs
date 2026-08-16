@@ -19,6 +19,13 @@ namespace RiichiMahjong.UI
         public static string TileThemeFolder =>
             UseBlackTiles ? "Black" : "Regular";
 
+        /// <summary>
+        /// Whether the client draws the desktop or the touch layout. Auto follows the
+        /// device; the explicit settings let a phone player force the desktop layout on
+        /// a tablet, and let the touch layout be tested without an Android build.
+        /// </summary>
+        public static LayoutPreference LayoutPreference { get; set; } = LayoutPreference.Auto;
+
         // ---- Audio -----------------------------------------------------------
 
         /// <summary>Background music volume (0 = silent, 1 = full). Persists across scene changes.</summary>
@@ -73,6 +80,11 @@ namespace RiichiMahjong.UI
             AuthToken     = configExists ? (string)cfg.GetValue("account", "token",      "") : "";
             AuthUsername  = configExists ? (string)cfg.GetValue("account", "username",   "") : "";
 
+            LayoutPreference = configExists
+                ? (LayoutPreference)(int)cfg.GetValue("display", "layout", (int)LayoutPreference.Auto)
+                : LayoutPreference.Auto;
+            DoloLayout.ResetCache();
+
             // UUID: load from disk so the player can rejoin after a game client restart.
             // If no UUID is saved yet, generate one and immediately persist it.
             string savedUuid = configExists ? (string)cfg.GetValue("player", "uuid", "") : "";
@@ -95,6 +107,7 @@ namespace RiichiMahjong.UI
             cfg.SetValue("player",  "serverUrl",  ServerUrl);
             cfg.SetValue("player",  "uuid",       PlayerUuid);
             cfg.SetValue("display", "blackTiles", UseBlackTiles);
+            cfg.SetValue("display", "layout",     (int)LayoutPreference);
             cfg.SetValue("audio",   "music",      MusicVolume);
             cfg.SetValue("audio",   "sfx",        SfxVolume);
             cfg.SetValue("account", "token",      AuthToken);

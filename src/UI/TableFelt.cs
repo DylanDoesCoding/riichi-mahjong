@@ -27,19 +27,7 @@ namespace RiichiMahjong.UI
         public const int SeatTop   = 2;
         public const int SeatLeft  = 3;
 
-        private const int PropSize      = 118;
         private const float DiagonalWidth = 2f;
-
-        // Prop pocket positions, as offsets from the centre of the table.
-        // Each sits inside its own wedge and clear of every hand, river and dora
-        // rect, so a prop can never overlap or move a tile.
-        private static readonly Vector2[] PropOffsets =
-        {
-            new(200,  250),   // self  (south)
-            new(630,   80),   // right (west)
-            new(200, -365),   // top   (north)
-            new(-748,  80),   // left  (east)
-        };
 
         // Riichi sticks lie on bare felt between the centre plaque and each river.
         // Side seats get the stick turned to face their own edge of the table.
@@ -157,14 +145,17 @@ namespace RiichiMahjong.UI
 
         private void BuildPropPockets()
         {
+            var offsets = DoloLayout.PropOffsets;
+            int propSize = DoloLayout.PropSize;
+
             for (int seat = 0; seat < 4; seat++)
             {
-                var offset = PropOffsets[seat];
+                var offset = offsets[seat];
 
                 // The dashed pocket shows wherever a prop has not been supplied.
                 // Coffee, teapot and snack bowl are still placeholders.
                 var pocket = new DashedRing { RingColor = DoloTokens.HairlineMedium };
-                PlaceAtCentreOffset(pocket, offset, PropSize, PropSize);
+                PlaceAtCentreOffset(pocket, offset, propSize, propSize);
                 AddChild(pocket);
                 _propPockets[seat] = pocket;
 
@@ -179,7 +170,7 @@ namespace RiichiMahjong.UI
                     // rather than a sticker pasted over it.
                     SelfModulate = new Color(0.88f, 0.88f, 0.88f),
                 };
-                PlaceAtCentreOffset(prop, offset, PropSize, PropSize);
+                PlaceAtCentreOffset(prop, offset, propSize, propSize);
                 AddChild(prop);
                 _props[seat] = prop;
             }

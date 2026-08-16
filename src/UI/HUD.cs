@@ -235,12 +235,15 @@ namespace RiichiMahjong.UI
                 // tile offset (5, −5) inside the 38×28 wrapper):
                 //   After rotation each corner lands exactly on the wrapper's corners — no clipping.
 
-                var wrapper = new Control();
-                wrapper.CustomMinimumSize = new Vector2(38, 28);   // landscape slot for the flow
+                var riverTile = DoloLayout.RiverTile;
 
-                node.CustomMinimumSize = new Vector2(28, 38);      // tile keeps its natural portrait size
-                node.Position          = new Vector2(5f, -5f);     // offset so rotation fills the wrapper
-                node.PivotOffset       = new Vector2(14f, 19f);    // rotate around the tile's own centre
+                var wrapper = new Control();
+                wrapper.CustomMinimumSize = new Vector2(riverTile.Y, riverTile.X);  // landscape slot
+
+                node.CustomMinimumSize = new Vector2(riverTile.X, riverTile.Y);     // stays portrait
+                node.Position          = new Vector2((riverTile.Y - riverTile.X) * 0.5f,
+                                                     (riverTile.X - riverTile.Y) * 0.5f);
+                node.PivotOffset       = new Vector2(riverTile.X * 0.5f, riverTile.Y * 0.5f);
                 node.RotationDegrees   = 90f;
 
                 wrapper.AddChild(node);
@@ -248,8 +251,7 @@ namespace RiichiMahjong.UI
             }
             else
             {
-                // 28×38: fits 3 rows of 6 in the 127px-tall river area with 2px gaps
-                node.CustomMinimumSize = new Vector2(28, 38);
+                node.CustomMinimumSize = new Vector2(DoloLayout.RiverTile.X, DoloLayout.RiverTile.Y);
                 pool.AddChild(node);
             }
         }
@@ -393,6 +395,14 @@ namespace RiichiMahjong.UI
         /// <summary>Show the hover info line ("2 Sou — 1 discarded, 2 unseen").</summary>
         public void ShowTileInfo(string text)
         {
+            // On touch the same line becomes the content of the info card above the
+            // hand, rather than outlined text floating over the felt.
+            if (DoloLayout.IsTouch)
+            {
+                ShowTouchInfoCard(text);
+                return;
+            }
+
             if (_tileInfoLabel == null)
             {
                 _tileInfoLabel = new Label();
@@ -419,6 +429,7 @@ namespace RiichiMahjong.UI
         public void HideTileInfo()
         {
             if (_tileInfoLabel != null) _tileInfoLabel.Visible = false;
+            HideTouchInfoCard();
         }
 
         // ---- Button visibility ----------------------------------------------
@@ -563,18 +574,6 @@ namespace RiichiMahjong.UI
             BuildScoringPanel();
         }
 
-        // Nameplate rects (pass 02), as offsets from the table centre. Anchoring every
-        // plate to the centre rather than to a screen corner keeps the four of them in
-        // the same relationship to the felt on any aspect ratio.
-        // Order matches the visual seat order: [0] self, [1] right, [2] top, [3] left.
-        private static readonly (float l, float t, float r, float b)[] NameplateRects =
-        {
-            (-320,  250, -160,  345),   // self  (south) — 160 x 95
-            ( 610, -240,  770, -150),   // right (west)  — 160 x 90
-            (-320, -365, -160, -275),   // top   (north) — 160 x 90
-            (-770, -240, -610, -150),   // left  (east)  — 160 x 90
-        };
-
         // Wind tile art, used as the seat badge. Pass 10 asks for the 東南西北 glyph on
         // the plate; drawing it from the tile pack rather than as text guarantees it
         // renders, since neither Source Sans 3 nor Godot's default font carries CJK.
@@ -587,26 +586,32 @@ namespace RiichiMahjong.UI
         {
             _windBadges = new TextureRect[4];
 
+            // Anchoring every plate to the table centre rather than to a screen corner
+            // keeps the four in the same relationship to the felt on any aspect ratio.
+            var rects = DoloLayout.NameplateRects;
+            var plateSize = DoloLayout.NameplateSize;
+            bool touch = DoloLayout.IsTouch;
+
             for (int i = 0; i < 4; i++)
             {
                 var panel = new PanelContainer();
                 panel.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-                panel.OffsetLeft   = NameplateRects[i].l;
-                panel.OffsetTop    = NameplateRects[i].t;
-                panel.OffsetRight  = NameplateRects[i].r;
-                panel.OffsetBottom = NameplateRects[i].b;
-                panel.CustomMinimumSize = new Vector2(160, 90);
+                panel.OffsetLeft   = rects[i].l;
+                panel.OffsetTop    = rects[i].t;
+                panel.OffsetRight  = rects[i].r;
+                panel.OffsetBottom = rects[i].b;
+                panel.CustomMinimumSize = new Vector2(plateSize.X, plateSize.Y);
                 panel.MouseFilter  = MouseFilterEnum.Ignore;
                 panel.AddThemeStyleboxOverride("panel", NameplateStyle());
 
                 var vbox = new VBoxContainer();
                 vbox.AddThemeConstantOverride("separation", 2);
 
-                // ---- Wind row: tile glyph plus the letter ----
+                // ---- Wind: tile glyph plus the letter ----
                 // Two channels for the same fact, so the seat reads without colour.
-                var windRow = new HBoxContainer();
-                windRow.AddThemeConstantOverride("separation", 6);
-
+                // The desktop plate has room for both; the phone chip takes the letter
+                // only, and its badge is built but left hidden so SetSeatWind can stay
+                // one code path.
                 _windBadges[i] = new TextureRect
                 {
                     CustomMinimumSize = new Vector2(20, 27),
@@ -619,35 +624,66 @@ namespace RiichiMahjong.UI
                 _windLabels[i].ThemeTypeVariation = DoloTheme.Mono;
                 _windLabels[i].VerticalAlignment  = VerticalAlignment.Center;
 
-                windRow.AddChild(_windBadges[i]);
-                windRow.AddChild(_windLabels[i]);
-
                 _nameLabels[i]  = new Label { Text = $"Player {i}" };
                 _scoreLabels[i] = new Label { Text = "25,000" };
 
                 _nameLabels[i].ThemeTypeVariation  = DoloTheme.PlateName;
                 _nameLabels[i].TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-                _scoreLabels[i].ThemeTypeVariation = DoloTheme.MonoLarge;
+                _scoreLabels[i].ThemeTypeVariation = touch ? DoloTheme.Mono : DoloTheme.MonoLarge;
 
                 // Riichi stick on the plate. The felt stick (pass 10) is the cue that
-                // survives greyscale; this one just keeps the plate self-contained.
+                // survives greyscale; this one keeps the plate self-contained. On a
+                // 96 x 40 chip there is no room for a stick, so it becomes an underline.
                 var stick = new ColorRect
                 {
                     Color             = DoloTokens.RiichiStick,
-                    CustomMinimumSize = new Vector2(60, 5),
+                    CustomMinimumSize = touch ? new Vector2(0, 4) : new Vector2(60, 5),
                     Visible           = false,
                     MouseFilter       = MouseFilterEnum.Ignore,
                 };
                 _riichiSticks[i] = stick;
 
-                vbox.AddChild(windRow);
-                vbox.AddChild(_nameLabels[i]);
-                vbox.AddChild(_scoreLabels[i]);
-                vbox.AddChild(stick);
+                if (touch)
+                {
+                    // The chip carries name, wind and score only.
+                    _windBadges[i].Visible = false;
+                    _nameLabels[i].AddThemeFontSizeOverride("font_size", DoloTokens.PhoneSizeName);
+                    _scoreLabels[i].AddThemeFontSizeOverride("font_size", DoloTokens.PhoneSizeMono);
 
-                // Furiten badge — only on the human's own panel (index 0)
+                    var topRow = new HBoxContainer();
+                    topRow.AddThemeConstantOverride("separation", 6);
+                    _nameLabels[i].SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+                    // The badge stays in the tree but hidden — containers skip invisible
+                    // children, so it costs no space and SetSeatWind keeps one path.
+                    topRow.AddChild(_windBadges[i]);
+                    topRow.AddChild(_windLabels[i]);
+                    topRow.AddChild(_nameLabels[i]);
+
+                    vbox.AddChild(topRow);
+                    vbox.AddChild(_scoreLabels[i]);
+                    vbox.AddChild(stick);
+                }
+                else
+                {
+                    var windRow = new HBoxContainer();
+                    windRow.AddThemeConstantOverride("separation", 6);
+                    windRow.AddChild(_windBadges[i]);
+                    windRow.AddChild(_windLabels[i]);
+
+                    vbox.AddChild(windRow);
+                    vbox.AddChild(_nameLabels[i]);
+                    vbox.AddChild(_scoreLabels[i]);
+                    vbox.AddChild(stick);
+                }
+
+                // Furiten badge — only on the human's own panel (index 0).
+                // On the chip it shrinks to a corner dot; there is no room for the word.
                 if (i == 0)
-                    vbox.AddChild(BuildFuritenBadge());
+                {
+                    var badge = touch ? BuildFuritenDot(panel) : BuildFuritenBadge();
+                    if (!touch) vbox.AddChild(badge);
+                }
 
                 panel.AddChild(vbox);
                 AddChild(panel);
@@ -722,16 +758,49 @@ namespace RiichiMahjong.UI
             return holder;
         }
 
+        /// <summary>
+        /// The phone equivalent of the furiten badge: a dot in the chip's corner.
+        /// Attached to the plate directly rather than stacked in the column, since a
+        /// 96 x 40 chip has no spare row.
+        /// </summary>
+        private Control BuildFuritenDot(Control plate)
+        {
+            var dot = new Panel
+            {
+                MouseFilter = MouseFilterEnum.Ignore,
+                Visible     = false,
+            };
+            dot.SetAnchorsAndOffsetsPreset(LayoutPreset.TopRight);
+            dot.OffsetLeft   = -14;
+            dot.OffsetTop    = 4;
+            dot.OffsetRight  = -4;
+            dot.OffsetBottom = 14;
+
+            var dotStyle = DoloStyles.Flat(DoloTokens.FuritenRed, 5, DoloTokens.Ivory, borderWidth: 1);
+            dot.AddThemeStyleboxOverride("panel", dotStyle);
+            plate.AddChild(dot);
+
+            // SetFuriten writes to the label and the strike as well as the badge, so the
+            // phone path keeps both in the tree, hidden, rather than as orphans.
+            _furitenBadge  = dot;
+            _furitenLabel  = new Label     { Visible = false };
+            _furitenStrike = new ColorRect { Visible = false };
+            dot.AddChild(_furitenLabel);
+            dot.AddChild(_furitenStrike);
+            return dot;
+        }
+
         private void BuildCentrePanel()
         {
             // Centre panel: round wind, counters, dora indicator tiles.
             // Wide enough to fit up to 5 dora tile images (5 × 34px = 170 + margins).
             var panel = new PanelContainer();
+            var plaque = DoloLayout.PlaqueSize;
             panel.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-            panel.OffsetLeft   = -130;
-            panel.OffsetTop    = -68;
-            panel.OffsetRight  =  130;
-            panel.OffsetBottom =  68;
+            panel.OffsetLeft   = -plaque.X * 0.5f;
+            panel.OffsetTop    = -plaque.Y * 0.5f;
+            panel.OffsetRight  =  plaque.X * 0.5f;
+            panel.OffsetBottom =  plaque.Y * 0.5f;
             panel.MouseFilter  = MouseFilterEnum.Ignore;
             panel.AddThemeStyleboxOverride("panel", CentrePlaqueStyle());
 
@@ -811,13 +880,8 @@ namespace RiichiMahjong.UI
             // 28 x 38 tiles — rather than the old 430 x 127 for south/north against
             // 165 x 160 for the sides. Every river now holds the same shape, and each
             // sits far enough from its neighbours that none crosses a diagonal.
-            var configs = new (float l, float t, float r, float b)[]
-            {
-                ( -89,  160,   89,  318),   // Human  (south)
-                ( 382,  -79,  560,   79),   // Right  (west)
-                ( -89, -340,   89, -182),   // Top    (north)
-                (-560,  -79, -382,   79),   // Left   (east)
-            };
+            var configs   = DoloLayout.RiverRects;
+            int separation = DoloLayout.RiverSeparation;
 
             for (int i = 0; i < 4; i++)
             {
@@ -846,8 +910,8 @@ namespace RiichiMahjong.UI
                 // Flow container fills the outer rect
                 var pool = new HFlowContainer();
                 pool.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-                pool.AddThemeConstantOverride("h_separation", 2);
-                pool.AddThemeConstantOverride("v_separation", 2);
+                pool.AddThemeConstantOverride("h_separation", separation);
+                pool.AddThemeConstantOverride("v_separation", separation);
                 outer.AddChild(pool);
                 AddChild(outer);
 

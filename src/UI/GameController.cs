@@ -160,6 +160,12 @@ namespace RiichiMahjong.UI
             _playerHand.TileHovered   += OnHandTileHovered;
             _playerHand.TileUnhovered += OnHandTileUnhovered;
 
+            // Touch: the card's DISCARD button is the second tap, and tapping bare felt
+            // clears the selection rather than leaving a tile stranded mid-lift.
+            _hud.TouchDiscardPressed += () => _playerHand.CommitSelection();
+            HookFeltTapToClearSelection();
+            ApplyHandLayout();
+
             _hud.RiichiPressed          += OnHumanRiichi;
             _hud.TsumoPressed           += OnHumanTsumo;
             _hud.RonPressed             += OnHumanRon;
@@ -1357,8 +1363,79 @@ namespace RiichiMahjong.UI
 
         private void OnHandTileUnhovered()
         {
+            // On touch the selection persists until the player taps elsewhere, so a
+            // pointer-exit must not tear the card down mid-decision.
+            if (DoloLayout.IsTouch) return;
+
             _hud.SetDiscardMatchHighlights(null);
             _hud.HideTileInfo();
+        }
+
+        /// <summary>
+        /// Size the four hand strips from the active layout. The scene's offsets were
+        /// written for one fixed tile size; now that a cell is taller than its artwork
+        /// (to absorb the lift) and differs between desktop and touch, the strips have
+        /// to be measured rather than hard-coded.
+        /// </summary>
+        private void ApplyHandLayout()
+        {
+            var cell     = DoloLayout.HandCell;
+            var sideTile = DoloLayout.SideTile;
+            bool touch   = DoloLayout.IsTouch;
+
+            // Bottom: the player's own hand. On a phone the score chip sits beside it,
+            // so the strip stops short of the right edge — 14 cells still fit.
+            _playerHand.OffsetTop    = -(cell.Y + 10);
+            _playerHand.OffsetBottom = -10;
+            _playerHand.OffsetLeft   = touch ? 4    : 180;
+            _playerHand.OffsetRight  = touch ? -136 : -10;
+
+            var topHand = GetNodeOrNull<Control>("UI/TopHand");
+            if (topHand != null)
+            {
+                topHand.OffsetTop    = 8;
+                topHand.OffsetBottom = 8 + sideTile.Y;
+                topHand.OffsetLeft   = touch ? 120  : 180;
+                topHand.OffsetRight  = touch ? -120 : -180;
+            }
+
+            SizeSideHand(GetNodeOrNull<Control>("UI/LeftHand"),  sideTile, fromLeft: true);
+            SizeSideHand(GetNodeOrNull<Control>("UI/RightHand"), sideTile, fromLeft: false);
+        }
+
+        private static void SizeSideHand(Control? hand, Vector2I sideTile, bool fromLeft)
+        {
+            if (hand == null) return;
+
+            float span = sideTile.Y * 7f;   // half a hand's worth of stacked tiles
+            hand.OffsetTop    = -span;
+            hand.OffsetBottom =  span;
+
+            if (fromLeft) { hand.OffsetLeft = 6;              hand.OffsetRight = 6 + sideTile.X; }
+            else          { hand.OffsetLeft = -(6 + sideTile.X); hand.OffsetRight = -6; }
+        }
+
+        /// <summary>
+        /// Tapping bare felt clears a touch selection. Without this the only ways out of
+        /// a selection are discarding it or picking another tile, which makes an
+        /// accidental tap feel like a trap.
+        /// </summary>
+        private void HookFeltTapToClearSelection()
+        {
+            var background = GetNodeOrNull<Control>("UI/Background");
+            if (background == null) return;
+
+            background.MouseFilter = Control.MouseFilterEnum.Stop;
+            background.GuiInput += @event =>
+            {
+                bool tapped = @event is InputEventMouseButton { Pressed: true }
+                           or InputEventScreenTouch { Pressed: true };
+                if (!tapped) return;
+
+                _playerHand.ClearSelection();
+                _hud.SetDiscardMatchHighlights(null);
+                _hud.HideTileInfo();
+            };
         }
 
         private static string TileLabel(Tile t) => t.Suit switch
@@ -1715,6 +1792,16 @@ namespace RiichiMahjong.UI
 
         private void OnHumanTileSelected(TileNode tile)
         {
+            // Touch has no hover, so the first tap does the work hover does on desktop:
+            // highlight the matching tiles and open the info card (pass 03).
+            if (DoloLayout.IsTouch)
+            {
+                OnHandTileHovered(tile);
+                _hud.SetTouchDiscardEnabled(
+                    !_riichiMode ||
+                    (tile.TileData != null && _riichiCandidates.Any(c => c == tile.TileData)));
+            }
+
             if (_riichiMode)
             {
                 if (tile.TileData != null && _riichiCandidates.Any(c => c == tile.TileData))
