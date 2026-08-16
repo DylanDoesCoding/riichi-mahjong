@@ -769,12 +769,16 @@ namespace RiichiMahjong.UI
             foreach (var e in scoreBoard)
                 if (e.Seat >= 0 && e.Seat < 4) points[e.Seat] = e.Points;
 
-            _hud.ShowGameOverPanel(
-                reason:        "Game over",
-                playerNames:   _netNames,
-                playerPoints:  points,
-                dealerSeat:    _netDealerSeat,
-                showPlayAgain: false);
+            // Network games reach the same results screen. Placement, uma and oka depend
+            // only on the final scores, so those are exact; the per-hand log and the
+            // trajectory stay empty until the protocol carries the match record, and the
+            // screen shows what it can vouch for rather than inventing a history.
+            var netRecord = new MatchRecord(_netNames);
+            MatchResultsHandoff.Record    = netRecord;
+            MatchResultsHandoff.Results   = netRecord.Settle(points);
+            MatchResultsHandoff.LocalSeat = NetworkManager.Instance?.LocalSeat ?? -1;
+
+            GetTree().ChangeSceneToFile("res://Scenes/Results.tscn");
         }
 
         private void Net_OnDisconnected()
@@ -1793,12 +1797,15 @@ namespace RiichiMahjong.UI
 
             SoundManager.Instance?.Play(Sound.GameOver);
             _hud.SetStatus("");
-            _hud.ShowGameOverPanel(
-                reason:        _game.GameOverReason,
-                playerNames:   _game.Players.Select(p => p.Name).ToArray(),
-                playerPoints:  _game.Players.Select(p => p.Points).ToArray(),
-                dealerSeat:    _game.DealerIndex,
-                showPlayAgain: true);
+
+            // The end of a game now goes to the results screen (pass 09) rather than to
+            // a list of four totals on an overlay.
+            var finalScores = _game.Players.Select(p => p.Points).ToArray();
+            MatchResultsHandoff.Record    = _game.Match;
+            MatchResultsHandoff.Results   = _game.Match.Settle(finalScores);
+            MatchResultsHandoff.LocalSeat = _humanSeat;
+
+            GetTree().ChangeSceneToFile("res://Scenes/Results.tscn");
         }
 
         // =====================================================================

@@ -59,7 +59,7 @@ namespace RiichiMahjong.Core
 		public Hand           Hand            { get; }       = new();
 		public FuritenTracker Furiten         { get; }       = new();
 		public List<Tile>     Discards        { get; }       = new();
-		public int            Points          { get; set; }  = 30000;
+		public int            Points          { get; set; }  = GameState.StartingPoints;
 		public bool           IsHuman         { get; }
 		public string         Name            { get; }
 
@@ -99,7 +99,15 @@ namespace RiichiMahjong.Core
 	{
 		// ---- Configuration --------------------------------------------------
 
-		public const int StartingPoints   = 30000;
+		/// <summary>
+		/// Points each seat starts with. 25,000 with a 30,000 return is the standard
+		/// riichi setup, and it is what makes oka mean anything: the 5,000-point gap
+		/// between start and return is the pot the winner takes.
+		/// </summary>
+		public const int StartingPoints   = 25000;
+
+		/// <summary>The score a seat is measured against at the end. Start plus the oka pot.</summary>
+		public const int ReturnPoints     = 30000;
 		public const int RiichiBetAmount  = 1000;
 		public const int CounterPointValue = 300;
 
@@ -228,10 +236,21 @@ namespace RiichiMahjong.Core
 		// =====================================================================
 
 		/// <summary>Start a new game from scratch.</summary>
+		/// <summary>
+		/// The running record of this whole game: per-seat wins, deal-ins, riichi counts,
+		/// the per-hand score trajectory and the hand log. Read by the results screen.
+		/// </summary>
+		public MatchRecord Match { get; private set; } = null!;
+
+		/// <summary>Every seat's score at the start of the current hand, for computing deltas.</summary>
+		private int[] _handStartPoints = new int[4];
+
 		public void StartGame()
 		{
 			foreach (var p in Players)
 				p.Points = StartingPoints;
+
+			Match = new MatchRecord(Players.Select(p => p.Name).ToList());
 
 			DealerIndex      = 0;
 			RoundWind        = WindDirection.East;
@@ -244,6 +263,9 @@ namespace RiichiMahjong.Core
 		/// <summary>Set up and begin a new hand.</summary>
 		public void StartNewHand()
 		{
+			// Snapshot the scores so each hand's deltas can be measured against them.
+			_handStartPoints = Players.Select(p => p.Points).ToArray();
+
 			// Clear last-win data
 			LastScoreResult   = null;
 			LastYakuResult    = null;
@@ -349,7 +371,7 @@ namespace RiichiMahjong.Core
             if (Wall.KanCount >= 4 && _kanDeclarants.Distinct().Count() >= 2)
             {
                 Phase = TurnPhase.HandEnd;
-                OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+                FireHandEnd(HandEndReason.AbortiveDraw, Array.Empty<int>());
                 return true;
             }
 
@@ -392,6 +414,7 @@ namespace RiichiMahjong.Core
 
 			player.Hand.DeclareRiichi(isDouble);
 			player.DeclaredRiichi = true;
+			Match?.RecordRiichi(playerIndex);
 			player.RiichiBetTurn  = TurnNumber;
 
 			OnRiichiDeclared?.Invoke(playerIndex);
@@ -573,7 +596,7 @@ namespace RiichiMahjong.Core
                 foreach (var (seat, _, _) in valid)
                     Players[seat].Hand.RemoveTile(PendingDiscard);
                 Phase = TurnPhase.HandEnd;
-                OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+                FireHandEnd(HandEndReason.AbortiveDraw, Array.Empty<int>());
                 return true;
             }
 
@@ -816,7 +839,7 @@ namespace RiichiMahjong.Core
 				if (d0.Suit == TileSuit.Wind && Players.All(p => p.Discards[0] == d0))
 				{
 					Phase = TurnPhase.HandEnd;
-					OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+					FireHandEnd(HandEndReason.AbortiveDraw, Array.Empty<int>());
 					return;
 				}
 			}
@@ -847,7 +870,7 @@ namespace RiichiMahjong.Core
 			// Fire the event BEFORE advancing dealer so the UI snapshot
 			// captures this hand's dealer/round-wind, not the next hand's.
 			Phase = TurnPhase.HandEnd;
-			OnHandEnd?.Invoke(HandEndReason.Ron, new[] { winner });
+			FireHandEnd(HandEndReason.Ron, new[] { winner });
 
 			// Advance dealer AFTER the event so BeginNextHand() gets correct state.
 			bool dealerWon = winner == DealerIndex;
@@ -895,7 +918,7 @@ namespace RiichiMahjong.Core
 			// Fire the event BEFORE advancing dealer so the UI snapshot
 			// captures this hand's dealer/round-wind, not the next hand's.
 			Phase = TurnPhase.HandEnd;
-			OnHandEnd?.Invoke(HandEndReason.Ron, winners.Select(w => w.winner).ToArray());
+			FireHandEnd(HandEndReason.Ron, winners.Select(w => w.winner).ToArray());
 
 			// Advance dealer AFTER the event so BeginNextHand() gets correct state.
 			bool dealerWon = winners.Any(w => w.winner == DealerIndex);
@@ -932,7 +955,7 @@ namespace RiichiMahjong.Core
 			// Fire the event BEFORE advancing dealer so the UI snapshot
 			// captures this hand's dealer/round-wind, not the next hand's.
 			Phase = TurnPhase.HandEnd;
-			OnHandEnd?.Invoke(HandEndReason.Tsumo, new[] { winner });
+			FireHandEnd(HandEndReason.Tsumo, new[] { winner });
 
 			// Advance dealer AFTER the event so BeginNextHand() gets correct state.
 			if (dealerWon) Counters++;
@@ -981,7 +1004,7 @@ namespace RiichiMahjong.Core
 				// Fire the event BEFORE advancing dealer so the UI snapshot
 				// captures this hand's dealer/round-wind, not the next hand's.
 				Phase = TurnPhase.HandEnd;
-				OnHandEnd?.Invoke(HandEndReason.NagashiMangan, nagashiWinners.ToArray());
+				FireHandEnd(HandEndReason.NagashiMangan, nagashiWinners.ToArray());
 
 				// Dealer stays if they won nagashi; otherwise rotate
 				if (nagashiWinners.Contains(DealerIndex)) Counters++;
@@ -1018,7 +1041,7 @@ namespace RiichiMahjong.Core
 			// Fire the event BEFORE advancing dealer so the UI snapshot
 			// captures this hand's dealer/round-wind, not the next hand's.
 			Phase = TurnPhase.HandEnd;
-			OnHandEnd?.Invoke(HandEndReason.ExhaustiveDraw, tenpaiPlayers.ToArray());
+			FireHandEnd(HandEndReason.ExhaustiveDraw, tenpaiPlayers.ToArray());
 
 			// Counter placed if dealer is tenpai; riichi bets stay on table.
 			// Dealer stays if they were tenpai; otherwise rotate.
@@ -1057,6 +1080,50 @@ namespace RiichiMahjong.Core
 				return;
 			}
 			StartNewHand();
+		}
+
+		/// <summary>
+		/// Fire the hand-end event, recording the hand first. Every path that ends a hand
+		/// goes through here, so the match record cannot silently miss one.
+		/// </summary>
+		private void FireHandEnd(HandEndReason reason, int[] winners)
+		{
+			RecordHandInMatch(reason, winners);
+			OnHandEnd?.Invoke(reason, winners);
+		}
+
+		private void RecordHandInMatch(HandEndReason reason, int[] winners)
+		{
+			if (Match == null) return;
+
+			var totals = Players.Select(p => p.Points).ToArray();
+			var deltas = new int[4];
+			for (int seat = 0; seat < 4; seat++)
+				deltas[seat] = totals[seat] - _handStartPoints[seat];
+
+			bool isDraw = reason is HandEndReason.ExhaustiveDraw or HandEndReason.AbortiveDraw;
+			int  winner = winners.Length > 0 && !isDraw ? winners[0] : -1;
+
+			// Only a ron has a discarder to charge with the deal-in.
+			int loser = reason == HandEndReason.Ron ? LastDiscarderSeat : -1;
+
+			string yaku = LastYakuResult != null && !isDraw
+				? string.Join(", ", LastYakuResult.Yaku.Select(y => y.Name))
+				: "";
+
+			Match.RecordHand(new HandLogEntry
+			{
+				Label      = $"{RoundWind} {DealerIndex + 1}",
+				Honba      = Counters,
+				WinnerSeat = winner,
+				LoserSeat  = loser,
+				IsDraw     = isDraw,
+				Yaku       = yaku,
+				Han        = LastScoreResult?.TotalFan ?? 0,
+				Fu         = LastScoreResult?.Fu.Total ?? 0,
+				Deltas     = deltas,
+				Totals     = totals,
+			});
 		}
 
 		private void AdvanceDealer()
@@ -1238,7 +1305,7 @@ namespace RiichiMahjong.Core
 		{
 			if (!CanDeclareKyuushu(playerIndex)) return false;
 			Phase = TurnPhase.HandEnd;
-			OnHandEnd?.Invoke(HandEndReason.AbortiveDraw, Array.Empty<int>());
+			FireHandEnd(HandEndReason.AbortiveDraw, Array.Empty<int>());
 			return true;
 		}
 

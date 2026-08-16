@@ -1964,6 +1964,11 @@ static class Program
         pass += gPass;
         fail += gFail;
 
+        // ---- Placement scoring: uma, oka and the arithmetic shown on the results screen ---
+        var (mPass, mFail) = MatchRecordTests.Run();
+        pass += mPass;
+        fail += mFail;
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         if (fail > 0)
         {
