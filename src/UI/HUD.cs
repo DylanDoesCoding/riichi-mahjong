@@ -445,6 +445,7 @@ namespace RiichiMahjong.UI
 
         public void ShowClaimButtons(bool canRon, bool canPon, bool canChi, bool canKan = false)
         {
+            _claimWindow.Visible = true;
             _btnRon.Visible    = canRon;
             _btnPon.Visible    = canPon;
             _btnChi.Visible    = canChi;
@@ -464,6 +465,9 @@ namespace RiichiMahjong.UI
             _btnKan.Visible     = false;
             _btnPass.Visible    = false;
             _btnKyuushu.Visible = false;
+
+            _claimWindow.Visible = false;
+            HideChiPicker();
         }
 
         public void HideClaimButtons()
@@ -473,6 +477,10 @@ namespace RiichiMahjong.UI
             _btnChi.Visible  = false;
             _btnKan.Visible  = false;
             _btnPass.Visible = false;
+
+            _claimWindow.Visible = false;
+            HideChiPicker();
+            ClearCountdownTile();
         }
 
         public void ShowNextHandButton() => _btnNext.Visible = true;
@@ -935,6 +943,7 @@ namespace RiichiMahjong.UI
         public void StopCountdown()
         {
             _countdownContainer.Visible = false;
+            ClearCountdownTile();
         }
 
         /// <summary>
@@ -963,6 +972,10 @@ namespace RiichiMahjong.UI
 
             int secs = (int)MathF.Ceiling(remainingSecs);
             _countdownLabel.Text = $"Auto in {secs}s";
+
+            // The ring on the discarded tile is the primary cue; this bar is the
+            // numeric readout that goes with it.
+            UpdateCountdownRing(fraction);
         }
 
         // =====================================================================
@@ -1044,20 +1057,58 @@ namespace RiichiMahjong.UI
             _btnNext.Pressed     += () => EmitSignal(SignalName.NextHandPressed);
             _btnKyuushu.Pressed  += () => EmitSignal(SignalName.KyuushuPressed);
 
+            // Own-turn actions stay in the bottom bar.
             bar.AddChild(_btnRiichi);
             bar.AddChild(_btnTsumo);
-            bar.AddChild(_btnRon);
-            bar.AddChild(_btnPon);
-            bar.AddChild(_btnChi);
-            bar.AddChild(_btnKan);
-            bar.AddChild(_btnPass);
             bar.AddChild(_btnKyuushu);
             bar.AddChild(_btnNext);
+            AddChild(bar);
+
+            // Calls move into a window over the felt (pass 08), so the decision sits
+            // near the tile it is about rather than in a strip at the bottom of the
+            // screen. They are ranked ron, pon, chi, kan, pass - highest-commitment
+            // first, so the ordering itself says which call matters most.
+            _claimWindow = new PanelContainer { Visible = false };
+            _claimWindow.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+
+            var callSize = DoloLayout.ActionButton;
+            float windowWidth  = callSize.X * 5 + 48;
+            float windowHeight = callSize.Y + 40;
+            _claimWindow.OffsetLeft   = -windowWidth * 0.5f;
+            _claimWindow.OffsetRight  =  windowWidth * 0.5f;
+            _claimWindow.OffsetTop    = DoloLayout.IsTouch ? 46 : 78;
+            _claimWindow.OffsetBottom = _claimWindow.OffsetTop + windowHeight;
+            _claimWindow.AddThemeStyleboxOverride("panel", ClaimWindowStyle());
+
+            var callRow = new HBoxContainer();
+            callRow.AddThemeConstantOverride("separation", 8);
+            callRow.Alignment = BoxContainer.AlignmentMode.Center;
+
+            foreach (var call in new[] { _btnRon, _btnPon, _btnChi, _btnKan, _btnPass })
+            {
+                call.CustomMinimumSize = new Vector2(callSize.X, callSize.Y);
+                callRow.AddChild(call);
+            }
+
+            _claimWindow.AddChild(callRow);
+            AddChild(_claimWindow);
 
             HideActionButtons();
             _btnNext.Visible = false;
+        }
 
-            AddChild(bar);
+        private PanelContainer _claimWindow = null!;
+
+        /// <summary>The claim window sits over the felt, so it needs a real edge and lift.</summary>
+        private static StyleBoxFlat ClaimWindowStyle()
+        {
+            var box = DoloStyles.Flat(DoloTokens.Card, DoloTokens.RadiusCard,
+                                      DoloTokens.HairlineStrong, borderWidth: 2);
+            DoloStyles.SetPadding(box, 16);
+            box.ShadowColor  = DoloTokens.ShadowCardColor;
+            box.ShadowSize   = 28;
+            box.ShadowOffset = new Vector2(0, 10);
+            return box;
         }
 
         private void BuildWaitsPopup()

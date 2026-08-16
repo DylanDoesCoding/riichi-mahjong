@@ -460,6 +460,32 @@ namespace RiichiMahjong.UI
         }
 
         /// <summary>
+        /// Show the claim countdown as a ring around this tile.
+        /// <paramref name="fraction"/> is the share of the window still remaining;
+        /// passing a negative value clears the ring.
+        /// </summary>
+        public void SetCountdown(float fraction)
+        {
+            if (fraction < 0f)
+            {
+                if (_countdownRing != null) _countdownRing.Visible = false;
+                return;
+            }
+
+            // Built on demand: only one tile at a time is ever counting down.
+            if (_countdownRing == null)
+            {
+                _countdownRing = new CountdownRing();
+                _artRoot.AddChild(_countdownRing);
+            }
+
+            _countdownRing.Visible  = true;
+            _countdownRing.Fraction = fraction;
+        }
+
+        private CountdownRing? _countdownRing;
+
+        /// <summary>
         /// Marks this tile as a live dora (or red five): a gold border for players who
         /// can see the hue, and a solid corner wedge for those who cannot.
         /// </summary>

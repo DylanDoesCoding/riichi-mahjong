@@ -134,6 +134,60 @@ namespace RiichiMahjong.UI
     }
 
     /// <summary>
+    /// The claim countdown, drawn as a ring around the discarded tile rather than as a
+    /// bar somewhere else on screen. The thing running out of time is that tile, so the
+    /// timer belongs on it - the player never has to look away from the decision to see
+    /// how long is left.
+    /// </summary>
+    public partial class CountdownRing : Control
+    {
+        private const float Thickness = 3f;
+
+        private float _fraction = 1f;
+
+        /// <summary>How much time is left, 0..1. Linear over the window.</summary>
+        public float Fraction
+        {
+            get => _fraction;
+            set { _fraction = Mathf.Clamp(value, 0f, 1f); QueueRedraw(); }
+        }
+
+        public override void _Ready()
+        {
+            MouseFilter = MouseFilterEnum.Ignore;
+            SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        }
+
+        public override void _Draw()
+        {
+            var centre = Size * 0.5f;
+            float radius = Mathf.Min(Size.X, Size.Y) * 0.5f + 4f;
+            if (radius <= 0f) return;
+
+            // The full track, so the ring reads as "time left out of a whole"
+            // rather than as an arc of unknown length.
+            DrawArc(centre, radius, 0f, Mathf.Tau, 40, DoloTokens.Hairline(0.25f), Thickness);
+
+            if (_fraction <= 0f) return;
+
+            // Sweep clockwise from twelve o'clock.
+            float start = -Mathf.Pi * 0.5f;
+            float end   = start + Mathf.Tau * _fraction;
+
+            // Colour is a courtesy for players who can see it; the arc length is the
+            // information, and it survives greyscale on its own.
+            var tint = _fraction switch
+            {
+                < 0.25f => DoloTokens.FuritenRed,
+                < 0.50f => DoloTokens.DoraGold,
+                _       => DoloTokens.Brass,
+            };
+
+            DrawArc(centre, radius, start, end, 40, tint, Thickness + 1f);
+        }
+    }
+
+    /// <summary>
     /// The riichi stick laid on the felt: 52 x 5 ivory with a 1px dark outline.
     /// One per declaring seat, positioned by TableFelt inside that seat's wedge.
     /// </summary>

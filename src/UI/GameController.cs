@@ -77,6 +77,8 @@ namespace RiichiMahjong.UI
 
         // Best chi combo pre-computed when claim window opens
         private (Tile t1, Tile t2)? _netChiCombo;
+        private List<(Tile t1, Tile t2)>? _netChiOptions;
+        private Tile? _netPendingClaimTile;
 
         // Minimal AI helper used only for chi-combo / riichi-candidate checks in network mode
         private readonly AIPlayer _helperAi = new(AIDifficulty.Medium);
@@ -171,6 +173,7 @@ namespace RiichiMahjong.UI
             _hud.RonPressed             += OnHumanRon;
             _hud.PonPressed             += OnHumanPon;
             _hud.ChiPressed             += OnHumanChi;
+            _hud.ChiVariantChosen       += OnChiVariantChosen;
             _hud.KanPressed             += OnHumanKan;
             _hud.PassPressed            += OnHumanPass;
             _hud.KyuushuPressed         += OnHumanKyuushu;
@@ -562,13 +565,21 @@ namespace RiichiMahjong.UI
             _hud.ShowClaimButtons(canRon: canRon, canPon: canPon, canChi: canChi, canKan: canKan);
             _hud.HighlightLastDiscard(ToVisualSeat(discarderSeat));
 
-            // Pre-compute best chi combo so CHI button just sends it
-            _netChiCombo = null;
+            // Pre-compute the chi interpretations. Keeping all of them means the CHI
+            // button can open the picker when the choice is real, rather than the
+            // client deciding the player's hand shape for them.
+            _netChiCombo         = null;
+            _netChiOptions       = null;
+            _netPendingClaimTile = tile;
             if (canChi)
             {
-                var hand  = NetBuildHand();
-                var combo = _helperAi.BestChiCombination(tile, hand);
-                if (combo != null) _netChiCombo = combo;
+                var hand    = NetBuildHand();
+                var options = _helperAi.AllChiCombinations(tile, hand);
+                if (options.Count > 0)
+                {
+                    _netChiOptions = options;
+                    _netChiCombo   = options[0];
+                }
             }
 
             // Highlight the hand tiles involved in the potential meld
@@ -580,6 +591,7 @@ namespace RiichiMahjong.UI
                 _playerHand.HighlightClaimTiles(new[] { tile, tile, tile });
 
             _hud.SetStatus(canRon ? "RON available! Click RON or PASS." : "Claim window — act or PASS.");
+            _hud.SetCountdownTile(ToVisualSeat(discarderSeat));
             StartActionCountdown(isClaim: true);
         }
 
@@ -1978,6 +1990,14 @@ namespace RiichiMahjong.UI
             if (_isNetworkMode)
             {
                 if (_netChiCombo == null) { _hud.SetStatus("No valid chi."); return; }
+
+                if (_netChiOptions is { Count: > 1 } && _netPendingClaimTile != null)
+                {
+                    _pendingChiOptions = _netChiOptions;
+                    _hud.ShowChiPicker(_netChiOptions, _netPendingClaimTile);
+                    return;
+                }
+
                 StopActionCountdown();
                 NetworkManager.Instance?.SendChi(_netChiCombo.Value.t1, _netChiCombo.Value.t2);
                 _netChiCombo = null;
@@ -1988,11 +2008,52 @@ namespace RiichiMahjong.UI
             }
 
             if (_game.PendingDiscard == null) return;
-            var combo = _ai[_humanSeat].BestChiCombination(
+
+            var options = _ai[_humanSeat].AllChiCombinations(
                 _game.PendingDiscard, _game.Players[_humanSeat].Hand);
-            if (combo == null) { _hud.SetStatus("No valid chi."); return; }
-            if (!_game.ClaimChi(_humanSeat, combo.Value.t1, combo.Value.t2))
+            if (options.Count == 0) { _hud.SetStatus("No valid chi."); return; }
+
+            // More than one interpretation is a real choice about hand shape, so the
+            // player makes it rather than the client picking the lowest shanten.
+            if (options.Count > 1)
+            {
+                _pendingChiOptions = options;
+                _hud.ShowChiPicker(options, _game.PendingDiscard);
+                return;
+            }
+
+            CommitChi(options[0]);
+        }
+
+        private List<(Tile t1, Tile t2)>? _pendingChiOptions;
+
+        /// <summary>Apply the chi the player picked from the variant window.</summary>
+        private void OnChiVariantChosen(int variantIndex)
+        {
+            var options = _pendingChiOptions;
+            _pendingChiOptions = null;
+            if (options == null || variantIndex < 0 || variantIndex >= options.Count) return;
+
+            if (_isNetworkMode)
+            {
+                var pick = options[variantIndex];
+                StopActionCountdown();
+                NetworkManager.Instance?.SendChi(pick.t1, pick.t2);
+                _netChiCombo = null;
+                _playerHand.ClearClaimTileHighlights();
+                _hud.HideClaimButtons();
+                _hud.SetStatus("Chi declared — waiting for server…");
+                return;
+            }
+
+            CommitChi(options[variantIndex]);
+        }
+
+        private void CommitChi((Tile t1, Tile t2) combo)
+        {
+            if (!_game.ClaimChi(_humanSeat, combo.t1, combo.t2))
                 { _hud.SetStatus("Cannot chi."); return; }
+
             _claimWindowActive = false;
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
@@ -2201,6 +2262,7 @@ namespace RiichiMahjong.UI
                 _hud.ShowClaimButtons(canRon: humanRon, canPon: humanPon,
                                       canChi: humanChi, canKan: humanKan);
                 _hud.HighlightLastDiscard(ToVisualSeat(discarderIndex));
+                _hud.SetCountdownTile(ToVisualSeat(discarderIndex));
 
                 if (humanPon)
                     _playerHand.HighlightClaimTiles(new[] { tile, tile });
