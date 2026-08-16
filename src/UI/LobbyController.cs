@@ -1,10 +1,19 @@
 // =============================================================================
 // LobbyController.cs
-// Multiplayer lobby — name entry, create/join room, waiting room.
+// Multiplayer lobby.
 //
-// Two panels built entirely in code:
-//   _connectPanel  — name + server URL + Create / Join buttons
-//   _waitingPanel  — room code display, 4 player slots, Start / Leave
+// Pass 06 splits what used to be one 440 x 660 card into four, each shown on
+// its own by ShowCard:
+//
+//   _connectPanel    — play online: the three ways to start a game, an identity
+//                      strip, and whether the server is reachable
+//   _accountPanel    — sign in, register, forgot password, manage account
+//   _waitingPanel    — room code, four player slots, Start / Leave
+//   _searchingPanel  — matchmaking, with one way out
+//
+// The old card held all of that at once, with two sub-panels toggling open
+// inside it and silently changing its height. Server URL has moved out of the
+// lobby entirely and into Settings.
 //
 // NetworkManager is an autoload that persists across scenes.
 // =============================================================================
@@ -18,17 +27,29 @@ namespace RiichiMahjong.UI
     public partial class LobbyController : Control
     {
         // ---- Panels ----------------------------------------------------------
-        private Control _connectPanel = null!;
-        private Control _waitingPanel = null!;
+        // The four cards of pass 06, plus the leaderboard. Exactly one is visible at a
+        // time, which is what ShowCard enforces — the old lobby toggled sub-panels open
+        // inside a single card and silently changed its height.
+        private Control _connectPanel     = null!;   // play online
+        private Control _accountPanel     = null!;
+        private Control _waitingPanel     = null!;
+        private Control _searchingPanel   = null!;
         private Control _leaderboardPanel = null!;
+
+        private readonly List<Control> _cards = new();
+
+        // Identity strip on the play-online card
+        private Label  _identityLabel     = null!;
+        private Button _accountBtn        = null!;
+        private Panel  _serverDot         = null!;
+        private Label  _serverStatusLabel = null!;
 
         // ---- Leaderboard widgets ----------------------------------------------
         private VBoxContainer _leaderboardRows   = null!;
         private Label         _leaderboardStatus = null!;
 
         // ---- Connect panel widgets -------------------------------------------
-        private LineEdit _nameInput   = null!;
-        private LineEdit _serverInput = null!;
+        private LineEdit _nameInput     = null!;
         private LineEdit _joinCodeInput = null!;
         private Label   _connectStatus = null!;
 
@@ -75,14 +96,9 @@ namespace RiichiMahjong.UI
         private Label    _searchingLabel   = null!;
 
         // ---- Style colours ---------------------------------------------------
-        private static readonly Color BgColor      = new(0.08f, 0.10f, 0.15f, 1f);
-        private static readonly Color CardColor    = new(0.10f, 0.12f, 0.18f, 1f);
-        private static readonly Color BorderColor  = new(0.30f, 0.45f, 0.70f, 1f);
-        private static readonly Color AccentBlue   = new(0.22f, 0.45f, 0.80f);
-        private static readonly Color AccentGreen  = new(0.15f, 0.55f, 0.25f);
-        private static readonly Color AccentRed    = new(0.60f, 0.15f, 0.15f);
-        private static readonly Color TextColor    = new(0.85f, 0.90f, 1f);
-        private static readonly Color DimText      = new(0.55f, 0.62f, 0.75f);
+        private static readonly Color BgColor   = DoloTokens.Page;
+        private static readonly Color TextColor = DoloTokens.Ivory;
+        private static readonly Color DimText   = DoloTokens.DimText;
 
         // =====================================================================
         // Lifecycle
@@ -110,7 +126,9 @@ namespace RiichiMahjong.UI
             }
 
             BuildConnectPanel();
+            BuildAccountCard();
             BuildWaitingPanel();
+            BuildSearchingCard();
             BuildLeaderboardPanel();
 
             ShowConnect();
@@ -158,99 +176,61 @@ namespace RiichiMahjong.UI
         // Panel builders
         // =====================================================================
 
+        /// <summary>
+        /// Card one: the only three ways to start a game, plus who you are and whether
+        /// the server is reachable.
+        ///
+        /// The old single card held all of that plus sign-in, register, forgot-password,
+        /// manage-account, the searching state and the leaderboard, with two sub-panels
+        /// toggling open inside it. Everything that is not "start a game" now lives on
+        /// its own card.
+        /// </summary>
         private void BuildConnectPanel()
         {
-            _connectPanel = MakeCard(offsetV: -330, offsetH: -220, height: 660, width: 440);
+            _connectPanel = MakeCard(offsetV: 0, offsetH: 0, height: 604, width: 460);
 
             var vbox = MakeCardVBox(_connectPanel);
 
-            // Title
-            var title = new Label { Text = "🀄  Multiplayer" };
-            title.HorizontalAlignment = HorizontalAlignment.Center;
-            title.AddThemeFontSizeOverride("font_size", 28);
-            title.AddThemeColorOverride("font_color", TextColor);
+            var title = new Label { Text = "PLAY ONLINE" };
+            title.ThemeTypeVariation = DoloTheme.NameSmall;
             vbox.AddChild(title);
-            vbox.AddChild(new HSeparator());
-            vbox.AddChild(Spacer(6));
+            vbox.AddChild(DoloStyles.HairlineRow(0.28f));
 
-            // Display name
-            vbox.AddChild(MakeLabel("Display Name"));
-            _nameInput = MakeLineEdit("Your name", GameSettings.PlayerName);
-            vbox.AddChild(_nameInput);
-            vbox.AddChild(Spacer(4));
+            vbox.AddChild(BuildIdentityStrip());
 
-            // Server URL
-            vbox.AddChild(MakeLabel("Server URL"));
-            _serverInput = MakeLineEdit("ws://localhost:5000/ws", GameSettings.ServerUrl);
-            vbox.AddChild(_serverInput);
-            vbox.AddChild(Spacer(10));
-
-            // ---- Account (optional) — sign in for a persistent name + stats ----
-            BuildAccountSection(vbox);
-            vbox.AddChild(Spacer(10));
-
-            // Quick Play (matchmaking)
-            var quickPlayBtn = MakeButton("⚡  Quick Play", new Color(0.18f, 0.45f, 0.28f));
+            // ---- The three ways in ----
+            var quickPlayBtn = MakeButton("Quick Play", DoloTheme.ButtonPrimary,
+                                          icon: DoloIcon.Bolt);
             quickPlayBtn.Pressed += OnQuickPlay;
             vbox.AddChild(quickPlayBtn);
-            vbox.AddChild(Spacer(6));
 
-            // Create Room
-            var createBtn = MakeButton("＋  Create Room", AccentBlue);
+            var createBtn = MakeButton("Create Room", icon: DoloIcon.Plus);
             createBtn.Pressed += OnCreateRoom;
             vbox.AddChild(createBtn);
-            vbox.AddChild(Spacer(10));
 
-            // Join Room row
-            vbox.AddChild(MakeLabel("Join with a Room Code"));
+            vbox.AddChild(MakeLabel("Join with a room code"));
             var joinRow = new HBoxContainer();
-            joinRow.AddThemeConstantOverride("separation", 8);
-            _joinCodeInput = MakeLineEdit("XXXXXX");
-            _joinCodeInput.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            _joinCodeInput.MaxLength = 6;
-            var joinBtn = MakeButton("Join", AccentGreen, minWidth: 90);
+            joinRow.AddThemeConstantOverride("separation", 10);
+            _joinCodeInput = MakeCodeEdit("XXXXXX", 6);
+            var joinBtn = MakeButton("Join", minWidth: 110);
+            joinBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
             joinBtn.Pressed += OnJoinRoom;
             joinRow.AddChild(_joinCodeInput);
             joinRow.AddChild(joinBtn);
             vbox.AddChild(joinRow);
 
-            vbox.AddChild(Spacer(12));
-            vbox.AddChild(new HSeparator());
-            vbox.AddChild(Spacer(6));
-
-            // Status label
+            // ---- Status ----
             _connectStatus = new Label { Text = "" };
-            _connectStatus.HorizontalAlignment = HorizontalAlignment.Center;
-            _connectStatus.AddThemeFontSizeOverride("font_size", 14);
-            _connectStatus.AddThemeColorOverride("font_color", DimText);
-            _connectStatus.AutowrapMode = TextServer.AutowrapMode.Word;
+            _connectStatus.ThemeTypeVariation = DoloTheme.Dim;
+            _connectStatus.AutowrapMode       = TextServer.AutowrapMode.WordSmart;
+            _connectStatus.SizeFlagsVertical  = SizeFlags.ExpandFill;
             vbox.AddChild(_connectStatus);
 
-            vbox.AddChild(Spacer(4));
-
-            // ---- Searching overlay (hidden until Quick Play is pressed) ----
-            // Sits in the same VBox; shown by ShowSearching(), hidden by HideSearching().
-            _searchingOverlay = new VBoxContainer();
-            _searchingOverlay.AddThemeConstantOverride("separation", 8);
-            _searchingOverlay.Visible = false;
-
-            _searchingLabel = new Label { Text = "Searching for players…" };
-            _searchingLabel.HorizontalAlignment = HorizontalAlignment.Center;
-            _searchingLabel.AddThemeFontSizeOverride("font_size", 16);
-            _searchingLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.90f, 0.65f));
-            _searchingOverlay.AddChild(_searchingLabel);
-
-            var cancelBtn = MakeButton("✕  Cancel Search", AccentRed);
-            cancelBtn.Pressed += OnCancelQueue;
-            _searchingOverlay.AddChild(cancelBtn);
-
-            vbox.AddChild(_searchingOverlay);
-
-            // Bottom row: back to menu + leaderboard
+            // ---- Leave ----
             var bottomRow = new HBoxContainer();
-            bottomRow.AddThemeConstantOverride("separation", 8);
+            bottomRow.AddThemeConstantOverride("separation", 10);
 
-            var backBtn = MakeButton("← Back to Menu", new Color(0.18f, 0.22f, 0.35f));
+            var backBtn = MakeButton("Menu", DoloTheme.ButtonGhost, icon: DoloIcon.Back);
             backBtn.Pressed += () =>
             {
                 if (_isSearching) NetworkManager.Instance?.SendLeaveQueue();
@@ -258,12 +238,82 @@ namespace RiichiMahjong.UI
                 GetTree().ChangeSceneToFile("res://Scenes/MainMenu.tscn");
             };
 
-            var lbBtn = MakeButton("🏆 Leaderboard", new Color(0.40f, 0.32f, 0.12f));
+            var lbBtn = MakeButton("Leaderboard", DoloTheme.ButtonGhost, icon: DoloIcon.Trophy);
             lbBtn.Pressed += OnLeaderboardPressed;
 
             bottomRow.AddChild(backBtn);
             bottomRow.AddChild(lbBtn);
             vbox.AddChild(bottomRow);
+        }
+
+        /// <summary>
+        /// Who you are and whether the server is up: display name, the account state,
+        /// and a status dot. This replaces the sign-in block that used to sit in the
+        /// middle of the card between the fields and the play buttons.
+        /// </summary>
+        private Control BuildIdentityStrip()
+        {
+            var strip = new PanelContainer();
+            strip.AddThemeStyleboxOverride("panel", DoloStyles.Inset(14));
+
+            var column = new VBoxContainer();
+            column.AddThemeConstantOverride("separation", 8);
+
+            var topRow = new HBoxContainer();
+            topRow.AddThemeConstantOverride("separation", 10);
+            topRow.AddChild(new DoloIconRect(DoloIcon.Person, 18, DoloTokens.BodyText));
+
+            _identityLabel = new Label { Text = "Playing as guest" };
+            _identityLabel.ThemeTypeVariation  = DoloTheme.Row;
+            _identityLabel.VerticalAlignment   = VerticalAlignment.Center;
+            _identityLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            topRow.AddChild(_identityLabel);
+
+            _accountBtn = MakeButton("Account", DoloTheme.ButtonGhost, minWidth: 110);
+            _accountBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
+            _accountBtn.Pressed += ShowAccount;
+            topRow.AddChild(_accountBtn);
+
+            column.AddChild(topRow);
+
+            _nameInput = MakeLineEdit("Your display name", GameSettings.PlayerName);
+            column.AddChild(_nameInput);
+
+            // Server reachability, as a dot plus the word — never the dot alone.
+            var serverRow = new HBoxContainer();
+            serverRow.AddThemeConstantOverride("separation", 8);
+
+            _serverDot = new Panel
+            {
+                CustomMinimumSize = new Vector2(10, 10),
+                SizeFlagsVertical = SizeFlags.ShrinkCenter,
+                MouseFilter       = MouseFilterEnum.Ignore,
+            };
+            serverRow.AddChild(_serverDot);
+
+            _serverStatusLabel = new Label { Text = "SERVER UNKNOWN" };
+            _serverStatusLabel.ThemeTypeVariation = DoloTheme.Mono;
+            _serverStatusLabel.VerticalAlignment  = VerticalAlignment.Center;
+            serverRow.AddChild(_serverStatusLabel);
+
+            column.AddChild(serverRow);
+            strip.AddChild(column);
+
+            SetServerStatus(false, "unknown");
+            return strip;
+        }
+
+        /// <summary>
+        /// Paint the server dot and its label together. The label is what carries the
+        /// meaning; the dot is a second channel, not the only one.
+        /// </summary>
+        private void SetServerStatus(bool ok, string text)
+        {
+            var tint = ok ? DoloTokens.Positive : DoloTokens.DimText;
+            _serverDot.AddThemeStyleboxOverride("panel",
+                DoloStyles.Flat(tint, 5, DoloTokens.Hairline(0.4f), borderWidth: 1));
+            _serverStatusLabel.Text = $"SERVER {text.ToUpperInvariant()}";
+            _serverStatusLabel.AddThemeColorOverride("font_color", tint);
         }
 
         private void BuildLeaderboardPanel()
@@ -305,7 +355,7 @@ namespace RiichiMahjong.UI
             vbox.AddChild(_leaderboardStatus);
 
             vbox.AddChild(Spacer(4));
-            var closeBtn = MakeButton("← Back", new Color(0.18f, 0.22f, 0.35f));
+            var closeBtn = MakeButton("Back", DoloTheme.ButtonGhost, icon: DoloIcon.Back);
             closeBtn.Pressed += () => { ShowConnect(); };
             vbox.AddChild(closeBtn);
         }
@@ -339,10 +389,78 @@ namespace RiichiMahjong.UI
             return row;
         }
 
+        /// <summary>
+        /// Card two: everything to do with an account. Sign-in is optional by design and
+        /// stays optional, so this is reached from the identity strip rather than sitting
+        /// in the path of someone who just wants to play.
+        /// </summary>
+        private void BuildAccountCard()
+        {
+            _accountPanel = MakeCard(offsetV: 0, offsetH: 0, height: 620, width: 480);
+            var vbox = MakeCardVBox(_accountPanel);
+
+            var title = new Label { Text = "ACCOUNT" };
+            title.ThemeTypeVariation = DoloTheme.NameSmall;
+            vbox.AddChild(title);
+            vbox.AddChild(DoloStyles.HairlineRow(0.28f));
+
+            var note = new Label
+            {
+                Text         = "Optional. An account keeps your name and your record "
+                             + "across devices; guests can play without one.",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            };
+            note.ThemeTypeVariation = DoloTheme.Dim;
+            vbox.AddChild(note);
+
+            BuildAccountSection(vbox);
+
+            var backBtn = MakeButton("Back", DoloTheme.ButtonGhost, icon: DoloIcon.Back);
+            backBtn.Pressed += ShowConnect;
+            vbox.AddChild(backBtn);
+        }
+
+        /// <summary>
+        /// Card four: the searching state. It was a sub-box inside the connect card that
+        /// left every form widget behind it live; now it is a card of its own with one
+        /// thing on it and one way out.
+        /// </summary>
+        private void BuildSearchingCard()
+        {
+            _searchingPanel = MakeCard(offsetV: 0, offsetH: 0, height: 300, width: 460);
+            var vbox = MakeCardVBox(_searchingPanel);
+            vbox.Alignment = BoxContainer.AlignmentMode.Center;
+
+            var title = new Label { Text = "SEARCHING" };
+            title.ThemeTypeVariation  = DoloTheme.NameSmall;
+            title.HorizontalAlignment = HorizontalAlignment.Center;
+            vbox.AddChild(title);
+
+            _searchingLabel = new Label { Text = "Looking for players…" };
+            _searchingLabel.ThemeTypeVariation  = DoloTheme.Row;
+            _searchingLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _searchingLabel.AutowrapMode        = TextServer.AutowrapMode.WordSmart;
+            vbox.AddChild(_searchingLabel);
+
+            var hint = new Label
+            {
+                Text                = "Up to 30 seconds, then CPU players fill the empty seats.",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                AutowrapMode        = TextServer.AutowrapMode.WordSmart,
+            };
+            hint.ThemeTypeVariation = DoloTheme.Dim;
+            vbox.AddChild(hint);
+
+            var cancelBtn = MakeButton("Cancel Search", DoloTheme.ButtonGhost,
+                                       icon: DoloIcon.Close);
+            cancelBtn.Pressed += OnCancelQueue;
+            vbox.AddChild(cancelBtn);
+
+            _searchingOverlay = _searchingPanel;
+        }
+
         private void BuildAccountSection(VBoxContainer vbox)
         {
-            vbox.AddChild(MakeLabel("Account (optional)"));
-
             // ---- Logged-out form: username + password, Sign In / Register ----
             var form = new VBoxContainer();
             form.AddThemeConstantOverride("separation", 6);
@@ -358,9 +476,9 @@ namespace RiichiMahjong.UI
 
             var btnRow = new HBoxContainer();
             btnRow.AddThemeConstantOverride("separation", 8);
-            var loginBtn    = MakeButton("Sign In", new Color(0.20f, 0.35f, 0.60f));
-            var registerBtn = MakeButton("Register", new Color(0.25f, 0.30f, 0.45f));
-            var forgotBtn   = MakeButton("Forgot?", new Color(0.30f, 0.28f, 0.20f), minWidth: 90);
+            var loginBtn    = MakeButton("Sign In", DoloTheme.ButtonPrimary);
+            var registerBtn = MakeButton("Register");
+            var forgotBtn   = MakeButton("Forgot?", DoloTheme.ButtonGhost, minWidth: 110);
             forgotBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
             loginBtn.Pressed    += () => StartAuth("login");
             registerBtn.Pressed += () => StartAuth("register");
@@ -378,7 +496,7 @@ namespace RiichiMahjong.UI
             var resetHint = MakeLabel("Enter your username above, then request a code:");
             resetBox.AddChild(resetHint);
 
-            var sendCodeBtn = MakeButton("Send Reset Code", new Color(0.30f, 0.30f, 0.45f));
+            var sendCodeBtn = MakeButton("Send Reset Code");
             sendCodeBtn.Pressed += OnRequestReset;
             resetBox.AddChild(sendCodeBtn);
 
@@ -392,7 +510,7 @@ namespace RiichiMahjong.UI
             resetRow.AddChild(_resetNewPassInput);
             resetBox.AddChild(resetRow);
 
-            var doResetBtn = MakeButton("Reset Password", new Color(0.20f, 0.40f, 0.30f));
+            var doResetBtn = MakeButton("Reset Password", DoloTheme.ButtonPrimary);
             doResetBtn.Pressed += OnResetPassword;
             resetBox.AddChild(doResetBtn);
 
@@ -413,12 +531,12 @@ namespace RiichiMahjong.UI
             _loggedInLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
             inBox.AddChild(_loggedInLabel);
 
-            var manageBtn = MakeButton("Manage", new Color(0.22f, 0.30f, 0.45f), minWidth: 100);
+            var manageBtn = MakeButton("Manage", DoloTheme.ButtonGhost, minWidth: 120);
             manageBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
             manageBtn.Pressed += () => { _manageBox.Visible = !_manageBox.Visible; };
             inBox.AddChild(manageBtn);
 
-            var logoutBtn = MakeButton("Sign Out", new Color(0.35f, 0.22f, 0.22f), minWidth: 110);
+            var logoutBtn = MakeButton("Sign Out", DoloTheme.ButtonGhost, minWidth: 120);
             logoutBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
             logoutBtn.Pressed += OnLogout;
             inBox.AddChild(logoutBtn);
@@ -434,7 +552,7 @@ namespace RiichiMahjong.UI
             var emailRow = new HBoxContainer();
             emailRow.AddThemeConstantOverride("separation", 8);
             _emailInput = MakeLineEdit("Recovery email");
-            var setEmailBtn = MakeButton("Set Email", new Color(0.22f, 0.35f, 0.40f), minWidth: 110);
+            var setEmailBtn = MakeButton("Set Email", minWidth: 130);
             setEmailBtn.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
             setEmailBtn.Pressed += OnSetEmail;
             emailRow.AddChild(_emailInput);
@@ -451,7 +569,7 @@ namespace RiichiMahjong.UI
             passRow.AddChild(_newPassInput);
             manageBox.AddChild(passRow);
 
-            var changePassBtn = MakeButton("Change Password", new Color(0.30f, 0.30f, 0.45f));
+            var changePassBtn = MakeButton("Change Password");
             changePassBtn.Pressed += OnChangePassword;
             manageBox.AddChild(changePassBtn);
 
@@ -489,7 +607,7 @@ namespace RiichiMahjong.UI
             codeBox.AddChild(codeLbl);
             codeBox.AddChild(_roomCodeLabel);
 
-            _copyBtn = MakeButton("Copy", new Color(0.22f, 0.35f, 0.55f), minWidth: 90);
+            _copyBtn = MakeButton("Copy", minWidth: 110);
             _copyBtn.CustomMinimumSize = new Vector2(90, 52);
             _copyBtn.Pressed += OnCopyCode;
 
@@ -528,14 +646,14 @@ namespace RiichiMahjong.UI
             vbox.AddChild(Spacer(6));
 
             // Start button (host only)
-            _startBtn = MakeButton("▶  Start Game", AccentGreen);
+            _startBtn = MakeButton("Start Game", DoloTheme.ButtonPrimary, icon: DoloIcon.Play);
             _startBtn.Pressed += OnStartGame;
             _startBtn.Visible = false;
             vbox.AddChild(_startBtn);
             vbox.AddChild(Spacer(4));
 
             // Leave button
-            var leaveBtn = MakeButton("✕  Leave Room", AccentRed);
+            var leaveBtn = MakeButton("Leave Room", DoloTheme.ButtonGhost, icon: DoloIcon.Close);
             leaveBtn.Pressed += OnLeaveRoom;
             vbox.AddChild(leaveBtn);
         }
@@ -626,7 +744,7 @@ namespace RiichiMahjong.UI
                 return false;
             }
 
-            var url = _serverInput.Text.Trim();
+            var url = GameSettings.ServerUrl.Trim();
             if (url.Length == 0) url = "ws://localhost:5000/ws";
 
             // Save to settings (persisted to disk so name is remembered next session)
@@ -714,7 +832,7 @@ namespace RiichiMahjong.UI
             var nm = NetworkManager.Instance;
             if (nm == null) return;
 
-            var url = _serverInput.Text.Trim();
+            var url = GameSettings.ServerUrl.Trim();
             if (url.Length == 0) url = "ws://localhost:5000/ws";
             GameSettings.ServerUrl = url;
             GameSettings.Save();
@@ -872,11 +990,17 @@ namespace RiichiMahjong.UI
             ShowLeaderboard();
         }
 
-        private void ShowLeaderboard()
+        private void ShowLeaderboard() => ShowCard(_leaderboardPanel);
+
+        private void ShowAccount() => ShowCard(_accountPanel);
+
+        /// <summary>
+        /// Reveal exactly one card. Making this the only way to change what is on screen
+        /// is the point of the split: there is no state where two cards are half-open.
+        /// </summary>
+        private void ShowCard(Control card)
         {
-            _connectPanel.Visible     = false;
-            _waitingPanel.Visible     = false;
-            _leaderboardPanel.Visible = true;
+            foreach (var c in _cards) c.Visible = c == card;
         }
 
         private void HandleAuthOk(string username, int gamesPlayed, int gamesWon)
@@ -917,12 +1041,18 @@ namespace RiichiMahjong.UI
                 _loggedInLabel.Text = $"Signed in as {GameSettings.AuthUsername}";
                 _nameInput.Text     = GameSettings.AuthUsername;
                 _nameInput.Editable = false;
+
+                _identityLabel.Text = $"Signed in as {GameSettings.AuthUsername}";
+                _identityLabel.AddThemeColorOverride("font_color", DoloTokens.Ivory);
             }
             else
             {
                 _nameInput.Editable = true;
                 if (_nameInput.Text == GameSettings.AuthUsername)
                     _nameInput.Text = GameSettings.PlayerName;
+
+                _identityLabel.Text = "Playing as guest";
+                _identityLabel.AddThemeColorOverride("font_color", DoloTokens.BodyText);
             }
         }
 
@@ -969,6 +1099,8 @@ namespace RiichiMahjong.UI
 
         private void HandleConnected()
         {
+            SetServerStatus(true, "ok");
+
             // If we're reconnecting to a lobby, send the rejoin immediately
             if (_reconnectCode.Length > 0)
                 NetworkManager.Instance?.SendRejoinRoom(_reconnectCode);
@@ -985,6 +1117,8 @@ namespace RiichiMahjong.UI
 
         private void HandleDisconnected()
         {
+            SetServerStatus(false, "offline");
+
             var nm = NetworkManager.Instance;
 
             // If we were in a room (lobby or game), try to reconnect automatically
@@ -1047,52 +1181,31 @@ namespace RiichiMahjong.UI
 
         private void ShowConnect()
         {
-            _connectPanel.Visible     = true;
-            _waitingPanel.Visible     = false;
-            _leaderboardPanel.Visible = false;
-            HideSearching();
+            _isSearching = false;
+            ShowCard(_connectPanel);
         }
 
         private void ShowWaiting()
         {
-            _connectPanel.Visible     = false;
-            _waitingPanel.Visible     = true;
-            _leaderboardPanel.Visible = false;
-            HideSearching();
+            _isSearching = false;
+            ShowCard(_waitingPanel);
         }
 
         /// <summary>
-        /// Enter the searching state: show the waiting panel (already styled) with
-        /// "Searching…" status, empty player slots, and no room code — so the player
-        /// has a clean waiting view with only the Leave/Cancel button available.
-        /// The searching overlay inside the connect panel is a fallback but the connect
-        /// panel itself is hidden, so there's no interference from the form widgets.
+        /// Enter the searching state. This is now its own card rather than a box inside
+        /// the connect card, so none of the form widgets behind it stay live.
         /// </summary>
         private void ShowSearching()
         {
             _isSearching = true;
-
-            // Reuse the waiting panel as the searching view — no room code, just status
-            _connectPanel.Visible = false;
-            _waitingPanel.Visible = true;
-
-            _roomCodeLabel.Text = "------";
-            _startBtn.Visible   = false;
-            SetWaitingStatus("Searching for players…  (up to 30 s, then CPU fills empty seats)");
-
-            // Reset all player slots to "Open"
-            for (int i = 0; i < 4; i++)
-            {
-                _playerNameLabels[i].Text = "Open";
-                _playerNameLabels[i].AddThemeColorOverride("font_color", DimText);
-                _playerTagLabels[i].Text  = "";
-            }
+            _searchingLabel.Text = "Looking for players…";
+            ShowCard(_searchingPanel);
         }
 
         private void HideSearching()
         {
             _isSearching = false;
-            // Panels are restored by ShowConnect() / ShowWaiting() — nothing extra needed here.
+            if (!_waitingPanel.Visible) ShowConnect();
         }
 
         private void SetConnectStatus(string msg) => _connectStatus.Text = msg;
@@ -1102,82 +1215,92 @@ namespace RiichiMahjong.UI
         // Widget factory helpers (matches MainMenu style)
         // =====================================================================
 
+        /// <summary>
+        /// One lobby card. Each of the four states — play online, account, waiting room,
+        /// searching — is its own card at its own size, rather than sub-panels toggling
+        /// open inside one card and silently changing its height.
+        /// </summary>
         private Control MakeCard(float offsetV, float offsetH, float height, float width)
         {
-            var card = new PanelContainer();
+            var card = new PanelContainer { Visible = false };
             card.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-            card.OffsetLeft   = offsetH;
-            card.OffsetTop    = offsetV;
-            card.OffsetRight  = -offsetH;
-            card.OffsetBottom = -offsetV;
-
-            var style = new StyleBoxFlat();
-            style.BgColor           = CardColor;
-            style.BorderColor       = BorderColor;
-            style.BorderWidthTop    = style.BorderWidthBottom =
-            style.BorderWidthLeft   = style.BorderWidthRight  = 2;
-            style.CornerRadiusTopLeft = style.CornerRadiusTopRight =
-            style.CornerRadiusBottomLeft = style.CornerRadiusBottomRight = 10;
-            card.AddThemeStyleboxOverride("panel", style);
+            card.OffsetLeft   = -width  * 0.5f;
+            card.OffsetTop    = -height * 0.5f;
+            card.OffsetRight  =  width  * 0.5f;
+            card.OffsetBottom =  height * 0.5f;
+            card.AddThemeStyleboxOverride("panel", DoloStyles.Card(28));
 
             AddChild(card);
+            _cards.Add(card);
             return card;
         }
 
         private static VBoxContainer MakeCardVBox(Control card)
         {
             var vbox = new VBoxContainer();
-            vbox.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            vbox.OffsetLeft   = 28;
-            vbox.OffsetTop    = 22;
-            vbox.OffsetRight  = -28;
-            vbox.OffsetBottom = -22;
-            vbox.AddThemeConstantOverride("separation", 8);
+            vbox.AddThemeConstantOverride("separation", 12);
             card.AddChild(vbox);
             return vbox;
         }
 
+        /// <summary>A field label: mono, above the field, never a placeholder.</summary>
         private static Label MakeLabel(string text)
         {
-            var lbl = new Label { Text = text };
-            lbl.AddThemeFontSizeOverride("font_size", 14);
-            lbl.AddThemeColorOverride("font_color", DimText);
+            var lbl = new Label { Text = text.ToUpperInvariant() };
+            lbl.ThemeTypeVariation = DoloTheme.Mono;
             return lbl;
         }
 
         private static LineEdit MakeLineEdit(string placeholder, string initial = "")
         {
-            var le = new LineEdit();
-            le.PlaceholderText    = placeholder;
-            le.Text               = initial;
-            le.CustomMinimumSize  = new Vector2(0, 40);
-            le.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            le.AddThemeFontSizeOverride("font_size", 16);
+            var le = new LineEdit
+            {
+                PlaceholderText     = placeholder,
+                Text                = initial,
+                CustomMinimumSize   = new Vector2(0, DoloTokens.FieldHeight),
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            };
             return le;
         }
 
-        private static Button MakeButton(string text, Color color, float minWidth = 0)
+        /// <summary>
+        /// A room code or any other machine-readable string: mono, tracked wide, so the
+        /// characters separate and a code can be read aloud without ambiguity.
+        /// </summary>
+        private static LineEdit MakeCodeEdit(string placeholder, int maxLength)
         {
+            var le = MakeLineEdit(placeholder);
+            le.MaxLength = maxLength;
+            le.Alignment = HorizontalAlignment.Center;
+            le.AddThemeFontOverride("font", CodeFont());
+            le.AddThemeFontSizeOverride("font_size", DoloTokens.SizeButton);
+            return le;
+        }
+
+        private static Font? _codeFont;
+
+        private static Font? CodeFont()
+        {
+            if (_codeFont != null) return _codeFont;
+            if (DoloTheme.MonoSemiBoldFont is not Font baseFont) return null;
+            _codeFont = new FontVariation { BaseFont = baseFont, SpacingGlyph = 4 };
+            return _codeFont;
+        }
+
+        private static Button MakeButton(string text, StringName? variation = null,
+                                         float minWidth = 0, DoloIcon? icon = null)
+        {
+            if (icon.HasValue)
+            {
+                var iconButton = DoloWidgets.IconButton(icon.Value, text, variation, height: 52);
+                if (minWidth > 0) iconButton.CustomMinimumSize = new Vector2(minWidth, 52);
+                return iconButton;
+            }
+
             var btn = new Button { Text = text };
-            btn.CustomMinimumSize   = new Vector2(minWidth, 46);
+            btn.ThemeTypeVariation  = variation ?? DoloTheme.ButtonSecondary;
+            btn.CustomMinimumSize   = new Vector2(minWidth, 52);
             btn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            btn.AddThemeFontSizeOverride("font_size", 16);
-
-            var style = new StyleBoxFlat();
-            style.BgColor              = color;
-            style.CornerRadiusTopLeft  = style.CornerRadiusTopRight =
-            style.CornerRadiusBottomLeft = style.CornerRadiusBottomRight = 6;
-            btn.AddThemeStyleboxOverride("normal", style);
-
-            var hover = (StyleBoxFlat)style.Duplicate();
-            hover.BgColor = color.Lightened(0.18f);
-            btn.AddThemeStyleboxOverride("hover", hover);
-
-            var pressed = (StyleBoxFlat)style.Duplicate();
-            pressed.BgColor = color.Darkened(0.12f);
-            btn.AddThemeStyleboxOverride("pressed", pressed);
-
-            btn.AddThemeColorOverride("font_color", Colors.White);
             return btn;
         }
 
