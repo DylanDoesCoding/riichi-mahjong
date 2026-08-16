@@ -1,9 +1,20 @@
 // =============================================================================
-// MainMenu.cs — Start screen with tile-theme selector and options panel.
+// MainMenu.cs — the DOLO start screen and the Settings overlay.
 //
-// The options panel is built entirely in code as a full-screen overlay.
-// It exposes Music and SFX volume sliders that update GameSettings in real-time.
-// Background music starts here and stops when the game scene loads.
+// Pass 05 of the redesign. Three things changed beyond the restyle:
+//
+//   - The emoji title (🀄 RIICHI MAHJONG) becomes the drawn DOLO wordmark. The
+//     mark is the table's own four-wedge geometry, since the game is named
+//     after a person's handle and "make the table yours" is the thesis.
+//   - The tile-set toggle moves off the menu and into Settings, which is where
+//     a display preference belongs and which frees the menu to be three ways
+//     to start a game plus a way out.
+//   - Server URL lives in Settings rather than in the lobby (pass 06), so the
+//     lobby can be about starting a game rather than about configuration.
+//
+// The Settings card is 530 x 590 with 28px padding and 18px gaps. Its body
+// scrolls, because the card holds more rows than 590px can show and the design
+// fixes the card size rather than the content height.
 // =============================================================================
 
 using Godot;
@@ -14,17 +25,17 @@ namespace RiichiMahjong.UI
     public partial class MainMenu : Control
     {
         // ---- Scene nodes (from .tscn) ----------------------------------------
-        private Button _regularBtn    = null!;
-        private Button _blackBtn      = null!;
-        private Button _quickPlayBtn  = null!;
+        private Button  _quickPlayBtn = null!;
         private Control _centrePanel  = null!;
 
-        // ---- Options overlay (built in code) ---------------------------------
-        private Control  _optionsPanel   = null!;
-        private Label    _musicPctLabel  = null!;
-        private Label    _sfxPctLabel    = null!;
-        private LineEdit _nameEdit       = null!;
-        private LineEdit _urlEdit        = null!;
+        // ---- Settings overlay (built in code) --------------------------------
+        private Control  _optionsPanel  = null!;
+        private Label    _musicPctLabel = null!;
+        private Label    _sfxPctLabel   = null!;
+        private LineEdit _nameEdit      = null!;
+        private LineEdit _urlEdit       = null!;
+        private Button[] _tileSetButtons = System.Array.Empty<Button>();
+        private Button[] _layoutButtons  = System.Array.Empty<Button>();
 
         // ---- Quick Play state -----------------------------------------------
         private bool _quickPlayActive = false;
@@ -32,12 +43,9 @@ namespace RiichiMahjong.UI
         // ---- Audio -----------------------------------------------------------
         private AudioStreamPlayer _musicPlayer = null!;
 
-        // ---- Theme colours ---------------------------------------------------
-        private static readonly Color ActiveBg   = new(0.20f, 0.55f, 0.90f);
-        private static readonly Color InactiveBg = new(0.25f, 0.25f, 0.30f);
-
         // ---- Paths -----------------------------------------------------------
-        private const string MusicPath = "res://Assets/Sounds/Whispering_Bamboo_Garden_2026-05-18T203144.wav";
+        private const string MusicPath =
+            "res://Assets/Sounds/Whispering_Bamboo_Garden_2026-05-18T203144.wav";
 
         // =====================================================================
         // Lifecycle
@@ -45,53 +53,77 @@ namespace RiichiMahjong.UI
 
         public override void _Ready()
         {
-            // ---- Wire existing scene buttons ---------------------------------
+            DoloTheme.Apply(this);
+
             _centrePanel = GetNode<Control>("CentrePanel");
-            var playBtn         = GetNode<Button>("CentrePanel/PlayButton");
-            var multiplayerBtn  = GetNode<Button>("CentrePanel/MultiplayerButton");
-            var optionsBtn      = GetNode<Button>("CentrePanel/OptionsButton");
-            var quitBtn         = GetNode<Button>("CentrePanel/QuitButton");
-            _regularBtn         = GetNode<Button>("CentrePanel/ThemeRow/RegularButton");
-            _blackBtn           = GetNode<Button>("CentrePanel/ThemeRow/BlackButton");
-            _quickPlayBtn       = GetNode<Button>("CentrePanel/QuickPlayButton");
+            var playBtn        = GetNode<Button>("CentrePanel/PlayButton");
+            var multiplayerBtn = GetNode<Button>("CentrePanel/MultiplayerButton");
+            var optionsBtn     = GetNode<Button>("CentrePanel/OptionsButton");
+            var quitBtn        = GetNode<Button>("CentrePanel/QuitButton");
+            _quickPlayBtn      = GetNode<Button>("CentrePanel/QuickPlayButton");
 
             playBtn.Pressed        += OnPlayPressed;
             multiplayerBtn.Pressed += OnMultiplayerPressed;
             optionsBtn.Pressed     += OnOptionsPressed;
             quitBtn.Pressed        += OnQuitPressed;
-            _regularBtn.Pressed    += OnRegularPressed;
-            _blackBtn.Pressed      += OnBlackPressed;
             _quickPlayBtn.Pressed  += OnQuickPlayPressed;
 
-            RefreshThemeButtons();
+            // Play vs CPU is the one primary action; everything else is secondary.
+            DoloWidgets.DecorateButton(playBtn,        DoloIcon.Play,   DoloTheme.ButtonPrimary);
+            DoloWidgets.DecorateButton(multiplayerBtn, DoloIcon.Globe);
+            DoloWidgets.DecorateButton(_quickPlayBtn,  DoloIcon.Bolt);
+            DoloWidgets.DecorateButton(optionsBtn,     DoloIcon.Gear,  DoloTheme.ButtonGhost, 18);
+            DoloWidgets.DecorateButton(quitBtn,        DoloIcon.Close, DoloTheme.ButtonGhost, 18);
 
-            // ---- Build options panel (hidden by default) ---------------------
+            BuildWordmark();
+            BuildFooter();
             BuildOptionsPanel();
+            StartMusic();
+        }
 
-            // ---- Background music -------------------------------------------
-            _musicPlayer = new AudioStreamPlayer();
-            _musicPlayer.Bus = "Master";
+        public override void _ExitTree() => UnwireQuickPlay();
+
+        private void BuildWordmark()
+        {
+            var slot = GetNode<Control>("CentrePanel/WordmarkSlot");
+            var wordmark = new DoloWordmark();
+            wordmark.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            slot.AddChild(wordmark);
+        }
+
+        /// <summary>Version and engine line, sitting quietly at the bottom of the screen.</summary>
+        private void BuildFooter()
+        {
+            var footer = new Label
+            {
+                Text                = $"DOLO MAHJONG  ·  GODOT {Engine.GetVersionInfo()["string"]}",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter         = MouseFilterEnum.Ignore,
+            };
+            footer.ThemeTypeVariation = DoloTheme.MonoSmall;
+            footer.SetAnchorsAndOffsetsPreset(LayoutPreset.BottomWide);
+            footer.OffsetTop    = -34;
+            footer.OffsetBottom = -14;
+            AddChild(footer);
+        }
+
+        private void StartMusic()
+        {
+            _musicPlayer = new AudioStreamPlayer { Bus = "Master" };
             AddChild(_musicPlayer);
 
             var music = GD.Load<AudioStream>(MusicPath);
-            if (music != null)
-            {
-                _musicPlayer.Stream     = music;
-                _musicPlayer.VolumeDb   = GameSettings.LinearToDb(GameSettings.MusicVolume);
-                _musicPlayer.Autoplay   = false;
-                _musicPlayer.Finished   += () => _musicPlayer.Play();
-                _musicPlayer.Play();
-            }
+            if (music == null) return;
 
-        }
-
-        public override void _ExitTree()
-        {
-            UnwireQuickPlay();
+            _musicPlayer.Stream   = music;
+            _musicPlayer.VolumeDb = GameSettings.LinearToDb(GameSettings.MusicVolume);
+            _musicPlayer.Autoplay = false;
+            _musicPlayer.Finished += () => _musicPlayer.Play();
+            _musicPlayer.Play();
         }
 
         // =====================================================================
-        // Scene-button handlers
+        // Menu actions
         // =====================================================================
 
         private void OnPlayPressed()
@@ -106,6 +138,24 @@ namespace RiichiMahjong.UI
             GetTree().ChangeSceneToFile("res://Scenes/Lobby.tscn");
         }
 
+        private void OnQuitPressed() => GetTree().Quit();
+
+        private void OnOptionsPressed()
+        {
+            // Refresh from saved settings each time the panel opens.
+            _nameEdit.Text = GameSettings.PlayerName;
+            _urlEdit.Text  = GameSettings.ServerUrl;
+            RefreshTileSetButtons();
+            RefreshLayoutButtons();
+
+            _centrePanel.Visible  = false;
+            _optionsPanel.Visible = true;
+        }
+
+        // =====================================================================
+        // Quick Play
+        // =====================================================================
+
         private void OnQuickPlayPressed()
         {
             if (_quickPlayActive) return;
@@ -113,12 +163,14 @@ namespace RiichiMahjong.UI
             var nm = NetworkManager.Instance;
             if (nm == null) return;
 
-            var url = GameSettings.ServerUrl.Length > 0 ? GameSettings.ServerUrl : "ws://localhost:5000/ws";
+            var url = GameSettings.ServerUrl.Length > 0
+                ? GameSettings.ServerUrl
+                : "ws://localhost:5000/ws";
             if (GameSettings.PlayerName.Length == 0) GameSettings.PlayerName = "Player";
 
             _quickPlayActive       = true;
             _quickPlayBtn.Disabled = true;
-            _quickPlayBtn.Text     = "Connecting…";
+            SetQuickPlayLabel("Connecting…");
 
             nm.OnConnected   += OnQuickPlayConnected;
             nm.OnRoomCreated += OnQuickPlayRoomCreated;
@@ -129,14 +181,10 @@ namespace RiichiMahjong.UI
         }
 
         private void OnQuickPlayConnected()
-        {
-            NetworkManager.Instance?.CreateRoom(GameSettings.PlayerName);
-        }
+            => NetworkManager.Instance?.CreateRoom(GameSettings.PlayerName);
 
         private void OnQuickPlayRoomCreated(string code, int seat, List<NetPlayerInfo> players)
-        {
-            NetworkManager.Instance?.StartGame();
-        }
+            => NetworkManager.Instance?.StartGame();
 
         private void OnQuickPlayGameStarted(int seat, string[] names)
         {
@@ -149,9 +197,21 @@ namespace RiichiMahjong.UI
         {
             _quickPlayActive       = false;
             _quickPlayBtn.Disabled = false;
-            _quickPlayBtn.Text     = "⚡  Quick Play";
+            SetQuickPlayLabel("Quick Play");
             UnwireQuickPlay();
             NetworkManager.Instance?.ResetSession();
+        }
+
+        /// <summary>
+        /// The button's label now lives in the icon row rather than in Button.Text, so
+        /// status changes have to reach into it.
+        /// </summary>
+        private void SetQuickPlayLabel(string text)
+        {
+            foreach (var child in _quickPlayBtn.GetChildren())
+                if (child is HBoxContainer row)
+                    foreach (var inner in row.GetChildren())
+                        if (inner is Label label) { label.Text = text; return; }
         }
 
         private void UnwireQuickPlay()
@@ -164,139 +224,168 @@ namespace RiichiMahjong.UI
             nm.OnError       -= OnQuickPlayError;
         }
 
-        private void OnQuitPressed() => GetTree().Quit();
-
-        private void OnRegularPressed() { GameSettings.UseBlackTiles = false; RefreshThemeButtons(); }
-        private void OnBlackPressed()   { GameSettings.UseBlackTiles = true;  RefreshThemeButtons(); }
-
-        private void OnOptionsPressed()
-        {
-            // Refresh text fields from saved settings each time the panel opens
-            _nameEdit.Text = GameSettings.PlayerName;
-            _urlEdit.Text  = GameSettings.ServerUrl;
-
-            _centrePanel.Visible  = false;
-            _optionsPanel.Visible = true;
-        }
-
         // =====================================================================
-        // Options panel construction
+        // Settings overlay
         // =====================================================================
 
         private void BuildOptionsPanel()
         {
-            // Full-screen overlay
-            _optionsPanel = new Control();
+            _optionsPanel = new Control { Visible = false };
             _optionsPanel.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            _optionsPanel.Visible = false;
 
-            var bg = new ColorRect();
-            bg.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            bg.Color = new Color(0.08f, 0.10f, 0.15f, 1f);
-            _optionsPanel.AddChild(bg);
+            var backdrop = new ColorRect { Color = DoloTokens.Page };
+            backdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _optionsPanel.AddChild(backdrop);
 
-            // Centred card — wider and taller to fit name + URL fields
+            // 530 x 590 card, 28px padding.
             var card = new PanelContainer();
             card.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
             card.OffsetLeft   = -265;
             card.OffsetTop    = -295;
             card.OffsetRight  =  265;
             card.OffsetBottom =  295;
+            card.AddThemeStyleboxOverride("panel", DoloStyles.Card(28));
 
-            var cardStyle = new StyleBoxFlat();
-            cardStyle.BgColor     = new Color(0.10f, 0.12f, 0.18f, 1f);
-            cardStyle.BorderColor = new Color(0.30f, 0.45f, 0.70f, 1f);
-            cardStyle.BorderWidthTop    = cardStyle.BorderWidthBottom =
-            cardStyle.BorderWidthLeft   = cardStyle.BorderWidthRight  = 2;
-            cardStyle.CornerRadiusTopLeft    = cardStyle.CornerRadiusTopRight    =
-            cardStyle.CornerRadiusBottomLeft = cardStyle.CornerRadiusBottomRight = 10;
-            card.AddThemeStyleboxOverride("panel", cardStyle);
+            var column = new VBoxContainer();
+            column.AddThemeConstantOverride("separation", 18);
 
-            var vbox = new VBoxContainer();
-            vbox.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            vbox.OffsetLeft   = 28;
-            vbox.OffsetTop    = 20;
-            vbox.OffsetRight  = -28;
-            vbox.OffsetBottom = -20;
-            vbox.AddThemeConstantOverride("separation", 10);
+            var title = new Label { Text = "SETTINGS" };
+            title.ThemeTypeVariation = DoloTheme.NameSmall;
+            column.AddChild(title);
+            column.AddChild(DoloStyles.HairlineRow(0.28f));
 
-            // ── Title ──
-            var title = new Label { Text = "⚙  Settings" };
-            title.HorizontalAlignment = HorizontalAlignment.Center;
-            title.AddThemeFontSizeOverride("font_size", 26);
-            title.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1f));
-            vbox.AddChild(title);
-            vbox.AddChild(new HSeparator());
-
-            // ── Music volume ──
-            vbox.AddChild(MakeSliderSection(
-                "🎵  Music Volume",
-                GameSettings.MusicVolume,
-                out var musicSlider,
-                out _musicPctLabel));
-
-            musicSlider.ValueChanged += v =>
+            // The card size is fixed by the design and the body is taller than it, so
+            // the rows scroll rather than the card growing.
+            var scroll = new ScrollContainer
             {
-                GameSettings.MusicVolume = (float)v;
-                _musicPlayer.VolumeDb    = GameSettings.LinearToDb(GameSettings.MusicVolume);
-                _musicPctLabel.Text      = $"{(int)(v * 100)} %";
+                SizeFlagsVertical           = SizeFlags.ExpandFill,
+                HorizontalScrollMode        = ScrollContainer.ScrollMode.Disabled,
             };
 
-            vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 4) });
+            var body = new VBoxContainer();
+            body.AddThemeConstantOverride("separation", 18);
+            body.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
-            // ── SFX volume ──
-            vbox.AddChild(MakeSliderSection(
-                "🔊  SFX Volume",
-                GameSettings.SfxVolume,
-                out var sfxSlider,
-                out _sfxPctLabel));
+            BuildAudioSection(body);
+            BuildIdentitySection(body);
+            BuildDisplaySection(body);
+            BuildCreditsSection(body);
 
-            sfxSlider.ValueChanged += v =>
-            {
-                GameSettings.SfxVolume = (float)v;
-                _sfxPctLabel.Text      = $"{(int)(v * 100)} %";
-                // Play a tile-clack preview so the player can hear the new level
-                SoundManager.Instance?.Play(Sound.TileDiscard);
-            };
+            scroll.AddChild(body);
+            column.AddChild(scroll);
 
-            vbox.AddChild(new HSeparator());
+            var saveBtn = DoloWidgets.IconButton(DoloIcon.Check, "Save & Back",
+                                                 DoloTheme.ButtonPrimary);
+            saveBtn.Pressed += CloseAndSave;
+            column.AddChild(saveBtn);
 
-            // ── Player name ──
-            vbox.AddChild(MakeFieldSection(
-                "👤  Player Name",
-                placeholder: "e.g. Player1",
-                initial:     GameSettings.PlayerName,
-                maxLength:   24,
-                out _nameEdit));
-
-            vbox.AddChild(new Control { CustomMinimumSize = new Vector2(0, 4) });
-
-            // ── Server URL ──
-            vbox.AddChild(MakeFieldSection(
-                "🌐  Server URL",
-                placeholder: "wss://host/ws",
-                initial:     GameSettings.ServerUrl,
-                maxLength:   200,
-                out _urlEdit));
-
-            vbox.AddChild(new HSeparator());
-
-            // ── Back button — saves everything on close ──
-            var backBtn = MakeOptionButton("✓  Save & Back", new Color(0.18f, 0.42f, 0.25f));
-            backBtn.Pressed += CloseAndSave;
-            vbox.AddChild(backBtn);
-
-            card.AddChild(vbox);
+            card.AddChild(column);
             _optionsPanel.AddChild(card);
             AddChild(_optionsPanel);
         }
 
+        private void BuildAudioSection(Container body)
+        {
+            body.AddChild(DoloWidgets.SectionHeading("Audio"));
+
+            body.AddChild(MakeSliderRow(DoloIcon.Music, "Music", GameSettings.MusicVolume,
+                                        out var musicSlider, out _musicPctLabel));
+            musicSlider.ValueChanged += v =>
+            {
+                GameSettings.MusicVolume = (float)v;
+                _musicPlayer.VolumeDb    = GameSettings.LinearToDb(GameSettings.MusicVolume);
+                _musicPctLabel.Text      = $"{(int)(v * 100)}%";
+            };
+
+            body.AddChild(MakeSliderRow(DoloIcon.Speaker, "Effects", GameSettings.SfxVolume,
+                                        out var sfxSlider, out _sfxPctLabel));
+            sfxSlider.ValueChanged += v =>
+            {
+                GameSettings.SfxVolume = (float)v;
+                _sfxPctLabel.Text      = $"{(int)(v * 100)}%";
+                // Preview the new level with a tile clack.
+                SoundManager.Instance?.Play(Sound.TileDiscard);
+            };
+        }
+
+        private void BuildIdentitySection(Container body)
+        {
+            body.AddChild(DoloWidgets.SectionHeading("Identity"));
+            body.AddChild(DoloWidgets.LabelledField(
+                "Display name", "e.g. Dolo", GameSettings.PlayerName, 24, out _nameEdit));
+
+            body.AddChild(DoloWidgets.SectionHeading("Server"));
+            var urlSection = DoloWidgets.LabelledField(
+                "Server URL", "wss://host/ws", GameSettings.ServerUrl, 200, out _urlEdit);
+
+            // URLs read as mono at wide tracking, like room codes.
+            _urlEdit.AddThemeFontOverride("font", DoloTheme.MonoFont);
+            _urlEdit.AddThemeFontSizeOverride("font_size", DoloTokens.SizeBodySmall);
+            body.AddChild(urlSection);
+        }
+
+        private void BuildDisplaySection(Container body)
+        {
+            body.AddChild(DoloWidgets.SectionHeading("Tile set"));
+            body.AddChild(DoloWidgets.SegmentedToggle(
+                new[] { (DoloIcon.Sun, "Regular"), (DoloIcon.Moon, "Black") },
+                GameSettings.UseBlackTiles ? 1 : 0,
+                index =>
+                {
+                    GameSettings.UseBlackTiles = index == 1;
+                    RefreshTileSetButtons();
+                },
+                out _tileSetButtons));
+
+            body.AddChild(DoloWidgets.SectionHeading("Layout"));
+            body.AddChild(DoloWidgets.SegmentedToggle(
+                new[]
+                {
+                    (DoloIcon.Gear,   "Auto"),
+                    (DoloIcon.Tile,   "Desktop"),
+                    (DoloIcon.Person, "Touch"),
+                },
+                (int)GameSettings.LayoutPreference,
+                index =>
+                {
+                    GameSettings.LayoutPreference = (LayoutPreference)index;
+                    DoloLayout.ResetCache();
+                    RefreshLayoutButtons();
+                },
+                out _layoutButtons));
+
+            var note = new Label
+            {
+                Text          = "Auto follows the device. Takes effect on the next game.",
+                AutowrapMode  = TextServer.AutowrapMode.WordSmart,
+            };
+            note.ThemeTypeVariation = DoloTheme.Dim;
+            body.AddChild(note);
+        }
+
+        /// <summary>
+        /// Attribution for the open-licence prop sprites. The art budget was met by
+        /// sourcing CC-licensed props rather than commissioning them, and that carries
+        /// an attribution obligation the interface has to honour somewhere.
+        /// </summary>
+        private static void BuildCreditsSection(Container body)
+        {
+            body.AddChild(DoloWidgets.SectionHeading("Credits"));
+
+            var credits = new Label
+            {
+                Text = "Tile art: riichi-mahjong-tiles. Prop sprites: open-licence "
+                     + "sources, CC-BY. Type: Source Sans 3 and IBM Plex Mono, SIL OFL.",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            };
+            credits.ThemeTypeVariation = DoloTheme.Dim;
+            body.AddChild(credits);
+        }
+
         private void CloseAndSave()
         {
-            // Apply text-field values before saving
             string name = _nameEdit.Text.Trim();
-            if (name.Length == 0) name = "Player";
-            GameSettings.PlayerName = name;
+            GameSettings.PlayerName = name.Length == 0 ? "Player" : name;
 
             string url = _urlEdit.Text.Trim();
             if (url.Length > 0) GameSettings.ServerUrl = url;
@@ -307,137 +396,49 @@ namespace RiichiMahjong.UI
             _centrePanel.Visible  = true;
         }
 
-        /// <summary>Build a label + slider + percentage label row and return the slider.</summary>
-        private static Control MakeSliderSection(string labelText, float initialValue,
-            out HSlider slider, out Label pctLabel)
+        private void RefreshTileSetButtons()
+            => DoloWidgets.ApplySegmentedSelection(_tileSetButtons,
+                                                   GameSettings.UseBlackTiles ? 1 : 0);
+
+        private void RefreshLayoutButtons()
+            => DoloWidgets.ApplySegmentedSelection(_layoutButtons,
+                                                   (int)GameSettings.LayoutPreference);
+
+        /// <summary>Icon, label, slider and a mono percentage that keeps its column.</summary>
+        private static Control MakeSliderRow(DoloIcon icon, string labelText, float initial,
+                                             out HSlider slider, out Label pctLabel)
         {
             var section = new VBoxContainer();
-            section.AddThemeConstantOverride("separation", 6);
+            section.AddThemeConstantOverride("separation", 8);
 
-            var lbl = new Label { Text = labelText };
-            lbl.AddThemeFontSizeOverride("font_size", 16);
-            lbl.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1f));
-            section.AddChild(lbl);
+            var header = new HBoxContainer();
+            header.AddThemeConstantOverride("separation", 10);
+            header.AddChild(new DoloIconRect(icon, 18, DoloTokens.BodyText));
 
-            var row = new HBoxContainer();
-            row.AddThemeConstantOverride("separation", 12);
+            var label = new Label { Text = labelText, VerticalAlignment = VerticalAlignment.Center };
+            label.ThemeTypeVariation  = DoloTheme.Row;
+            label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            header.AddChild(label);
 
-            slider = new HSlider();
-            slider.MinValue              = 0.0;
-            slider.MaxValue              = 1.0;
-            slider.Step                  = 0.01;
-            slider.Value                 = initialValue;
-            slider.SizeFlagsHorizontal   = SizeFlags.ExpandFill;
-            slider.CustomMinimumSize     = new Vector2(0, 28);
-
-            pctLabel = new Label { Text = $"{(int)(initialValue * 100)} %" };
-            pctLabel.CustomMinimumSize   = new Vector2(50, 0);
+            pctLabel = new Label { Text = $"{(int)(initial * 100)}%" };
+            pctLabel.ThemeTypeVariation  = DoloTheme.Mono;
             pctLabel.HorizontalAlignment = HorizontalAlignment.Right;
-            pctLabel.AddThemeFontSizeOverride("font_size", 15);
-            pctLabel.AddThemeColorOverride("font_color", new Color(0.75f, 0.85f, 1f));
+            pctLabel.CustomMinimumSize   = new Vector2(52, 0);
+            header.AddChild(pctLabel);
 
-            row.AddChild(slider);
-            row.AddChild(pctLabel);
-            section.AddChild(row);
-
-            return section;
-        }
-
-        private static Button MakeOptionButton(string text, Color color)
-        {
-            var btn = new Button { Text = text };
-            btn.CustomMinimumSize = new Vector2(0, 48);
-            btn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            btn.AddThemeFontSizeOverride("font_size", 17);
-
-            var style = new StyleBoxFlat();
-            style.BgColor              = color;
-            style.CornerRadiusTopLeft  = style.CornerRadiusTopRight  =
-            style.CornerRadiusBottomLeft = style.CornerRadiusBottomRight = 6;
-            btn.AddThemeStyleboxOverride("normal", style);
-
-            var hover = (StyleBoxFlat)style.Duplicate();
-            hover.BgColor = color.Lightened(0.2f);
-            btn.AddThemeStyleboxOverride("hover", hover);
-
-            btn.AddThemeColorOverride("font_color", Colors.White);
-            return btn;
-        }
-
-        /// <summary>Build a label + styled LineEdit row and return the edit control.</summary>
-        private static Control MakeFieldSection(string labelText, string placeholder,
-            string initial, int maxLength, out LineEdit edit)
-        {
-            var section = new VBoxContainer();
-            section.AddThemeConstantOverride("separation", 6);
-
-            var lbl = new Label { Text = labelText };
-            lbl.AddThemeFontSizeOverride("font_size", 15);
-            lbl.AddThemeColorOverride("font_color", new Color(0.85f, 0.90f, 1f));
-            section.AddChild(lbl);
-
-            edit = new LineEdit();
-            edit.Text              = initial;
-            edit.PlaceholderText   = placeholder;
-            edit.MaxLength         = maxLength;
-            edit.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            edit.CustomMinimumSize   = new Vector2(0, 36);
-            edit.AddThemeFontSizeOverride("font_size", 15);
-            edit.AddThemeColorOverride("font_color",             new Color(0.92f, 0.95f, 1.00f));
-            edit.AddThemeColorOverride("font_placeholder_color", new Color(0.50f, 0.55f, 0.65f));
-
-            // Normal background
-            var normalStyle = new StyleBoxFlat();
-            normalStyle.BgColor           = new Color(0.06f, 0.08f, 0.13f, 1f);
-            normalStyle.BorderColor       = new Color(0.25f, 0.35f, 0.55f, 1f);
-            normalStyle.BorderWidthTop    = normalStyle.BorderWidthBottom =
-            normalStyle.BorderWidthLeft   = normalStyle.BorderWidthRight  = 1;
-            normalStyle.CornerRadiusTopLeft    = normalStyle.CornerRadiusTopRight    =
-            normalStyle.CornerRadiusBottomLeft = normalStyle.CornerRadiusBottomRight = 5;
-            normalStyle.ContentMarginLeft  = normalStyle.ContentMarginRight  = 8;
-            normalStyle.ContentMarginTop   = normalStyle.ContentMarginBottom = 6;
-            edit.AddThemeStyleboxOverride("normal", normalStyle);
-
-            // Focus background — brighter border
-            var focusStyle = (StyleBoxFlat)normalStyle.Duplicate();
-            focusStyle.BorderColor  = new Color(0.40f, 0.65f, 1.00f, 1f);
-            focusStyle.BorderWidthTop    = focusStyle.BorderWidthBottom =
-            focusStyle.BorderWidthLeft   = focusStyle.BorderWidthRight  = 2;
-            edit.AddThemeStyleboxOverride("focus", focusStyle);
-
-            section.AddChild(edit);
-            return section;
-        }
-
-        // =====================================================================
-        // Theme button helpers
-        // =====================================================================
-
-        private void RefreshThemeButtons()
-        {
-            StyleButton(_regularBtn, !GameSettings.UseBlackTiles);
-            StyleButton(_blackBtn,    GameSettings.UseBlackTiles);
-        }
-
-        private static void StyleButton(Button btn, bool active)
-        {
-            var style = new StyleBoxFlat();
-            style.BgColor              = active ? ActiveBg : InactiveBg;
-            style.CornerRadiusTopLeft  = style.CornerRadiusTopRight  =
-            style.CornerRadiusBottomLeft = style.CornerRadiusBottomRight = 6;
-            if (active)
+            slider = new HSlider
             {
-                style.BorderColor     = new Color(0.60f, 0.85f, 1.00f);
-                style.BorderWidthTop  = style.BorderWidthBottom =
-                style.BorderWidthLeft = style.BorderWidthRight  = 2;
-            }
-            btn.AddThemeStyleboxOverride("normal", style);
+                MinValue            = 0.0,
+                MaxValue            = 1.0,
+                Step                = 0.01,
+                Value               = initial,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                CustomMinimumSize   = new Vector2(0, 28),
+            };
 
-            var hover = (StyleBoxFlat)style.Duplicate();
-            hover.BgColor = active ? ActiveBg.Lightened(0.1f) : InactiveBg.Lightened(0.1f);
-            btn.AddThemeStyleboxOverride("hover", hover);
-
-            btn.AddThemeColorOverride("font_color", Colors.White);
+            section.AddChild(header);
+            section.AddChild(slider);
+            return section;
         }
     }
 }
