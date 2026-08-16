@@ -1713,7 +1713,7 @@ namespace RiichiMahjong.UI
         /// No tenpai payments — the hand is simply discarded. Treat it like an
         /// all-no-ten ryuukyoku so the panel infrastructure is reused.
         /// </summary>
-        private void ShowAbortiveDrawPanel()
+        private void ShowAbortiveDrawPanel(string reason = "Abortive draw")
         {
             var names  = new string[4];
             var points = new int[4];
@@ -1727,14 +1727,15 @@ namespace RiichiMahjong.UI
             // Reuse the ryuukyoku panel with no-tenpai for everyone (no payments, no waits shown)
             _hud.ShowRyuukyokuPanel(
                 names, points, ToVisualSeat(_game.DealerIndex),
-                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(),
+                new int[4], reason);
         }
 
         /// <summary>
         /// Network-mode equivalent of <see cref="ShowAbortiveDrawPanel"/>.
         /// Uses <see cref="_netNames"/> / <see cref="_netScores"/> since <c>_game</c> is null.
         /// </summary>
-        private void ShowAbortiveDrawPanelNet()
+        private void ShowAbortiveDrawPanelNet(string reason = "Abortive draw")
         {
             var names  = new string[4];
             var points = new int[4];
@@ -1746,7 +1747,8 @@ namespace RiichiMahjong.UI
             }
             _hud.ShowRyuukyokuPanel(
                 names, points, ToVisualSeat(_netDealerSeat),
-                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(),
+                new int[4], reason);
         }
 
         private void ShowScoringOverlay(HandEndReason reason, int winnerSeat)
@@ -1766,7 +1768,8 @@ namespace RiichiMahjong.UI
             _hud.ShowScoringPanel(
                 score, yaku, ctx,
                 winnerName, isTsumo, discarderName,
-                allNames, allPoints, winnerSeat, _game.DealerIndex);
+                allNames, allPoints, winnerSeat, _game.DealerIndex,
+                winningHand: _game.Players[winnerSeat].Hand.ClosedTiles.ToList());
         }
 
         private void OnGameOver()
