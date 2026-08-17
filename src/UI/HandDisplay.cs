@@ -26,10 +26,19 @@ namespace RiichiMahjong.UI
 
         // ---- Tile size: CPU side tiles are compact (face-down only) ----------
 
-        private int TileW => (Orientation is HandOrientation.Left or HandOrientation.Right)
-            ? 42 : TileNode.TileWidth;
-        private int TileH => (Orientation is HandOrientation.Left or HandOrientation.Right)
-            ? 52 : TileNode.TileHeight;
+        private bool IsSideHand => Orientation is HandOrientation.Left or HandOrientation.Right;
+
+        /// <summary>The artwork size — what the player sees.</summary>
+        private Vector2I ArtSize => IsSideHand ? DoloLayout.SideTile : DoloLayout.HandArt;
+
+        /// <summary>
+        /// The hit cell — larger than the art, with the visual gap as padding inside it.
+        /// Side hands are not interactive, so their cell is their art.
+        /// </summary>
+        private Vector2I CellSize => IsSideHand ? DoloLayout.SideTile : DoloLayout.HandCell;
+
+        private int TileW => CellSize.X;
+        private int TileH => CellSize.Y;
 
         // ---- Internal --------------------------------------------------------
 
@@ -68,7 +77,10 @@ namespace RiichiMahjong.UI
             else
             {
                 var hbox = new HBoxContainer();
-                hbox.AddThemeConstantOverride("separation", 4);
+
+                // Zero separation: the gap between tiles is padding inside each cell,
+                // not space between them, so there is no dead strip to tap into.
+                hbox.AddThemeConstantOverride("separation", 0);
                 hbox.Alignment = BoxContainer.AlignmentMode.Center;
                 hbox.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
                 _inner = hbox;
@@ -132,7 +144,7 @@ namespace RiichiMahjong.UI
                         bool tileDown = meld.Type == MeldType.KanClosed
                                         && (ti == 0 || ti == 3);
                         var tNode = new TileNode();
-                        tNode.CustomMinimumSize = new Vector2(TileW, TileH);
+                        tNode.SetCellMetrics(ArtSize, CellSize);
                         tNode.SetTile(tile, faceDown: tileDown);
                         tNode.SetInteractive(false);
                         meldBox.AddChild(tNode);
@@ -262,6 +274,17 @@ namespace RiichiMahjong.UI
         }
 
         public Tile? GetSelectedTile() => _selected?.TileData;
+
+        /// <summary>
+        /// Commit the current selection as a discard. This is the second tap of the
+        /// touch flow when it lands on the info card's DISCARD button rather than on
+        /// the tile itself — both routes end in the same signal.
+        /// </summary>
+        public void CommitSelection()
+        {
+            if (_selected != null)
+                EmitSignal(SignalName.TileDiscarded, _selected);
+        }
         public int   TileCount         => _tileNodes.Count;
 
         /// <summary>
@@ -322,10 +345,14 @@ namespace RiichiMahjong.UI
         private TileNode MakeNode(Tile tile)
         {
             var node = new TileNode();
-            // Override tile size for compact CPU tiles
-            node.CustomMinimumSize = new Vector2(TileW, TileH);
+            node.SetCellMetrics(ArtSize, CellSize);
             node.SetTile(tile, FaceDown);
             node.SetInteractive(IsInteractive);
+
+            // Side seats show the same back texture turned to face their own edge of
+            // the table, rather than a separate flat panel (pass 02).
+            if (Orientation is HandOrientation.Left or HandOrientation.Right)
+                node.SetSideways(true);
             if (IsInteractive)
             {
                 node.TileClicked  += OnTileClicked;

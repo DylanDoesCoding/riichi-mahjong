@@ -26,6 +26,14 @@ namespace RiichiServer.Messages
         public int[]?            TileCounts      { get; set; }  // face-down counts per seat
         public int[]?            Scores          { get; set; }  // per seat
         public string[]?         Names           { get; set; }  // per seat
+
+        /// <summary>
+        /// Per-seat cosmetic sets in wire form ("surface|frame|prop|emblem"), indexed by
+        /// global seat. Sent with gameStarted so every client can draw every player's
+        /// wedge. Cosmetics travel with the player, not the screen position, so each
+        /// client maps these onto its own rotated view.
+        /// </summary>
+        public string[]?         Cosmetics       { get; set; }
         public List<TileDto>?    DoraIndicators  { get; set; }  // current revealed indicators
 
         // ---- Per-turn events --------------------------------------------

@@ -63,5 +63,16 @@ namespace RiichiServer.Auth
         Task<int> IncrementResetAttemptsAsync(long accountId);
 
         Task DeleteResetCodeAsync(long accountId);
+
+        // ---- Cosmetics -------------------------------------------------------
+
+        /// <summary>
+        /// The account's stored cosmetic set in wire form, or null if they have never
+        /// chosen one. Guests never reach here - their set lives in settings.cfg.
+        /// </summary>
+        Task<string?> GetCosmeticsAsync(long accountId);
+
+        /// <summary>Store (or replace) the account's cosmetic set.</summary>
+        Task SetCosmeticsAsync(long accountId, string cosmetics);
     }
 }

@@ -77,6 +77,13 @@ namespace RiichiMahjong.UI
         public int[]?                  TileCounts     { get; set; }
         public int[]?                  Scores         { get; set; }
         public string[]?               Names          { get; set; }
+
+        /// <summary>
+        /// Per-seat cosmetic sets, in wire form. Cosmetics travel with the player, so
+        /// this is indexed by global seat and each client maps it to whichever wedge
+        /// that player occupies on its own rotated view of the table.
+        /// </summary>
+        public string[]?               Cosmetics      { get; set; }
         public int                     Seat           { get; set; }
         public NetTileDto?             Tile           { get; set; }
         public bool                    IsRiichiDiscard{ get; set; }
@@ -164,6 +171,9 @@ namespace RiichiMahjong.UI
 
         // ---- Game events (mirror GameState events so GameController is unaware) --
         public event Action<int, string[]>?          OnGameStarted;     // yourSeat, names
+
+        /// <summary>Per-seat cosmetic sets from gameStarted, indexed by global seat.</summary>
+        public string[] SeatCosmetics { get; private set; } = Array.Empty<string>();
         public event Action<List<Tile>, int[], int[], int, string, int, string[]>? OnHandDealt;
         //                  yourTiles, tileCounts, scores, dealerSeat, roundWind, counters, names
         public event Action<int, Tile?>?             OnTileDrawn;       // seat, tile (null = hidden)
@@ -330,6 +340,14 @@ namespace RiichiMahjong.UI
         public void SendGetLeaderboard()
             => Send(new { type = "getLeaderboard" });
 
+        /// <summary>
+        /// Store this account's cosmetic set on the server so it follows the player to
+        /// another device. Guests never call this - they have no account to store it on,
+        /// and their set stays in settings.cfg.
+        /// </summary>
+        public void SendCosmetics(string cosmetics)
+            => Send(new { type = "setCosmetics", token = AuthTok, cosmetics });
+
         public void StartGame()
             => Send(new { type = "startGame" });
 
@@ -409,6 +427,7 @@ namespace RiichiMahjong.UI
                     // For matchmade games there is no prior roomJoined, so the server
                     // includes the room code here for reconnection support.
                     if (!string.IsNullOrEmpty(msg.Code)) RoomCode = msg.Code;
+                    SeatCosmetics = msg.Cosmetics ?? Array.Empty<string>();
                     OnGameStarted?.Invoke(msg.YourSeat, msg.Names ?? Array.Empty<string>());
                     break;
 
@@ -420,6 +439,13 @@ namespace RiichiMahjong.UI
                     // Persist the session so the player stays logged in across restarts
                     GameSettings.AuthToken    = msg.Token    ?? "";
                     GameSettings.AuthUsername = msg.Username ?? "";
+
+                    // Adopt the account's stored table, so signing in on a new device
+                    // brings your table with you. An account that has never chosen one
+                    // sends an empty string, and the local set is left alone.
+                    if (msg.Cosmetics is { Length: > 0 } && msg.Cosmetics[0].Length > 0)
+                        GameSettings.Cosmetics = msg.Cosmetics[0];
+
                     GameSettings.Save();
                     OnAuthOk?.Invoke(msg.Username ?? "", msg.GamesPlayed, msg.GamesWon);
                     break;

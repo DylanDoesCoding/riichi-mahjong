@@ -117,6 +117,16 @@ app.MapGet("/ws", async context =>
     // across devices); otherwise fall back to the guest displayName/uuid.
     // The token's embedded version must match the account's current version —
     // password changes bump it, revoking all previously issued tokens.
+    /// <summary>
+    /// Read an account's stored table, tolerating a database that is briefly away.
+    /// A missing set is not an error - it just means they have never chosen one.
+    /// </summary>
+    static async Task<string> LoadCosmeticsAsync(IAccountStore store, long accountId)
+    {
+        try   { return await store.GetCosmeticsAsync(accountId) ?? ""; }
+        catch (AccountStoreUnavailableException) { return ""; }
+    }
+
     async Task ApplyIdentityAsync(ClientMessage msg)
     {
         conn.AccountId = null;
@@ -131,6 +141,18 @@ app.MapGet("/ws", async context =>
                     conn.AccountId   = acctId;
                     conn.DisplayName = acct.Username;
                     conn.PlayerUuid  = "acct:" + acctId;
+
+                    // Load their table so it is ready to relay at game start. A failure
+                    // here must not cost them their seat, so it falls back to the
+                    // default set rather than propagating.
+                    try
+                    {
+                        conn.Cosmetics = await accounts.GetCosmeticsAsync(acctId) ?? "";
+                    }
+                    catch (AccountStoreUnavailableException)
+                    {
+                        conn.Cosmetics = "";
+                    }
                     return;
                 }
             }
@@ -423,6 +445,12 @@ app.MapGet("/ws", async context =>
                                 Username    = acct.Username,
                                 GamesPlayed = acct.GamesPlayed,
                                 GamesWon    = acct.GamesWon,
+
+                                // The account's table comes back with the sign-in, so it
+                                // follows the player to a device that has never seen it.
+                                // Sent as a one-element array to reuse the same field the
+                                // per-seat relay uses rather than adding a second one.
+                                Cosmetics   = new[] { await LoadCosmeticsAsync(accounts, acct.Id) },
                             });
                             break;
                         }
@@ -458,6 +486,29 @@ app.MapGet("/ws", async context =>
                                 Username    = acct.Username,
                                 GamesPlayed = acct.GamesPlayed,
                                 GamesWon    = acct.GamesWon,
+                            });
+                            break;
+                        }
+
+                        case ClientMessageType.SetCosmetics:
+                        {
+                            var acct = await RequireAccountAsync(msg);
+                            if (acct == null) break;
+
+                            // Validated against the shared catalogue rather than stored
+                            // as received: this string is drawn on three other players'
+                            // screens, so an unrecognised id must become a default here
+                            // rather than at each client.
+                            var parsed = RiichiMahjong.Core.CosmeticSet
+                                .Deserialise(msg.Cosmetics).Serialise();
+
+                            await accounts!.SetCosmeticsAsync(acct.Id, parsed);
+                            conn.Cosmetics = parsed;
+
+                            await conn.SendAsync(new ServerMessage
+                            {
+                                Type    = ServerMessageType.AccountOk,
+                                Message = "Table saved.",
                             });
                             break;
                         }

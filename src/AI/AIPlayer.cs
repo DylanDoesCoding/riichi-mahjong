@@ -254,6 +254,49 @@ namespace RiichiMahjong.AI
         /// to form the sequence with the claimed tile.
         /// Returns null if no valid chi can be formed.
         /// </summary>
+        /// <summary>
+        /// Every distinct way the discard could complete a run with two tiles from hand,
+        /// best (lowest resulting shanten) first.
+        ///
+        /// The UI needs the whole list, not just the pick: a 4-5 in hand against a
+        /// discarded 3 or 6 is a real choice, and choosing it for the player is choosing
+        /// their hand shape for them.
+        /// </summary>
+        public List<(Tile t1, Tile t2)> AllChiCombinations(Tile discard, Hand hand)
+        {
+            var result = new List<(Tile, Tile)>();
+            if (discard.IsHonour) return result;
+
+            var options = new List<(Tile a, Tile b, int shanten)>();
+            var tiles   = hand.ClosedTiles.ToList();
+
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                for (int j = i + 1; j < tiles.Count; j++)
+                {
+                    if (!IsValidChi(tiles[i], tiles[j], discard)) continue;
+
+                    var remaining = tiles.ToList();
+                    remaining.RemoveAt(j);
+                    remaining.RemoveAt(i);
+                    int s = CalcShantenFromList(remaining, hand.OpenMelds.Count + 1);
+                    options.Add((tiles[i], tiles[j], s));
+                }
+            }
+
+            // Two copies of the same shape are the same choice to the player, so collapse
+            // duplicates by the pair of tile values rather than by tile identity.
+            var seen = new HashSet<(int, int, int, int)>();
+            foreach (var option in options.OrderBy(o => o.shanten))
+            {
+                var key = ((int)option.a.Suit, option.a.Value, (int)option.b.Suit, option.b.Value);
+                if (!seen.Add(key)) continue;
+                result.Add((option.a, option.b));
+            }
+
+            return result;
+        }
+
         public (Tile t1, Tile t2)? BestChiCombination(Tile discard, Hand hand)
         {
             if (discard.IsHonour) return null;

@@ -1,0 +1,38 @@
+=== autoplay: full solo game ===
+hud found
+shot: auto-claim-window-live.png
+wall=20  seat0: held=13 visible=13   seat1: held=12 visible=12   seat2: held=12 visible=12   seat3: held=12 visible=12
+wall=16  seat0: held=14 visible=14   seat1: held=13 visible=13   seat2: held=13 visible=13   seat3: held=13 visible=13
+wall=12  seat0: held=15 visible=15   seat1: held=14 visible=14   seat2: held=14 visible=14   seat3: held=14 visible=14
+wall=8  seat0: held=16 visible=16   seat1: held=15 visible=15   seat2: held=15 visible=15   seat3: held=15 visible=15
+shot: auto-rivers-full.png
+wall=4  seat0: held=17 visible=16  CLIPPED   seat1: held=16 visible=16   seat2: held=16 visible=16   seat3: held=16 visible=16
+wall=0  seat0: held=18 visible=16  CLIPPED   seat1: held=17 visible=16  CLIPPED   seat2: held=17 visible=16  CLIPPED   seat3: held=17 visible=16  CLIPPED
+shot: auto-hand01-result.png
+hand 1 ended
+wall=20  seat0: held=12 visible=12   seat1: held=13 visible=13   seat2: held=12 visible=12   seat3: held=12 visible=12
+wall=16  seat0: held=13 visible=13   seat1: held=14 visible=14   seat2: held=13 visible=13   seat3: held=13 visible=13
+wall=12  seat0: held=14 visible=14   seat1: held=15 visible=15   seat2: held=14 visible=14   seat3: held=14 visible=14
+wall=8  seat0: held=15 visible=15   seat1: held=16 visible=16   seat2: held=15 visible=15   seat3: held=15 visible=15
+wall=4  seat0: held=16 visible=16   seat1: held=17 visible=16  CLIPPED   seat2: held=16 visible=16   seat3: held=16 visible=16
+shot: auto-hand02-result.png
+hand 2 ended
+wall=20  seat0: held=12 visible=12   seat1: held=13 visible=13   seat2: held=12 visible=12   seat3: held=12 visible=12
+shot: auto-hand03-result.png
+hand 3 ended
+wall=20  seat0: held=12 visible=12   seat1: held=13 visible=13   seat2: held=11 visible=11   seat3: held=12 visible=12
+wall=16  seat0: held=13 visible=13   seat1: held=14 visible=14   seat2: held=12 visible=12   seat3: held=13 visible=13
+wall=12  seat0: held=14 visible=14   seat1: held=15 visible=15   seat2: held=13 visible=13   seat3: held=14 visible=14
+wall=8  seat0: held=15 visible=15   seat1: held=16 visible=16   seat2: held=14 visible=14   seat3: held=15 visible=15
+wall=4  seat0: held=16 visible=16   seat1: held=17 visible=16  CLIPPED   seat2: held=15 visible=15   seat3: held=16 visible=16
+wall=0  seat0: held=17 visible=16  CLIPPED   seat1: held=18 visible=16  CLIPPED   seat2: held=16 visible=16   seat3: held=17 visible=16  CLIPPED
+shot: auto-hand04-result.png
+hand 4 ended
+wall=20  seat0: held=12 visible=12   seat1: held=13 visible=13   seat2: held=12 visible=12   seat3: held=12 visible=12
+wall=16  seat0: held=13 visible=13   seat1: held=14 visible=14   seat2: held=13 visible=13   seat3: held=13 visible=13
+wall=12  seat0: held=14 visible=14   seat1: held=15 visible=15   seat2: held=14 visible=14   seat3: held=14 visible=14
+wall=8  seat0: held=15 visible=15   seat1: held=16 visible=16   seat2: held=15 visible=15   seat3: held=15 visible=15
+wall=4  seat0: held=16 visible=16   seat1: held=17 visible=16  CLIPPED   seat2: held=16 visible=16   seat3: held=16 visible=16
+wall=0  seat0: held=17 visible=16  CLIPPED   seat1: held=18 visible=16  CLIPPED   seat2: held=17 visible=16  CLIPPED   seat3: held=17 visible=16  CLIPPED
+shot: auto-hand05-result.png
+hand 5 ended

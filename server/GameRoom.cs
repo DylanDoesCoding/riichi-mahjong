@@ -306,15 +306,32 @@ namespace RiichiServer
             _game.OnNewHand       += OnNewHand_Handler;
             _game.OnGameOver      += OnGameOver_Handler;
 
+            // Cosmetic sets for every seat, so each client can draw every player's
+            // wedge. A human seat uses what their account stored; an empty seat is a
+            // CPU and gets a deterministic set from its index, so a solo game still
+            // looks like four people sat down rather than one player at a bare table.
+            var cosmetics = new string[MaxPlayers];
+            lock (_lobbyLock)
+            {
+                for (int s = 0; s < MaxPlayers; s++)
+                {
+                    var human = _connections[s];
+                    cosmetics[s] = human != null && human.Cosmetics.Length > 0
+                        ? human.Cosmetics
+                        : RiichiMahjong.Core.CosmeticSet.ForCpuSeat(s).Serialise();
+                }
+            }
+
             // Notify all players the game is starting
             for (int s = 0; s < MaxPlayers; s++)
             {
                 await SendToSeatAsync(s, new ServerMessage
                 {
-                    Type     = ServerMessageType.GameStarted,
-                    YourSeat = s,
-                    Names    = _names,
-                    Code     = Code,   // included so matchmade players can rejoin without a prior roomJoined
+                    Type      = ServerMessageType.GameStarted,
+                    YourSeat  = s,
+                    Names     = _names,
+                    Cosmetics = cosmetics,
+                    Code      = Code,   // included so matchmade players can rejoin without a prior roomJoined
                 });
             }
 

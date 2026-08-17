@@ -19,6 +19,13 @@ namespace RiichiMahjong.UI
         public static string TileThemeFolder =>
             UseBlackTiles ? "Black" : "Regular";
 
+        /// <summary>
+        /// Whether the client draws the desktop or the touch layout. Auto follows the
+        /// device; the explicit settings let a phone player force the desktop layout on
+        /// a tablet, and let the touch layout be tested without an Android build.
+        /// </summary>
+        public static LayoutPreference LayoutPreference { get; set; } = LayoutPreference.Auto;
+
         // ---- Audio -----------------------------------------------------------
 
         /// <summary>Background music volume (0 = silent, 1 = full). Persists across scene changes.</summary>
@@ -42,6 +49,20 @@ namespace RiichiMahjong.UI
 
         /// <summary>WebSocket server URL for multiplayer. Defaults to the live Render server.</summary>
         public static string ServerUrl { get; set; } = "wss://riichi-mahjong-server.onrender.com/ws";
+
+        // ---- Cosmetics -------------------------------------------------------
+
+        /// <summary>
+        /// The local player's chosen cosmetic set, in wire form.
+        /// Guests keep the free set here and only here. Signed-in players have theirs
+        /// stored on the account as well, so it follows them to another device; this
+        /// stays as the local mirror so the table can be drawn before the server replies.
+        /// </summary>
+        public static string Cosmetics { get; set; } = "";
+
+        /// <summary>The same set, parsed and validated against the catalogue.</summary>
+        public static RiichiMahjong.Core.CosmeticSet CosmeticSet
+            => RiichiMahjong.Core.CosmeticSet.Deserialise(Cosmetics);
 
         // ---- Account ---------------------------------------------------------
 
@@ -73,6 +94,13 @@ namespace RiichiMahjong.UI
             AuthToken     = configExists ? (string)cfg.GetValue("account", "token",      "") : "";
             AuthUsername  = configExists ? (string)cfg.GetValue("account", "username",   "") : "";
 
+            Cosmetics = configExists ? (string)cfg.GetValue("cosmetics", "set", "") : "";
+
+            LayoutPreference = configExists
+                ? (LayoutPreference)(int)cfg.GetValue("display", "layout", (int)LayoutPreference.Auto)
+                : LayoutPreference.Auto;
+            DoloLayout.ResetCache();
+
             // UUID: load from disk so the player can rejoin after a game client restart.
             // If no UUID is saved yet, generate one and immediately persist it.
             string savedUuid = configExists ? (string)cfg.GetValue("player", "uuid", "") : "";
@@ -95,10 +123,12 @@ namespace RiichiMahjong.UI
             cfg.SetValue("player",  "serverUrl",  ServerUrl);
             cfg.SetValue("player",  "uuid",       PlayerUuid);
             cfg.SetValue("display", "blackTiles", UseBlackTiles);
+            cfg.SetValue("display", "layout",     (int)LayoutPreference);
             cfg.SetValue("audio",   "music",      MusicVolume);
             cfg.SetValue("audio",   "sfx",        SfxVolume);
             cfg.SetValue("account", "token",      AuthToken);
             cfg.SetValue("account", "username",   AuthUsername);
+            cfg.SetValue("cosmetics", "set",      Cosmetics);
             cfg.Save(ConfigPath);
         }
 

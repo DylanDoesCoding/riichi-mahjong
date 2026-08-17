@@ -183,5 +183,11 @@ namespace RiichiServer.Auth
 
         public Task DeleteResetCodeAsync(long accountId)
             => RunAsync(() => _inner.DeleteResetCodeAsync(accountId));
+
+        public Task<string?> GetCosmeticsAsync(long accountId)
+            => RunAsync(() => _inner.GetCosmeticsAsync(accountId));
+
+        public Task SetCosmeticsAsync(long accountId, string cosmetics)
+            => RunAsync(() => _inner.SetCosmeticsAsync(accountId, cosmetics));
     }
 }

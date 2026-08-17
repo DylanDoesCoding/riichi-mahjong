@@ -48,6 +48,7 @@ namespace RiichiMahjong.UI
         // Centre info
         private Label    _roundWindLabel  = null!;
         private Label    _counterLabel    = null!;
+        private Label    _wallCountLabel  = null!;
         private TileNode[] _doraTileNodes = new TileNode[5];  // Up to 5 dora indicators
 
         // Discard pools (one HFlowContainer per player)
@@ -81,7 +82,10 @@ namespace RiichiMahjong.UI
         private Label    _countdownLabel     = null!;
 
         // Furiten warning — human player panel only
-        private Label _furitenLabel = null!;
+        private Label     _furitenLabel  = null!;
+        private ColorRect _furitenStrike = null!;  // 2px rule through the word (pass 10)
+        private Control   _furitenBadge  = null!;  // holder for label + strike
+        private bool      _isFuriten;              // drives the hatch on wait tiles
 
         // Win-call overlay — "RON!" / "TSUMO!" / "RIICHI!" slam animation
         private ColorRect _winCallBackdrop   = null!;
@@ -102,9 +106,6 @@ namespace RiichiMahjong.UI
         private Button        _scoringNextBtn    = null!;  // Hidden on game-over screen
         private Button        _scoringMenuBtn    = null!;
 
-        // Ryuukyoku overlay — shown after an exhaustive draw (tenpai reveal)
-        private ColorRect?     _ryuukyokuBackdrop = null;
-        private VBoxContainer? _ryuukyokuContent  = null;  // rebuilt each exhaustive draw
 
         // =====================================================================
         // Godot lifecycle
@@ -112,8 +113,16 @@ namespace RiichiMahjong.UI
 
         public override void _Ready()
         {
+            DoloTheme.Apply(this);
+
+            // The felt is a sibling drawn underneath the hands, so the HUD reaches it
+            // rather than owning it — a riichi stick belongs on the table, not in the HUD.
+            _felt = GetParent()?.GetNodeOrNull<TableFelt>("TableFelt");
+
             BuildLayout();
         }
+
+        private TableFelt? _felt;
 
         // =====================================================================
         // Public API — called by GameController
@@ -126,13 +135,11 @@ namespace RiichiMahjong.UI
         public void UpdateAll(string[] names, int[] points, int dealerSeat,
                               string roundWind, int counters, bool isAllLast = false)
         {
-            string[] windLetters = { "E", "S", "W", "N" };
             for (int i = 0; i < 4; i++)
             {
                 _nameLabels[i].Text  = names.Length > i ? names[i] : $"Player {i}";
                 _scoreLabels[i].Text = points.Length > i ? points[i].ToString("N0") : "0";
-                int windOff = (i - dealerSeat + 4) % 4;
-                _windLabels[i].Text  = windLetters[windOff];
+                SetSeatWind(i, (i - dealerSeat + 4) % 4);
             }
             _roundWindLabel.Text = isAllLast ? "All Last (オーラス)" : $"{roundWind} Round";
             _counterLabel.Text   = counters > 0 ? $"×{counters}" : "";
@@ -167,8 +174,7 @@ namespace RiichiMahjong.UI
                 var p = game.Players[i];
                 _nameLabels[i].Text  = p.Name;
                 _scoreLabels[i].Text = p.Points.ToString("N0");
-                var wind = p.GetSeatWind(game.DealerIndex);
-                _windLabels[i].Text  = wind.ToString()[..1];  // "E", "S", "W", "N"
+                SetSeatWind(i, (int)p.GetSeatWind(game.DealerIndex) - 1);
             }
 
             bool isAllLast = game.RoundWind == WindDirection.South && game.DealerIndex == 3;
@@ -178,6 +184,8 @@ namespace RiichiMahjong.UI
             // Dora indicator tiles — show each indicator as an actual tile image
             if (game.Wall != null)
             {
+                _wallCountLabel.Text = $"{game.Wall.TilesRemaining} LEFT";
+
                 var indicators = game.Wall.DoraIndicators;
                 for (int i = 0; i < _doraTileNodes.Length; i++)
                 {
@@ -224,12 +232,15 @@ namespace RiichiMahjong.UI
                 // tile offset (5, −5) inside the 38×28 wrapper):
                 //   After rotation each corner lands exactly on the wrapper's corners — no clipping.
 
-                var wrapper = new Control();
-                wrapper.CustomMinimumSize = new Vector2(38, 28);   // landscape slot for the flow
+                var riverTile = DoloLayout.RiverTile;
 
-                node.CustomMinimumSize = new Vector2(28, 38);      // tile keeps its natural portrait size
-                node.Position          = new Vector2(5f, -5f);     // offset so rotation fills the wrapper
-                node.PivotOffset       = new Vector2(14f, 19f);    // rotate around the tile's own centre
+                var wrapper = new Control();
+                wrapper.CustomMinimumSize = new Vector2(riverTile.Y, riverTile.X);  // landscape slot
+
+                node.CustomMinimumSize = new Vector2(riverTile.X, riverTile.Y);     // stays portrait
+                node.Position          = new Vector2((riverTile.Y - riverTile.X) * 0.5f,
+                                                     (riverTile.X - riverTile.Y) * 0.5f);
+                node.PivotOffset       = new Vector2(riverTile.X * 0.5f, riverTile.Y * 0.5f);
                 node.RotationDegrees   = 90f;
 
                 wrapper.AddChild(node);
@@ -237,8 +248,7 @@ namespace RiichiMahjong.UI
             }
             else
             {
-                // 28×38: fits 3 rows of 6 in the 127px-tall river area with 2px gaps
-                node.CustomMinimumSize = new Vector2(28, 38);
+                node.CustomMinimumSize = new Vector2(DoloLayout.RiverTile.X, DoloLayout.RiverTile.Y);
                 pool.AddChild(node);
             }
         }
@@ -255,6 +265,7 @@ namespace RiichiMahjong.UI
         public void ShowRiichiStick(int playerIndex)
         {
             _riichiSticks[playerIndex].Visible = true;
+            _felt?.SetRiichiStick(playerIndex, true);
         }
 
         /// <summary>Remove the most recent tile from a player's discard pool (tile was claimed).</summary>
@@ -309,6 +320,8 @@ namespace RiichiMahjong.UI
 
             foreach (var stick in _riichiSticks)
                 stick.Visible = false;
+
+            _felt?.ClearRiichiSticks();
         }
 
         // =====================================================================
@@ -379,6 +392,14 @@ namespace RiichiMahjong.UI
         /// <summary>Show the hover info line ("2 Sou — 1 discarded, 2 unseen").</summary>
         public void ShowTileInfo(string text)
         {
+            // On touch the same line becomes the content of the info card above the
+            // hand, rather than outlined text floating over the felt.
+            if (DoloLayout.IsTouch)
+            {
+                ShowTouchInfoCard(text);
+                return;
+            }
+
             if (_tileInfoLabel == null)
             {
                 _tileInfoLabel = new Label();
@@ -405,6 +426,7 @@ namespace RiichiMahjong.UI
         public void HideTileInfo()
         {
             if (_tileInfoLabel != null) _tileInfoLabel.Visible = false;
+            HideTouchInfoCard();
         }
 
         // ---- Button visibility ----------------------------------------------
@@ -423,6 +445,7 @@ namespace RiichiMahjong.UI
 
         public void ShowClaimButtons(bool canRon, bool canPon, bool canChi, bool canKan = false)
         {
+            _claimWindow.Visible = true;
             _btnRon.Visible    = canRon;
             _btnPon.Visible    = canPon;
             _btnChi.Visible    = canChi;
@@ -442,6 +465,9 @@ namespace RiichiMahjong.UI
             _btnKan.Visible     = false;
             _btnPass.Visible    = false;
             _btnKyuushu.Visible = false;
+
+            _claimWindow.Visible = false;
+            HideChiPicker();
         }
 
         public void HideClaimButtons()
@@ -451,6 +477,10 @@ namespace RiichiMahjong.UI
             _btnChi.Visible  = false;
             _btnKan.Visible  = false;
             _btnPass.Visible = false;
+
+            _claimWindow.Visible = false;
+            HideChiPicker();
+            ClearCountdownTile();
         }
 
         public void ShowNextHandButton() => _btnNext.Visible = true;
@@ -468,14 +498,19 @@ namespace RiichiMahjong.UI
         /// </summary>
         public void SetFuriten(bool isFuriten, bool isPermanent)
         {
-            _furitenLabel.Visible = isFuriten;
+            _isFuriten            = isFuriten;
+            _furitenBadge.Visible = isFuriten;
             if (!isFuriten) return;
 
-            _furitenLabel.Text = isPermanent ? "⚠ FURITEN" : "⚠ FURITEN (temp)";
-            _furitenLabel.AddThemeColorOverride("font_color",
-                isPermanent
-                    ? new Color(1.00f, 0.25f, 0.25f)   // bright red  — permanent
-                    : new Color(1.00f, 0.58f, 0.08f));  // orange      — temporary
+            _furitenLabel.Text = isPermanent ? "FURITEN" : "FURITEN TEMP";
+
+            // Permanent furiten strikes the word through; temporary furiten leaves it
+            // legible, so the two states differ by more than a shade of red.
+            _furitenStrike.Visible = isPermanent;
+
+            var tint = isPermanent ? DoloTokens.FuritenRed : DoloTokens.DoraGold;
+            _furitenLabel.AddThemeColorOverride("font_color", tint);
+            _furitenStrike.Color = tint;
         }
 
         public void ShowFinalScores(GameState game)
@@ -537,66 +572,119 @@ namespace RiichiMahjong.UI
             // ---- Win-call overlay (RON!/TSUMO!) — above game, below scoring panel ----
             BuildWinCallOverlay();
 
-            // ---- Ryuukyoku panel — above game, below scoring/win overlays ----
-            BuildRyuukyokuPanel();
-
             // ---- Win scoring overlay — MUST be added last so it renders on top ----
             BuildScoringPanel();
         }
 
+        // Wind tile art, used as the seat badge. Pass 10 asks for the 東南西北 glyph on
+        // the plate; drawing it from the tile pack rather than as text guarantees it
+        // renders, since neither Source Sans 3 nor Godot's default font carries CJK.
+        private static readonly string[] WindTileArt = { "Ton", "Nan", "Shaa", "Pei" };
+        private static readonly string[] WindLetters = { "E", "S", "W", "N" };
+
+        private TextureRect[] _windBadges = null!;
+
         private void BuildScorePanels()
         {
-            // Score panels — positioned at each player's side, inset from the tile strips
-            // [0]=Human bottom-left, [1]=Right CPU, [2]=Top CPU, [3]=Left CPU
-            // Each panel: (anchor preset, left offset, top offset, right offset, bottom offset)
-            var panels = new (LayoutPreset preset, float l, float t, float r, float b)[]
-            {
-                (LayoutPreset.BottomLeft,  60,   -105, 220,  -10),  // Human — sits beside the hand panel
-                (LayoutPreset.CenterRight, -220, -45,  -60,  45),   // Right CPU
-                (LayoutPreset.TopRight,    -220, 8,    -60,  88),   // Top CPU
-                (LayoutPreset.CenterLeft,  60,   -45,  220,  45),   // Left CPU
-            };
+            _windBadges = new TextureRect[4];
+
+            // Anchoring every plate to the table centre rather than to a screen corner
+            // keeps the four in the same relationship to the felt on any aspect ratio.
+            var rects = DoloLayout.NameplateRects;
+            var plateSize = DoloLayout.NameplateSize;
+            bool touch = DoloLayout.IsTouch;
 
             for (int i = 0; i < 4; i++)
             {
                 var panel = new PanelContainer();
-                panel.SetAnchorsAndOffsetsPreset(panels[i].preset);
-                panel.OffsetLeft   = panels[i].l;
-                panel.OffsetTop    = panels[i].t;
-                panel.OffsetRight  = panels[i].r;
-                panel.OffsetBottom = panels[i].b;
-                panel.CustomMinimumSize = new Vector2(150, 80);
+                panel.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+                panel.OffsetLeft   = rects[i].l;
+                panel.OffsetTop    = rects[i].t;
+                panel.OffsetRight  = rects[i].r;
+                panel.OffsetBottom = rects[i].b;
+                panel.CustomMinimumSize = new Vector2(plateSize.X, plateSize.Y);
+                panel.MouseFilter  = MouseFilterEnum.Ignore;
+                panel.AddThemeStyleboxOverride("panel", NameplateStyle());
 
                 var vbox = new VBoxContainer();
+                vbox.AddThemeConstantOverride("separation", 2);
+
+                // ---- Wind: tile glyph plus the letter ----
+                // Two channels for the same fact, so the seat reads without colour.
+                // The desktop plate has room for both; the phone chip takes the letter
+                // only, and its badge is built but left hidden so SetSeatWind can stay
+                // one code path.
+                _windBadges[i] = new TextureRect
+                {
+                    CustomMinimumSize = new Vector2(20, 27),
+                    ExpandMode        = TextureRect.ExpandModeEnum.IgnoreSize,
+                    StretchMode       = TextureRect.StretchModeEnum.KeepAspectCentered,
+                    MouseFilter       = MouseFilterEnum.Ignore,
+                };
+
+                _windLabels[i] = new Label { Text = "E" };
+                _windLabels[i].ThemeTypeVariation = DoloTheme.Mono;
+                _windLabels[i].VerticalAlignment  = VerticalAlignment.Center;
 
                 _nameLabels[i]  = new Label { Text = $"Player {i}" };
-                _scoreLabels[i] = new Label { Text = "30,000" };
-                _windLabels[i]  = new Label { Text = "E" };
+                _scoreLabels[i] = new Label { Text = "25,000" };
 
-                _nameLabels[i].AddThemeFontSizeOverride("font_size", 14);
-                _scoreLabels[i].AddThemeFontSizeOverride("font_size", 18);
+                _nameLabels[i].ThemeTypeVariation  = DoloTheme.PlateName;
+                _nameLabels[i].TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+                _scoreLabels[i].ThemeTypeVariation = touch ? DoloTheme.Mono : DoloTheme.MonoLarge;
 
-                // Riichi stick (hidden by default)
-                var stick = new ColorRect();
-                stick.Color   = new Color(1f, 0.9f, 0.3f);
-                stick.CustomMinimumSize = new Vector2(60, 8);
-                stick.Visible = false;
+                // Riichi stick on the plate. The felt stick (pass 10) is the cue that
+                // survives greyscale; this one keeps the plate self-contained. On a
+                // 96 x 40 chip there is no room for a stick, so it becomes an underline.
+                var stick = new ColorRect
+                {
+                    Color             = DoloTokens.RiichiStick,
+                    CustomMinimumSize = touch ? new Vector2(0, 4) : new Vector2(60, 5),
+                    Visible           = false,
+                    MouseFilter       = MouseFilterEnum.Ignore,
+                };
                 _riichiSticks[i] = stick;
 
-                vbox.AddChild(_windLabels[i]);
-                vbox.AddChild(_nameLabels[i]);
-                vbox.AddChild(_scoreLabels[i]);
-                vbox.AddChild(stick);
+                if (touch)
+                {
+                    // The chip carries name, wind and score only.
+                    _windBadges[i].Visible = false;
+                    _nameLabels[i].AddThemeFontSizeOverride("font_size", DoloTokens.PhoneSizeName);
+                    _scoreLabels[i].AddThemeFontSizeOverride("font_size", DoloTokens.PhoneSizeMono);
 
-                // Furiten badge — only on the human's own panel (index 0)
+                    var topRow = new HBoxContainer();
+                    topRow.AddThemeConstantOverride("separation", 6);
+                    _nameLabels[i].SizeFlagsHorizontal = SizeFlags.ExpandFill;
+
+                    // The badge stays in the tree but hidden — containers skip invisible
+                    // children, so it costs no space and SetSeatWind keeps one path.
+                    topRow.AddChild(_windBadges[i]);
+                    topRow.AddChild(_windLabels[i]);
+                    topRow.AddChild(_nameLabels[i]);
+
+                    vbox.AddChild(topRow);
+                    vbox.AddChild(_scoreLabels[i]);
+                    vbox.AddChild(stick);
+                }
+                else
+                {
+                    var windRow = new HBoxContainer();
+                    windRow.AddThemeConstantOverride("separation", 6);
+                    windRow.AddChild(_windBadges[i]);
+                    windRow.AddChild(_windLabels[i]);
+
+                    vbox.AddChild(windRow);
+                    vbox.AddChild(_nameLabels[i]);
+                    vbox.AddChild(_scoreLabels[i]);
+                    vbox.AddChild(stick);
+                }
+
+                // Furiten badge — only on the human's own panel (index 0).
+                // On the chip it shrinks to a corner dot; there is no room for the word.
                 if (i == 0)
                 {
-                    _furitenLabel = new Label { Text = "⚠ FURITEN" };
-                    _furitenLabel.HorizontalAlignment = HorizontalAlignment.Center;
-                    _furitenLabel.AddThemeFontSizeOverride("font_size", 12);
-                    _furitenLabel.AddThemeColorOverride("font_color", new Color(1f, 0.25f, 0.25f));
-                    _furitenLabel.Visible = false;
-                    vbox.AddChild(_furitenLabel);
+                    var badge = touch ? BuildFuritenDot(panel) : BuildFuritenBadge();
+                    if (!touch) vbox.AddChild(badge);
                 }
 
                 panel.AddChild(vbox);
@@ -604,16 +692,119 @@ namespace RiichiMahjong.UI
             }
         }
 
+        /// <summary>
+        /// Set one plate's seat wind. <paramref name="windIndex"/> is 0=East .. 3=North.
+        /// Sets both the tile glyph and the letter, so the seat is legible whether or
+        /// not the player reads the kanji.
+        /// </summary>
+        private void SetSeatWind(int panelIndex, int windIndex)
+        {
+            if (windIndex < 0 || windIndex > 3) return;
+
+            _windLabels[panelIndex].Text = WindLetters[windIndex];
+            _windBadges[panelIndex].Texture = GD.Load<Texture2D>(
+                $"res://Assets/Tiles/riichi-mahjong-tiles-master/" +
+                $"{GameSettings.TileThemeFolder}/{WindTileArt[windIndex]}.svg");
+        }
+
+        /// <summary>The nameplate surface: a card tone at plate scale rather than screen scale.</summary>
+        private static StyleBoxFlat NameplateStyle()
+        {
+            var box = DoloStyles.Flat(DoloTokens.Card, DoloTokens.RadiusBoard,
+                                      DoloTokens.HairlineMedium, borderWidth: 1);
+            box.ContentMarginLeft   = 12;
+            box.ContentMarginRight  = 12;
+            box.ContentMarginTop    = 8;
+            box.ContentMarginBottom = 8;
+            box.ShadowColor  = DoloTokens.ShadowButtonColor;
+            box.ShadowSize   = 10;
+            box.ShadowOffset = new Vector2(0, 4);
+            return box;
+        }
+
+        /// <summary>
+        /// The furiten badge. Pass 10 replaces the red tint with a strike through the
+        /// word itself: a 2px rule across the label, which survives a greyscale strip
+        /// where the tint does not. The red is kept for players who can see it.
+        /// </summary>
+        private Control BuildFuritenBadge()
+        {
+            var holder = new Control
+            {
+                CustomMinimumSize = new Vector2(0, 18),
+                MouseFilter       = MouseFilterEnum.Ignore,
+                Visible           = false,
+            };
+
+            _furitenLabel = new Label { Text = "FURITEN" };
+            _furitenLabel.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            _furitenLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _furitenLabel.ThemeTypeVariation  = DoloTheme.MonoSmall;
+            _furitenLabel.AddThemeColorOverride("font_color", DoloTokens.FuritenRed);
+            holder.AddChild(_furitenLabel);
+
+            _furitenStrike = new ColorRect
+            {
+                Color       = DoloTokens.FuritenRed,
+                MouseFilter = MouseFilterEnum.Ignore,
+            };
+            _furitenStrike.SetAnchorsAndOffsetsPreset(LayoutPreset.CenterLeft);
+            _furitenStrike.AnchorRight  = 1f;
+            _furitenStrike.OffsetLeft   = 22;
+            _furitenStrike.OffsetRight  = -22;
+            _furitenStrike.OffsetTop    = -1;
+            _furitenStrike.OffsetBottom = 1;
+            holder.AddChild(_furitenStrike);
+
+            _furitenBadge = holder;
+            return holder;
+        }
+
+        /// <summary>
+        /// The phone equivalent of the furiten badge: a dot in the chip's corner.
+        /// Attached to the plate directly rather than stacked in the column, since a
+        /// 96 x 40 chip has no spare row.
+        /// </summary>
+        private Control BuildFuritenDot(Control plate)
+        {
+            var dot = new Panel
+            {
+                MouseFilter = MouseFilterEnum.Ignore,
+                Visible     = false,
+            };
+            dot.SetAnchorsAndOffsetsPreset(LayoutPreset.TopRight);
+            dot.OffsetLeft   = -14;
+            dot.OffsetTop    = 4;
+            dot.OffsetRight  = -4;
+            dot.OffsetBottom = 14;
+
+            var dotStyle = DoloStyles.Flat(DoloTokens.FuritenRed, 5, DoloTokens.Ivory, borderWidth: 1);
+            dot.AddThemeStyleboxOverride("panel", dotStyle);
+            plate.AddChild(dot);
+
+            // SetFuriten writes to the label and the strike as well as the badge, so the
+            // phone path keeps both in the tree, hidden, rather than as orphans.
+            _furitenBadge  = dot;
+            _furitenLabel  = new Label     { Visible = false };
+            _furitenStrike = new ColorRect { Visible = false };
+            dot.AddChild(_furitenLabel);
+            dot.AddChild(_furitenStrike);
+            return dot;
+        }
+
         private void BuildCentrePanel()
         {
             // Centre panel: round wind, counters, dora indicator tiles.
             // Wide enough to fit up to 5 dora tile images (5 × 34px = 170 + margins).
             var panel = new PanelContainer();
+            var plaque = DoloLayout.PlaqueSize;
             panel.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-            panel.OffsetLeft   = -130;
-            panel.OffsetTop    = -68;
-            panel.OffsetRight  =  130;
-            panel.OffsetBottom =  68;
+            panel.OffsetLeft   = -plaque.X * 0.5f;
+            panel.OffsetTop    = -plaque.Y * 0.5f;
+            panel.OffsetRight  =  plaque.X * 0.5f;
+            panel.OffsetBottom =  plaque.Y * 0.5f;
+            panel.MouseFilter  = MouseFilterEnum.Ignore;
+            panel.AddThemeStyleboxOverride("panel", CentrePlaqueStyle());
 
             var vbox = new VBoxContainer();
             vbox.Alignment = BoxContainer.AlignmentMode.Center;
@@ -624,12 +815,19 @@ namespace RiichiMahjong.UI
 
             _roundWindLabel.HorizontalAlignment = HorizontalAlignment.Center;
             _counterLabel.HorizontalAlignment   = HorizontalAlignment.Center;
-            _roundWindLabel.AddThemeFontSizeOverride("font_size", 13);
+            _roundWindLabel.ThemeTypeVariation  = DoloTheme.PlateName;
+            _counterLabel.ThemeTypeVariation    = DoloTheme.Mono;
+
+            // Wall count — table state the design's state list calls for, and the one
+            // number that tells a player how much hand is left to play.
+            _wallCountLabel = new Label { Text = "" };
+            _wallCountLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            _wallCountLabel.ThemeTypeVariation  = DoloTheme.MonoSmall;
 
             // "Dora:" label + row of tile images
-            var doraLabel = new Label { Text = "Dora" };
+            var doraLabel = new Label { Text = "DORA" };
             doraLabel.HorizontalAlignment = HorizontalAlignment.Center;
-            doraLabel.AddThemeFontSizeOverride("font_size", 11);
+            doraLabel.ThemeTypeVariation  = DoloTheme.MonoSmall;
 
             var doraRow = new HBoxContainer();
             doraRow.Alignment = BoxContainer.AlignmentMode.Center;
@@ -648,10 +846,24 @@ namespace RiichiMahjong.UI
 
             vbox.AddChild(_roundWindLabel);
             vbox.AddChild(_counterLabel);
+            vbox.AddChild(_wallCountLabel);
+            vbox.AddChild(DoloStyles.HairlineRow());
             vbox.AddChild(doraLabel);
             vbox.AddChild(doraRow);
             panel.AddChild(vbox);
             AddChild(panel);
+        }
+
+        /// <summary>The centre plaque: the one raised surface in the middle of the felt.</summary>
+        private static StyleBoxFlat CentrePlaqueStyle()
+        {
+            var box = DoloStyles.Flat(DoloTokens.Card, DoloTokens.RadiusBoard,
+                                      DoloTokens.HairlineStrong, borderWidth: 1);
+            DoloStyles.SetPadding(box, 12);
+            box.ShadowColor  = DoloTokens.ShadowButtonColor;
+            box.ShadowSize   = 14;
+            box.ShadowOffset = new Vector2(0, 5);
+            return box;
         }
 
         private void BuildDiscardPools()
@@ -666,16 +878,27 @@ namespace RiichiMahjong.UI
             //   Right (west)  : right side
             //   Top  (north)  : above centre panel
             //   Left (east)   : left side
-            var configs = new (float l, float t, float r, float b)[]
-            {
-                (-215,  58,  215, 185),   // Human  (south)
-                ( 120, -80,  285,  80),   // Right  (west)
-                (-215,-185,  215, -58),   // Top    (north)
-                (-285, -80, -120,  80),   // Left   (east)
-            };
+            // Pass 02 makes all four rivers identical at 178 x 158 — six columns of
+            // 28 x 38 tiles — rather than the old 430 x 127 for south/north against
+            // 165 x 160 for the sides. Every river now holds the same shape, and each
+            // sits far enough from its neighbours that none crosses a diagonal.
+            var configs   = DoloLayout.RiverRects;
+            int separation = DoloLayout.RiverSeparation;
 
             for (int i = 0; i < 4; i++)
             {
+                // Backdrop — the river rect plus 10px on every side, so an empty
+                // river is still a visible place on the table rather than nothing.
+                var backdrop = new Panel();
+                backdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+                backdrop.OffsetLeft   = configs[i].l - RiverBackdropInset;
+                backdrop.OffsetTop    = configs[i].t - RiverBackdropInset;
+                backdrop.OffsetRight  = configs[i].r + RiverBackdropInset;
+                backdrop.OffsetBottom = configs[i].b + RiverBackdropInset;
+                backdrop.MouseFilter  = MouseFilterEnum.Ignore;
+                backdrop.AddThemeStyleboxOverride("panel", RiverBackdropStyle());
+                AddChild(backdrop);
+
                 // Outer sizing container — controls the exact river rect
                 var outer = new Control();
                 outer.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
@@ -684,18 +907,26 @@ namespace RiichiMahjong.UI
                 outer.OffsetRight  = configs[i].r;
                 outer.OffsetBottom = configs[i].b;
                 outer.ClipContents = true;
+                outer.MouseFilter  = MouseFilterEnum.Ignore;
 
                 // Flow container fills the outer rect
                 var pool = new HFlowContainer();
                 pool.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-                pool.AddThemeConstantOverride("h_separation", 2);
-                pool.AddThemeConstantOverride("v_separation", 2);
+                pool.AddThemeConstantOverride("h_separation", separation);
+                pool.AddThemeConstantOverride("v_separation", separation);
                 outer.AddChild(pool);
                 AddChild(outer);
 
                 _discardPools[i] = pool;
             }
         }
+
+        private const int RiverBackdropInset = 10;
+
+        /// <summary>The recessed pad a river sits on: darker than the felt, hairline edge.</summary>
+        private static StyleBoxFlat RiverBackdropStyle()
+            => DoloStyles.Flat(new Color(0f, 0f, 0f, 0.20f), DoloTokens.RadiusBoard,
+                               DoloTokens.HairlineFaint, borderWidth: 1);
 
         // =====================================================================
         // Countdown bar — public API
@@ -712,6 +943,7 @@ namespace RiichiMahjong.UI
         public void StopCountdown()
         {
             _countdownContainer.Visible = false;
+            ClearCountdownTile();
         }
 
         /// <summary>
@@ -740,6 +972,10 @@ namespace RiichiMahjong.UI
 
             int secs = (int)MathF.Ceiling(remainingSecs);
             _countdownLabel.Text = $"Auto in {secs}s";
+
+            // The ring on the discarded tile is the primary cue; this bar is the
+            // numeric readout that goes with it.
+            UpdateCountdownRing(fraction);
         }
 
         // =====================================================================
@@ -821,20 +1057,58 @@ namespace RiichiMahjong.UI
             _btnNext.Pressed     += () => EmitSignal(SignalName.NextHandPressed);
             _btnKyuushu.Pressed  += () => EmitSignal(SignalName.KyuushuPressed);
 
+            // Own-turn actions stay in the bottom bar.
             bar.AddChild(_btnRiichi);
             bar.AddChild(_btnTsumo);
-            bar.AddChild(_btnRon);
-            bar.AddChild(_btnPon);
-            bar.AddChild(_btnChi);
-            bar.AddChild(_btnKan);
-            bar.AddChild(_btnPass);
             bar.AddChild(_btnKyuushu);
             bar.AddChild(_btnNext);
+            AddChild(bar);
+
+            // Calls move into a window over the felt (pass 08), so the decision sits
+            // near the tile it is about rather than in a strip at the bottom of the
+            // screen. They are ranked ron, pon, chi, kan, pass - highest-commitment
+            // first, so the ordering itself says which call matters most.
+            _claimWindow = new PanelContainer { Visible = false };
+            _claimWindow.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+
+            var callSize = DoloLayout.ActionButton;
+            float windowWidth  = callSize.X * 5 + 48;
+            float windowHeight = callSize.Y + 40;
+            _claimWindow.OffsetLeft   = -windowWidth * 0.5f;
+            _claimWindow.OffsetRight  =  windowWidth * 0.5f;
+            _claimWindow.OffsetTop    = DoloLayout.IsTouch ? 46 : 78;
+            _claimWindow.OffsetBottom = _claimWindow.OffsetTop + windowHeight;
+            _claimWindow.AddThemeStyleboxOverride("panel", ClaimWindowStyle());
+
+            var callRow = new HBoxContainer();
+            callRow.AddThemeConstantOverride("separation", 8);
+            callRow.Alignment = BoxContainer.AlignmentMode.Center;
+
+            foreach (var call in new[] { _btnRon, _btnPon, _btnChi, _btnKan, _btnPass })
+            {
+                call.CustomMinimumSize = new Vector2(callSize.X, callSize.Y);
+                callRow.AddChild(call);
+            }
+
+            _claimWindow.AddChild(callRow);
+            AddChild(_claimWindow);
 
             HideActionButtons();
             _btnNext.Visible = false;
+        }
 
-            AddChild(bar);
+        private PanelContainer _claimWindow = null!;
+
+        /// <summary>The claim window sits over the felt, so it needs a real edge and lift.</summary>
+        private static StyleBoxFlat ClaimWindowStyle()
+        {
+            var box = DoloStyles.Flat(DoloTokens.Card, DoloTokens.RadiusCard,
+                                      DoloTokens.HairlineStrong, borderWidth: 2);
+            DoloStyles.SetPadding(box, 16);
+            box.ShadowColor  = DoloTokens.ShadowCardColor;
+            box.ShadowSize   = 28;
+            box.ShadowOffset = new Vector2(0, 10);
+            return box;
         }
 
         private void BuildWaitsPopup()
@@ -921,35 +1195,25 @@ namespace RiichiMahjong.UI
                 node.SetTile(w, faceDown: false);
                 node.SetInteractive(false);
 
-                // Dim tiles that are completely gone from the unseen pool
-                bool gone = remaining != null
-                            && remaining.TryGetValue(w.TileId, out int cnt)
-                            && cnt <= 0;
-                if (gone)
-                    node.Modulate = new Color(1f, 1f, 1f, 0.40f);
-
                 col.AddChild(node);
 
                 if (remaining != null && remaining.TryGetValue(w.TileId, out int left))
                 {
-                    if (left == 0)
-                    {
-                        // Dead wait — bold red "✗" so it's unmissable
-                        var deadLbl = new Label { Text = "✗ DEAD" };
-                        deadLbl.HorizontalAlignment = HorizontalAlignment.Center;
-                        deadLbl.AddThemeFontSizeOverride("font_size", 10);
-                        deadLbl.AddThemeColorOverride("font_color", new Color(1f, 0.25f, 0.25f));
-                        col.AddChild(deadLbl);
-                    }
-                    else
-                    {
-                        // Live wait — green count label
-                        var lbl = new Label { Text = $"{left}" };
-                        lbl.HorizontalAlignment = HorizontalAlignment.Center;
-                        lbl.AddThemeFontSizeOverride("font_size", 11);
-                        lbl.AddThemeColorOverride("font_color", new Color(0.75f, 1.00f, 0.65f));
-                        col.AddChild(lbl);
-                    }
+                    // Pass 10: a dead wait is no longer greyed out — greying reads as
+                    // ordinary dimming. The face is dropped for a brass outline and the
+                    // count states the position outright. Furiten adds the 135° hatch.
+                    node.SetWaitDisplay(left, _isFuriten);
+
+                    var countLabel = new Label { Text = $"{left} left" };
+                    countLabel.HorizontalAlignment = HorizontalAlignment.Center;
+                    countLabel.ThemeTypeVariation  = DoloTheme.MonoSmall;
+                    countLabel.AddThemeColorOverride("font_color",
+                        left <= 0 ? DoloTokens.Brass : DoloTokens.BodyText);
+                    col.AddChild(countLabel);
+                }
+                else if (_isFuriten)
+                {
+                    node.SetWaitDisplay(1, furiten: true);
                 }
 
                 _waitsRow.AddChild(col);
@@ -1124,310 +1388,6 @@ namespace RiichiMahjong.UI
             }));
         }
 
-        // =====================================================================
-        // Ryuukyoku (exhaustive draw) reveal panel
-        // =====================================================================
-
-        private void BuildRyuukyokuPanel()
-        {
-            _ryuukyokuBackdrop = new ColorRect();
-            _ryuukyokuBackdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            _ryuukyokuBackdrop.Color       = new Color(0f, 0f, 0f, 0.72f);
-            _ryuukyokuBackdrop.MouseFilter = MouseFilterEnum.Stop;
-            _ryuukyokuBackdrop.Visible     = false;
-
-            var card = new Panel();
-            card.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-            card.OffsetLeft   = -300;
-            card.OffsetTop    = -200;
-            card.OffsetRight  =  300;
-            card.OffsetBottom =  200;
-            card.MouseFilter  = MouseFilterEnum.Stop;
-
-            var cardStyle = new StyleBoxFlat();
-            cardStyle.BgColor     = new Color(0.07f, 0.07f, 0.12f, 1f);
-            cardStyle.BorderColor = new Color(0.38f, 0.58f, 0.88f, 1f);  // Blue — draw, not win
-            cardStyle.BorderWidthTop    = cardStyle.BorderWidthBottom =
-            cardStyle.BorderWidthLeft   = cardStyle.BorderWidthRight  = 2;
-            cardStyle.CornerRadiusTopLeft    = cardStyle.CornerRadiusTopRight    =
-            cardStyle.CornerRadiusBottomLeft = cardStyle.CornerRadiusBottomRight = 10;
-            card.AddThemeStyleboxOverride("panel", cardStyle);
-
-            _ryuukyokuContent = new VBoxContainer();
-            _ryuukyokuContent.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            _ryuukyokuContent.OffsetLeft   = 22;
-            _ryuukyokuContent.OffsetTop    = 14;
-            _ryuukyokuContent.OffsetRight  = -22;
-            _ryuukyokuContent.OffsetBottom = -14;
-            _ryuukyokuContent.AddThemeConstantOverride("separation", 5);
-
-            card.AddChild(_ryuukyokuContent);
-            _ryuukyokuBackdrop.AddChild(card);
-            AddChild(_ryuukyokuBackdrop);
-        }
-
-        /// <summary>
-        /// Populate and show the ryuukyoku result panel.
-        /// All arrays are indexed by VISUAL seat (0=bottom/self, 1=right, 2=top, 3=left).
-        /// </summary>
-        public void ShowRyuukyokuPanel(
-            string[]      names,
-            int[]         currentPoints,
-            int           dealerVisualSeat,
-            bool[]        isTenpai,
-            List<Tile>[]  waitingTiles,
-            int[]         pointDeltas)
-        {
-            // Clear any previous content
-            foreach (var child in _ryuukyokuContent!.GetChildren()) child.QueueFree();
-
-            // ── Title ──────────────────────────────────────────────
-            var title = new Label { Text = "流局  ·  Ryuukyoku (Exhaustive Draw)" };
-            title.HorizontalAlignment = HorizontalAlignment.Center;
-            title.AddThemeFontSizeOverride("font_size", 16);
-            title.AddThemeColorOverride("font_color", new Color(0.62f, 0.80f, 1.0f));
-            _ryuukyokuContent.AddChild(title);
-            _ryuukyokuContent.AddChild(new HSeparator());
-
-            // ── One row per player ──────────────────────────────────
-            for (int vs = 0; vs < 4; vs++)
-            {
-                var row = new HBoxContainer();
-                row.AddThemeConstantOverride("separation", 6);
-
-                // Name (with dealer star)
-                string nameText = (vs == dealerVisualSeat ? "★ " : "   ") + names[vs];
-                var nameLabel = new Label { Text = nameText };
-                nameLabel.CustomMinimumSize        = new Vector2(140, 0);
-                nameLabel.ClipText                 = true;
-                nameLabel.AddThemeFontSizeOverride("font_size", 13);
-                row.AddChild(nameLabel);
-
-                // TENPAI / NOTEN badge
-                var badge = new Label { Text = isTenpai[vs] ? "TENPAI" : "NOTEN " };
-                badge.CustomMinimumSize           = new Vector2(62, 0);
-                badge.HorizontalAlignment         = HorizontalAlignment.Center;
-                badge.AddThemeFontSizeOverride("font_size", 12);
-                badge.AddThemeColorOverride("font_color", isTenpai[vs]
-                    ? new Color(0.25f, 1.0f, 0.45f) : new Color(0.55f, 0.55f, 0.60f));
-                row.AddChild(badge);
-
-                // Point delta
-                int delta = pointDeltas[vs];
-                if (delta != 0)
-                {
-                    var deltaLabel = new Label
-                    {
-                        Text = delta > 0 ? $"+{delta:N0}" : $"{delta:N0}"
-                    };
-                    deltaLabel.CustomMinimumSize     = new Vector2(65, 0);
-                    deltaLabel.HorizontalAlignment   = HorizontalAlignment.Right;
-                    deltaLabel.AddThemeFontSizeOverride("font_size", 13);
-                    deltaLabel.AddThemeColorOverride("font_color", delta > 0
-                        ? new Color(0.3f, 1.0f, 0.4f) : new Color(1.0f, 0.38f, 0.38f));
-                    row.AddChild(deltaLabel);
-                }
-
-                // Waiting tiles (pills) for tenpai players
-                if (isTenpai[vs] && waitingTiles[vs].Count > 0)
-                {
-                    var sepLabel = new Label { Text = "│" };
-                    sepLabel.AddThemeFontSizeOverride("font_size", 12);
-                    sepLabel.AddThemeColorOverride("font_color", new Color(0.35f, 0.35f, 0.45f));
-                    row.AddChild(sepLabel);
-
-                    var seenIds = new System.Collections.Generic.HashSet<int>();
-                    foreach (var wt in waitingTiles[vs])
-                    {
-                        if (!seenIds.Add(wt.TileId)) continue;
-
-                        var pillBox = new PanelContainer();
-                        var pillStyle = new StyleBoxFlat();
-                        pillStyle.BgColor = new Color(0.22f, 0.18f, 0.06f, 1f);
-                        pillStyle.CornerRadiusTopLeft    = pillStyle.CornerRadiusTopRight    =
-                        pillStyle.CornerRadiusBottomLeft = pillStyle.CornerRadiusBottomRight = 4;
-                        pillStyle.ContentMarginLeft  = 4;
-                        pillStyle.ContentMarginRight = 4;
-                        pillBox.AddThemeStyleboxOverride("panel", pillStyle);
-
-                        var pillLabel = new Label { Text = wt.ToString() };
-                        pillLabel.AddThemeFontSizeOverride("font_size", 12);
-                        pillLabel.AddThemeColorOverride("font_color", new Color(1.0f, 0.82f, 0.25f));
-                        pillBox.AddChild(pillLabel);
-                        row.AddChild(pillBox);
-                    }
-                }
-
-                _ryuukyokuContent.AddChild(row);
-            }
-
-            _ryuukyokuContent.AddChild(new HSeparator());
-
-            // ── Score table ────────────────────────────────────────
-            var scoresHeader = new Label { Text = "  Scores After This Hand" };
-            scoresHeader.AddThemeFontSizeOverride("font_size", 12);
-            scoresHeader.AddThemeColorOverride("font_color", new Color(0.70f, 0.70f, 0.80f));
-            _ryuukyokuContent.AddChild(scoresHeader);
-
-            var scoresRow = new HBoxContainer();
-            scoresRow.AddThemeConstantOverride("separation", 8);
-            for (int vs = 0; vs < 4; vs++)
-            {
-                // Truncate long names to first word for compact display
-                string shortName = names[vs].Split(' ')[0];
-                var scoreEntry = new Label
-                {
-                    Text = $"{shortName}\n{currentPoints[vs]:N0}"
-                };
-                scoreEntry.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-                scoreEntry.HorizontalAlignment = HorizontalAlignment.Center;
-                scoreEntry.AddThemeFontSizeOverride("font_size", 12);
-                scoresRow.AddChild(scoreEntry);
-            }
-            _ryuukyokuContent.AddChild(scoresRow);
-            _ryuukyokuContent.AddChild(new HSeparator());
-
-            // ── Button row ─────────────────────────────────────────
-            var btnRow = new HBoxContainer();
-            btnRow.Alignment = BoxContainer.AlignmentMode.Center;
-            btnRow.AddThemeConstantOverride("separation", 16);
-            btnRow.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-
-            var nextBtn = MakeButton("▶  Next Hand", new Color(0.15f, 0.44f, 0.22f));
-            nextBtn.CustomMinimumSize = new Vector2(165, 42);
-            nextBtn.Pressed += () => EmitSignal(SignalName.ScoringNextHandPressed);
-
-            var menuBtn = MakeButton("⬅  Menu", new Color(0.28f, 0.28f, 0.35f));
-            menuBtn.CustomMinimumSize = new Vector2(130, 42);
-            menuBtn.Pressed += () => EmitSignal(SignalName.ScoringMenuPressed);
-
-            btnRow.AddChild(nextBtn);
-            btnRow.AddChild(menuBtn);
-            _ryuukyokuContent.AddChild(btnRow);
-
-            _ryuukyokuBackdrop!.Visible = true;
-        }
-
-        public void HideRyuukyokuPanel()
-        {
-            if (_ryuukyokuBackdrop == null || !_ryuukyokuBackdrop.Visible) return;
-            _ryuukyokuBackdrop.Visible = false;
-            foreach (var child in _ryuukyokuContent!.GetChildren()) child.QueueFree();
-        }
-
-        private void BuildScoringPanel()
-        {
-            // Full-screen dim backdrop — added last in the HUD tree so it sits on top
-            _scoringBackdrop = new ColorRect();
-            _scoringBackdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            _scoringBackdrop.Color       = new Color(0f, 0f, 0f, 0.70f);
-            _scoringBackdrop.MouseFilter = MouseFilterEnum.Stop;  // Block all clicks through
-            _scoringBackdrop.Visible     = false;
-
-            // Centred scoring card — tall enough to hold yaku + payments + all-player scores
-            _scoringPanel = new Panel();
-            _scoringPanel.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-            _scoringPanel.OffsetLeft   = -370;
-            _scoringPanel.OffsetTop    = -310;
-            _scoringPanel.OffsetRight  =  370;
-            _scoringPanel.OffsetBottom =  310;
-            _scoringPanel.MouseFilter  = MouseFilterEnum.Stop;
-
-            var cardStyle = new StyleBoxFlat();
-            cardStyle.BgColor     = new Color(0.07f, 0.07f, 0.12f, 1f);
-            cardStyle.BorderColor = new Color(0.75f, 0.62f, 0.18f, 1f);  // Gold border
-            cardStyle.BorderWidthTop    = cardStyle.BorderWidthBottom =
-            cardStyle.BorderWidthLeft   = cardStyle.BorderWidthRight  = 2;
-            cardStyle.CornerRadiusTopLeft    = cardStyle.CornerRadiusTopRight    =
-            cardStyle.CornerRadiusBottomLeft = cardStyle.CornerRadiusBottomRight = 10;
-            _scoringPanel.AddThemeStyleboxOverride("panel", cardStyle);
-
-            // ---- Main VBox inside the card ----
-            var outerVBox = new VBoxContainer();
-            outerVBox.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            outerVBox.OffsetLeft   = 20;
-            outerVBox.OffsetTop    = 14;
-            outerVBox.OffsetRight  = -20;
-            outerVBox.OffsetBottom = -14;
-            outerVBox.AddThemeConstantOverride("separation", 5);
-
-            // ── Win title ──
-            _scoringTitle = new Label();
-            _scoringTitle.HorizontalAlignment = HorizontalAlignment.Center;
-            _scoringTitle.AddThemeFontSizeOverride("font_size", 20);
-            outerVBox.AddChild(_scoringTitle);
-            outerVBox.AddChild(new HSeparator());
-
-            // ── Yaku list (rebuilt each win) ──
-            _scoringYakuRows = new VBoxContainer();
-            _scoringYakuRows.AddThemeConstantOverride("separation", 2);
-            outerVBox.AddChild(_scoringYakuRows);
-            outerVBox.AddChild(new HSeparator());
-
-            // ── Han / Fu / Limit summary row ──
-            var summaryRow = new HBoxContainer();
-            _scoringHanFuLabel = new Label();
-            _scoringHanFuLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            _scoringHanFuLabel.AddThemeFontSizeOverride("font_size", 13);
-            _scoringLimitLabel = new Label();
-            _scoringLimitLabel.HorizontalAlignment = HorizontalAlignment.Right;
-            _scoringLimitLabel.AddThemeFontSizeOverride("font_size", 15);
-            _scoringLimitLabel.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.2f));
-            summaryRow.AddChild(_scoringHanFuLabel);
-            summaryRow.AddChild(_scoringLimitLabel);
-            outerVBox.AddChild(summaryRow);
-            outerVBox.AddChild(new HSeparator());
-
-            // ── Payment rows (rebuilt each win) ──
-            _scoringPayRows = new VBoxContainer();
-            _scoringPayRows.AddThemeConstantOverride("separation", 2);
-            outerVBox.AddChild(_scoringPayRows);
-
-            // ── Total points won ──
-            _scoringTotalWon = new Label();
-            _scoringTotalWon.HorizontalAlignment = HorizontalAlignment.Center;
-            _scoringTotalWon.AddThemeFontSizeOverride("font_size", 22);
-            _scoringTotalWon.AddThemeColorOverride("font_color", new Color(0.3f, 1f, 0.45f));
-            outerVBox.AddChild(_scoringTotalWon);
-            outerVBox.AddChild(new HSeparator());
-
-            // ── All-player score table ──
-            var scoresHeader = new Label { Text = "  Scores After This Hand" };
-            scoresHeader.AddThemeFontSizeOverride("font_size", 13);
-            scoresHeader.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.85f));
-            outerVBox.AddChild(scoresHeader);
-
-            _scoringAllScores = new VBoxContainer();
-            _scoringAllScores.AddThemeConstantOverride("separation", 2);
-            outerVBox.AddChild(_scoringAllScores);
-            outerVBox.AddChild(new HSeparator());
-
-            // ── Bottom button row: Next Hand | Menu ──
-            var btnRow = new HBoxContainer();
-            btnRow.Alignment = BoxContainer.AlignmentMode.Center;
-            btnRow.AddThemeConstantOverride("separation", 16);
-            btnRow.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-
-            _scoringNextBtn = MakeButton("▶  Next Hand", new Color(0.15f, 0.45f, 0.22f));
-            _scoringNextBtn.CustomMinimumSize = new Vector2(190, 46);
-            _scoringNextBtn.Pressed += () => EmitSignal(SignalName.ScoringNextHandPressed);
-
-            _scoringMenuBtn = MakeButton("⬅  Menu", new Color(0.28f, 0.28f, 0.35f));
-            _scoringMenuBtn.CustomMinimumSize = new Vector2(150, 46);
-            _scoringMenuBtn.Pressed += () => EmitSignal(SignalName.ScoringMenuPressed);
-
-            var nextBtn = _scoringNextBtn;
-            var menuBtn = _scoringMenuBtn;
-
-            btnRow.AddChild(nextBtn);
-            btnRow.AddChild(menuBtn);
-            outerVBox.AddChild(btnRow);
-
-            _scoringPanel.AddChild(outerVBox);
-            _scoringBackdrop.AddChild(_scoringPanel);
-            AddChild(_scoringBackdrop);
-        }
-
         /// <summary>
         /// Populate and display the scoring overlay after a Tsumo or Ron win.
         /// Points have already been transferred; this is for display only.
@@ -1443,13 +1403,13 @@ namespace RiichiMahjong.UI
             string[]        allPlayerNames,
             int[]           allPlayerPoints,
             int             winnerSeat,
-            int             dealerSeat)
+            int             dealerSeat,
+            IReadOnlyList<Tile>? winningHand = null)
         {
             // ── Title ──
-            string method = isTsumo ? "Tsumo" : "Ron";
-            _scoringTitle.Text = $"★  {winnerName} wins by {method}!  ★";
-            _scoringTitle.AddThemeColorOverride("font_color",
-                isTsumo ? new Color(0.35f, 1f, 0.45f) : new Color(1f, 0.55f, 0.20f));
+            SetScoringVariant(isTsumo ? ScoringVariant.Tsumo : ScoringVariant.Ron);
+            _scoringTitle.Text = $"{winnerName} wins by {(isTsumo ? "tsumo" : "ron")}".ToUpperInvariant();
+            _scoringTitle.AddThemeColorOverride("font_color", DoloTokens.Ivory);
 
             // ── Yaku rows ──
             foreach (var child in _scoringYakuRows.GetChildren()) child.QueueFree();
@@ -1457,30 +1417,26 @@ namespace RiichiMahjong.UI
             foreach (var y in yaku.Yaku)
             {
                 string fanText = y.IsYakuman ? "Yakuman" : $"{y.Fan} han";
-                Color  fanCol  = y.IsYakuman
-                    ? new Color(1f, 0.85f, 0.2f)
-                    : Colors.White;
+                Color  fanCol  = y.IsYakuman ? DoloTokens.DoraGold : DoloTokens.Ivory;
                 _scoringYakuRows.AddChild(MakeScoringRow(
-                    $"  {y.Name}  ({y.NameJP})", fanText, fanCol));
+                    $"{y.Name}  ({y.NameJP})", fanText, fanCol));
             }
             if (ctx.DoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
-                    "  Dora", $"{ctx.DoraCount} han", new Color(1f, 0.80f, 0.30f)));
+                    "Dora", $"{ctx.DoraCount} han", DoloTokens.DoraGold, goldWedge: true));
             if (ctx.RedDoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
-                    "  Red 5 (aka)", $"{ctx.RedDoraCount} han", new Color(1f, 0.35f, 0.30f)));
+                    "Red 5 (aka)", $"{ctx.RedDoraCount} han", DoloTokens.DoraGold, goldWedge: true));
             if (ctx.IsRiichi && ctx.UraDoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
-                    "  Ura Dora", $"{ctx.UraDoraCount} han", new Color(1f, 0.70f, 0.20f)));
+                    "Ura dora", $"{ctx.UraDoraCount} han", DoloTokens.DoraGold, goldWedge: true));
 
             // ── Han / Fu / Limit summary ──
             bool hasLimit = score.Limit != HandLimit.None;
             _scoringHanFuLabel.Text = hasLimit
-                ? $"  {score.TotalFan} han"
-                : $"  {score.TotalFan} han  {score.Fu.Total} fu";
-            _scoringLimitLabel.Text = hasLimit
-                ? $"— {ScoreCalculator.LimitName(score.Limit)} —"
-                : "";
+                ? $"{score.TotalFan} han"
+                : $"{score.TotalFan} han   {score.Fu.Total} fu";
+            _scoringLimitLabel.Text = hasLimit ? ScoreCalculator.LimitName(score.Limit) : "";
 
             // ── Payment rows ──
             foreach (var child in _scoringPayRows.GetChildren()) child.QueueFree();
@@ -1496,63 +1452,51 @@ namespace RiichiMahjong.UI
                     if (amount <= 0) continue;
                     _scoringPayRows.AddChild(MakeScoringRow(
                         $"  {allPlayerNames[i]} pays:",
-                        $"−{amount:N0}", new Color(1f, 0.6f, 0.6f)));
+                        $"−{amount:N0}", DoloTokens.Negative));
                 }
             }
             else
             {
                 _scoringPayRows.AddChild(MakeScoringRow(
                     $"  {discarderName} pays:",
-                    $"−{score.RonPayment:N0}", new Color(1f, 0.6f, 0.6f)));
+                    $"−{score.RonPayment:N0}", DoloTokens.Negative));
             }
             if (score.CounterBonus > 0)
                 _scoringPayRows.AddChild(MakeScoringRow(
-                    "  Counter bonus:", $"+{score.CounterBonus:N0}",
-                    new Color(0.75f, 0.75f, 0.75f)));
+                    "Honba bonus", $"+{score.CounterBonus:N0}", DoloTokens.BodyText));
             if (score.RiichiBetsWon > 0)
                 _scoringPayRows.AddChild(MakeScoringRow(
-                    "  Riichi sticks:", $"+{score.RiichiBetsWon:N0}",
-                    new Color(1f, 0.90f, 0.30f)));
+                    "Riichi sticks", $"+{score.RiichiBetsWon:N0}", DoloTokens.DoraGold));
 
-            // ── Total points won ──
-            _scoringTotalWon.Text = $"Total: +{score.TotalPointsWon:N0} points";
+            // ── Payout: who pays, the arithmetic, the total ──
+            // The sum is shown the way a player would work it out, so a number that
+            // just changed their score can be checked rather than trusted.
+            string payerLine = isTsumo
+                ? "Tsumo — paid by all three"
+                : $"Ron — paid by {discarderName}";
 
-            // ── All-player score table ──
-            foreach (var child in _scoringAllScores.GetChildren()) child.QueueFree();
-
-            // Wind suffix for each seat relative to dealer
-            string[] windLetters = { "E", "S", "W", "N" };
-
-            // Sort players by points descending so ranking is immediately visible
-            var order = Enumerable.Range(0, 4)
-                .OrderByDescending(i => allPlayerPoints[i])
-                .ToList();
-
-            for (int rank = 0; rank < 4; rank++)
+            var parts = new List<string>();
+            if (isTsumo)
             {
-                int i       = order[rank];
-                int windOff = (i - dealerSeat + 4) % 4;
-                string wind = windLetters[windOff];
-                bool   isWinner = i == winnerSeat;
-
-                // Star prefix for the winner; rank number for others
-                string prefix = isWinner ? "  ★ " : $"  {rank + 1}. ";
-                string label  = $"{prefix}{allPlayerNames[i]}  ({wind})";
-
-                var row = MakeScoringRow(label, $"{allPlayerPoints[i]:N0}",
-                    isWinner ? new Color(0.35f, 1f, 0.45f) : Colors.White);
-
-                // Bold-highlight the winner's row with a faint tinted background
-                if (isWinner)
-                {
-                    var lbl = row.GetChild<Label>(0);
-                    lbl.AddThemeColorOverride("font_color", new Color(0.35f, 1f, 0.45f));
-                }
-
-                _scoringAllScores.AddChild(row);
+                if (score.IsDealer)
+                    parts.Add($"{score.TsumoPaymentOther:N0} x 3");
+                else
+                    parts.Add($"{score.TsumoPaymentEast:N0} + {score.TsumoPaymentOther:N0} x 2");
             }
+            else
+            {
+                parts.Add($"{score.RonPayment:N0}");
+            }
+            if (score.CounterBonus > 0) parts.Add($"{score.CounterBonus:N0} honba");
+            if (score.RiichiBetsWon > 0) parts.Add($"{score.RiichiBetsWon:N0} sticks");
 
-            // Show overlay
+            SetPayout(payerLine, string.Join("  +  ", parts),
+                      $"+{score.TotalPointsWon:N0}", DoloTokens.DoraGold);
+
+            SetWinningHand(winningHand, ctx.WinningTile);
+
+            FillStandings(allPlayerNames, allPlayerPoints, dealerSeat, winnerSeat);
+
             _scoringBackdrop.Visible = true;
         }
 
@@ -1578,10 +1522,9 @@ namespace RiichiMahjong.UI
             int      totalPointsWon)
         {
             // ── Title ──
-            string method = isTsumo ? "Tsumo" : "Ron";
-            _scoringTitle.Text = $"★  {winnerName} wins by {method}!  ★";
-            _scoringTitle.AddThemeColorOverride("font_color",
-                isTsumo ? new Color(0.35f, 1f, 0.45f) : new Color(1f, 0.55f, 0.20f));
+            SetScoringVariant(isTsumo ? ScoringVariant.Tsumo : ScoringVariant.Ron);
+            _scoringTitle.Text = $"{winnerName} wins by {(isTsumo ? "tsumo" : "ron")}".ToUpperInvariant();
+            _scoringTitle.AddThemeColorOverride("font_color", DoloTokens.Ivory);
 
             // ── Yaku rows (with fan counts) ──
             foreach (var child in _scoringYakuRows.GetChildren()) child.QueueFree();
@@ -1590,18 +1533,18 @@ namespace RiichiMahjong.UI
                 bool isYakuman = i < yakuIsYakuman.Length && yakuIsYakuman[i];
                 int  fan       = i < yakuFans.Length ? yakuFans[i] : 0;
                 string fanText = isYakuman ? "Yakuman" : (fan > 0 ? $"{fan} han" : "");
-                Color  fanCol  = isYakuman ? new Color(1f, 0.85f, 0.2f) : Colors.White;
-                _scoringYakuRows.AddChild(MakeScoringRow($"  {yakuNames[i]}", fanText, fanCol));
+                Color  fanCol  = isYakuman ? DoloTokens.DoraGold : DoloTokens.Ivory;
+                _scoringYakuRows.AddChild(MakeScoringRow(yakuNames[i], fanText, fanCol));
             }
             if (doraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
-                    "  Dora", $"{doraCount} han", new Color(1f, 0.80f, 0.30f)));
+                    "Dora", $"{doraCount} han", DoloTokens.DoraGold, goldWedge: true));
             if (redDoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
-                    "  Red 5 (aka)", $"{redDoraCount} han", new Color(1f, 0.35f, 0.30f)));
+                    "Red 5 (aka)", $"{redDoraCount} han", DoloTokens.DoraGold, goldWedge: true));
             if (uraDoraCount > 0)
                 _scoringYakuRows.AddChild(MakeScoringRow(
-                    "  Ura Dora", $"{uraDoraCount} han", new Color(1f, 0.70f, 0.20f)));
+                    "Ura dora", $"{uraDoraCount} han", DoloTokens.DoraGold, goldWedge: true));
 
             // ── Han / Fu / Limit ──
             // Derive limit from total han (mirrors ScoreCalculator.ClassifyLimit)
@@ -1609,40 +1552,28 @@ namespace RiichiMahjong.UI
             string limitName = isYakumanHand ? (han >= 26 ? "Double Yakuman" : "Yakuman")
                 : han switch { >= 11 => "Sanbaiman", >= 8 => "Baiman", >= 6 => "Haneman", >= 5 => "Mangan", _ => "" };
             bool hasLimit = !string.IsNullOrEmpty(limitName);
-            _scoringHanFuLabel.Text = hasLimit
-                ? $"  {han} han"
-                : $"  {han} han  {fu} fu";
-            _scoringLimitLabel.Text = hasLimit ? $"— {limitName} —" : "";
+            _scoringHanFuLabel.Text = hasLimit ? $"{han} han" : $"{han} han   {fu} fu";
+            _scoringLimitLabel.Text = hasLimit ? limitName : "";
 
-            // ── Payment ──
+            // ── Payout ──
+            // The server sends the settled total rather than its parts, so the
+            // arithmetic here is what the client can honestly show: the sum itself.
             foreach (var child in _scoringPayRows.GetChildren()) child.QueueFree();
             if (!isTsumo && !string.IsNullOrEmpty(payerName) && totalPointsWon > 0)
                 _scoringPayRows.AddChild(MakeScoringRow(
-                    $"  {payerName} pays:",
-                    $"−{totalPointsWon:N0}", new Color(1f, 0.6f, 0.6f)));
+                    $"{payerName} pays", $"−{totalPointsWon:N0}", DoloTokens.Negative));
 
-            // ── Total ──
-            _scoringTotalWon.Text = totalPointsWon > 0
-                ? $"Total: +{totalPointsWon:N0} points" : "";
+            SetPayout(
+                isTsumo ? "Tsumo — paid by all three"
+                        : $"Ron — paid by {payerName}",
+                $"{han} han" + (hasLimit ? $" · {limitName}" : $" · {fu} fu"),
+                totalPointsWon > 0 ? $"+{totalPointsWon:N0}" : "",
+                DoloTokens.DoraGold);
 
-            // ── All-player scores, sorted by points ──
-            foreach (var child in _scoringAllScores.GetChildren()) child.QueueFree();
-            string[] windLetters = { "E", "S", "W", "N" };
-            var order = Enumerable.Range(0, allNames.Length)
-                                  .OrderByDescending(i => allPoints[i])
-                                  .ToList();
-            for (int rank = 0; rank < order.Count; rank++)
-            {
-                int    i       = order[rank];
-                int    windOff = (i - dealerSeat + 4) % 4;
-                string wind    = windLetters[Math.Min(windOff, 3)];
-                bool   isWin   = i == winnerSeat;
-                string prefix  = isWin ? "  ★ " : $"  {rank + 1}. ";
-                _scoringAllScores.AddChild(MakeScoringRow(
-                    $"{prefix}{allNames[i]}  ({wind})",
-                    $"{allPoints[i]:N0}",
-                    isWin ? new Color(0.35f, 1f, 0.45f) : Colors.White));
-            }
+            // No hand data over the wire, so this layout has no tile row to show.
+            SetWinningHand(null, null);
+
+            FillStandings(allNames, allPoints, dealerSeat, winnerSeat);
 
             _scoringBackdrop.Visible = true;
         }

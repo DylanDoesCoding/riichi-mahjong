@@ -77,6 +77,8 @@ namespace RiichiMahjong.UI
 
         // Best chi combo pre-computed when claim window opens
         private (Tile t1, Tile t2)? _netChiCombo;
+        private List<(Tile t1, Tile t2)>? _netChiOptions;
+        private Tile? _netPendingClaimTile;
 
         // Minimal AI helper used only for chi-combo / riichi-candidate checks in network mode
         private readonly AIPlayer _helperAi = new(AIDifficulty.Medium);
@@ -160,11 +162,19 @@ namespace RiichiMahjong.UI
             _playerHand.TileHovered   += OnHandTileHovered;
             _playerHand.TileUnhovered += OnHandTileUnhovered;
 
+            // Touch: the card's DISCARD button is the second tap, and tapping bare felt
+            // clears the selection rather than leaving a tile stranded mid-lift.
+            _hud.TouchDiscardPressed += () => _playerHand.CommitSelection();
+            HookFeltTapToClearSelection();
+            ApplyHandLayout();
+            ApplyCosmetics();
+
             _hud.RiichiPressed          += OnHumanRiichi;
             _hud.TsumoPressed           += OnHumanTsumo;
             _hud.RonPressed             += OnHumanRon;
             _hud.PonPressed             += OnHumanPon;
             _hud.ChiPressed             += OnHumanChi;
+            _hud.ChiVariantChosen       += OnChiVariantChosen;
             _hud.KanPressed             += OnHumanKan;
             _hud.PassPressed            += OnHumanPass;
             _hud.KyuushuPressed         += OnHumanKyuushu;
@@ -556,13 +566,21 @@ namespace RiichiMahjong.UI
             _hud.ShowClaimButtons(canRon: canRon, canPon: canPon, canChi: canChi, canKan: canKan);
             _hud.HighlightLastDiscard(ToVisualSeat(discarderSeat));
 
-            // Pre-compute best chi combo so CHI button just sends it
-            _netChiCombo = null;
+            // Pre-compute the chi interpretations. Keeping all of them means the CHI
+            // button can open the picker when the choice is real, rather than the
+            // client deciding the player's hand shape for them.
+            _netChiCombo         = null;
+            _netChiOptions       = null;
+            _netPendingClaimTile = tile;
             if (canChi)
             {
-                var hand  = NetBuildHand();
-                var combo = _helperAi.BestChiCombination(tile, hand);
-                if (combo != null) _netChiCombo = combo;
+                var hand    = NetBuildHand();
+                var options = _helperAi.AllChiCombinations(tile, hand);
+                if (options.Count > 0)
+                {
+                    _netChiOptions = options;
+                    _netChiCombo   = options[0];
+                }
             }
 
             // Highlight the hand tiles involved in the potential meld
@@ -574,6 +592,7 @@ namespace RiichiMahjong.UI
                 _playerHand.HighlightClaimTiles(new[] { tile, tile, tile });
 
             _hud.SetStatus(canRon ? "RON available! Click RON or PASS." : "Claim window — act or PASS.");
+            _hud.SetCountdownTile(ToVisualSeat(discarderSeat));
             StartActionCountdown(isClaim: true);
         }
 
@@ -751,12 +770,16 @@ namespace RiichiMahjong.UI
             foreach (var e in scoreBoard)
                 if (e.Seat >= 0 && e.Seat < 4) points[e.Seat] = e.Points;
 
-            _hud.ShowGameOverPanel(
-                reason:        "Game over",
-                playerNames:   _netNames,
-                playerPoints:  points,
-                dealerSeat:    _netDealerSeat,
-                showPlayAgain: false);
+            // Network games reach the same results screen. Placement, uma and oka depend
+            // only on the final scores, so those are exact; the per-hand log and the
+            // trajectory stay empty until the protocol carries the match record, and the
+            // screen shows what it can vouch for rather than inventing a history.
+            var netRecord = new MatchRecord(_netNames);
+            MatchResultsHandoff.Record    = netRecord;
+            MatchResultsHandoff.Results   = netRecord.Settle(points);
+            MatchResultsHandoff.LocalSeat = NetworkManager.Instance?.LocalSeat ?? -1;
+
+            GetTree().ChangeSceneToFile("res://Scenes/Results.tscn");
         }
 
         private void Net_OnDisconnected()
@@ -1357,8 +1380,112 @@ namespace RiichiMahjong.UI
 
         private void OnHandTileUnhovered()
         {
+            // On touch the selection persists until the player taps elsewhere, so a
+            // pointer-exit must not tear the card down mid-decision.
+            if (DoloLayout.IsTouch) return;
+
             _hud.SetDiscardMatchHighlights(null);
             _hud.HideTileInfo();
+        }
+
+        /// <summary>
+        /// Dress each seat's wedge with that player's cosmetic set.
+        ///
+        /// A set belongs to the player, not to a position, so it is mapped through
+        /// ToVisualSeat: every client rotates the seats to put itself at the bottom, and
+        /// the same player must still be recognisable on all four screens.
+        ///
+        /// In network games the sets arrive with gameStarted. Solo games use the local
+        /// player's own set for their seat and a deterministic one per CPU index, so a
+        /// table always looks like four people rather than one player and three blanks.
+        /// </summary>
+        private void ApplyCosmetics()
+        {
+            var felt = GetNodeOrNull<TableFelt>("UI/TableFelt");
+            if (felt == null) return;
+
+            var fromServer = NetworkManager.Instance?.SeatCosmetics ?? System.Array.Empty<string>();
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                CosmeticSet set;
+
+                if (_isNetworkMode && seat < fromServer.Length)
+                    set = CosmeticSet.Deserialise(fromServer[seat]);
+                else if (seat == _humanSeat)
+                    set = GameSettings.CosmeticSet;
+                else
+                    set = CosmeticSet.ForCpuSeat(seat);
+
+                CosmeticVisuals.ApplyToFelt(felt, ToVisualSeat(seat), set);
+            }
+        }
+
+        /// <summary>
+        /// Size the four hand strips from the active layout. The scene's offsets were
+        /// written for one fixed tile size; now that a cell is taller than its artwork
+        /// (to absorb the lift) and differs between desktop and touch, the strips have
+        /// to be measured rather than hard-coded.
+        /// </summary>
+        private void ApplyHandLayout()
+        {
+            var cell     = DoloLayout.HandCell;
+            var sideTile = DoloLayout.SideTile;
+            bool touch   = DoloLayout.IsTouch;
+
+            // Bottom: the player's own hand. On a phone the score chip sits beside it,
+            // so the strip stops short of the right edge — 14 cells still fit.
+            _playerHand.OffsetTop    = -(cell.Y + 10);
+            _playerHand.OffsetBottom = -10;
+            _playerHand.OffsetLeft   = touch ? 4    : 180;
+            _playerHand.OffsetRight  = touch ? -136 : -10;
+
+            var topHand = GetNodeOrNull<Control>("UI/TopHand");
+            if (topHand != null)
+            {
+                topHand.OffsetTop    = 8;
+                topHand.OffsetBottom = 8 + sideTile.Y;
+                topHand.OffsetLeft   = touch ? 120  : 180;
+                topHand.OffsetRight  = touch ? -120 : -180;
+            }
+
+            SizeSideHand(GetNodeOrNull<Control>("UI/LeftHand"),  sideTile, fromLeft: true);
+            SizeSideHand(GetNodeOrNull<Control>("UI/RightHand"), sideTile, fromLeft: false);
+        }
+
+        private static void SizeSideHand(Control? hand, Vector2I sideTile, bool fromLeft)
+        {
+            if (hand == null) return;
+
+            float span = sideTile.Y * 7f;   // half a hand's worth of stacked tiles
+            hand.OffsetTop    = -span;
+            hand.OffsetBottom =  span;
+
+            if (fromLeft) { hand.OffsetLeft = 6;              hand.OffsetRight = 6 + sideTile.X; }
+            else          { hand.OffsetLeft = -(6 + sideTile.X); hand.OffsetRight = -6; }
+        }
+
+        /// <summary>
+        /// Tapping bare felt clears a touch selection. Without this the only ways out of
+        /// a selection are discarding it or picking another tile, which makes an
+        /// accidental tap feel like a trap.
+        /// </summary>
+        private void HookFeltTapToClearSelection()
+        {
+            var background = GetNodeOrNull<Control>("UI/Background");
+            if (background == null) return;
+
+            background.MouseFilter = Control.MouseFilterEnum.Stop;
+            background.GuiInput += @event =>
+            {
+                bool tapped = @event is InputEventMouseButton { Pressed: true }
+                           or InputEventScreenTouch { Pressed: true };
+                if (!tapped) return;
+
+                _playerHand.ClearSelection();
+                _hud.SetDiscardMatchHighlights(null);
+                _hud.HideTileInfo();
+            };
         }
 
         private static string TileLabel(Tile t) => t.Suit switch
@@ -1636,7 +1763,7 @@ namespace RiichiMahjong.UI
         /// No tenpai payments — the hand is simply discarded. Treat it like an
         /// all-no-ten ryuukyoku so the panel infrastructure is reused.
         /// </summary>
-        private void ShowAbortiveDrawPanel()
+        private void ShowAbortiveDrawPanel(string reason = "Abortive draw")
         {
             var names  = new string[4];
             var points = new int[4];
@@ -1650,14 +1777,15 @@ namespace RiichiMahjong.UI
             // Reuse the ryuukyoku panel with no-tenpai for everyone (no payments, no waits shown)
             _hud.ShowRyuukyokuPanel(
                 names, points, ToVisualSeat(_game.DealerIndex),
-                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(),
+                new int[4], reason);
         }
 
         /// <summary>
         /// Network-mode equivalent of <see cref="ShowAbortiveDrawPanel"/>.
         /// Uses <see cref="_netNames"/> / <see cref="_netScores"/> since <c>_game</c> is null.
         /// </summary>
-        private void ShowAbortiveDrawPanelNet()
+        private void ShowAbortiveDrawPanelNet(string reason = "Abortive draw")
         {
             var names  = new string[4];
             var points = new int[4];
@@ -1669,7 +1797,8 @@ namespace RiichiMahjong.UI
             }
             _hud.ShowRyuukyokuPanel(
                 names, points, ToVisualSeat(_netDealerSeat),
-                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(), new int[4]);
+                new bool[4], new List<Tile>[4].Select(_ => new List<Tile>()).ToArray(),
+                new int[4], reason);
         }
 
         private void ShowScoringOverlay(HandEndReason reason, int winnerSeat)
@@ -1689,7 +1818,8 @@ namespace RiichiMahjong.UI
             _hud.ShowScoringPanel(
                 score, yaku, ctx,
                 winnerName, isTsumo, discarderName,
-                allNames, allPoints, winnerSeat, _game.DealerIndex);
+                allNames, allPoints, winnerSeat, _game.DealerIndex,
+                winningHand: _game.Players[winnerSeat].Hand.ClosedTiles.ToList());
         }
 
         private void OnGameOver()
@@ -1701,12 +1831,15 @@ namespace RiichiMahjong.UI
 
             SoundManager.Instance?.Play(Sound.GameOver);
             _hud.SetStatus("");
-            _hud.ShowGameOverPanel(
-                reason:        _game.GameOverReason,
-                playerNames:   _game.Players.Select(p => p.Name).ToArray(),
-                playerPoints:  _game.Players.Select(p => p.Points).ToArray(),
-                dealerSeat:    _game.DealerIndex,
-                showPlayAgain: true);
+
+            // The end of a game now goes to the results screen (pass 09) rather than to
+            // a list of four totals on an overlay.
+            var finalScores = _game.Players.Select(p => p.Points).ToArray();
+            MatchResultsHandoff.Record    = _game.Match;
+            MatchResultsHandoff.Results   = _game.Match.Settle(finalScores);
+            MatchResultsHandoff.LocalSeat = _humanSeat;
+
+            GetTree().ChangeSceneToFile("res://Scenes/Results.tscn");
         }
 
         // =====================================================================
@@ -1715,6 +1848,16 @@ namespace RiichiMahjong.UI
 
         private void OnHumanTileSelected(TileNode tile)
         {
+            // Touch has no hover, so the first tap does the work hover does on desktop:
+            // highlight the matching tiles and open the info card (pass 03).
+            if (DoloLayout.IsTouch)
+            {
+                OnHandTileHovered(tile);
+                _hud.SetTouchDiscardEnabled(
+                    !_riichiMode ||
+                    (tile.TileData != null && _riichiCandidates.Any(c => c == tile.TileData)));
+            }
+
             if (_riichiMode)
             {
                 if (tile.TileData != null && _riichiCandidates.Any(c => c == tile.TileData))
@@ -1888,6 +2031,14 @@ namespace RiichiMahjong.UI
             if (_isNetworkMode)
             {
                 if (_netChiCombo == null) { _hud.SetStatus("No valid chi."); return; }
+
+                if (_netChiOptions is { Count: > 1 } && _netPendingClaimTile != null)
+                {
+                    _pendingChiOptions = _netChiOptions;
+                    _hud.ShowChiPicker(_netChiOptions, _netPendingClaimTile);
+                    return;
+                }
+
                 StopActionCountdown();
                 NetworkManager.Instance?.SendChi(_netChiCombo.Value.t1, _netChiCombo.Value.t2);
                 _netChiCombo = null;
@@ -1898,11 +2049,52 @@ namespace RiichiMahjong.UI
             }
 
             if (_game.PendingDiscard == null) return;
-            var combo = _ai[_humanSeat].BestChiCombination(
+
+            var options = _ai[_humanSeat].AllChiCombinations(
                 _game.PendingDiscard, _game.Players[_humanSeat].Hand);
-            if (combo == null) { _hud.SetStatus("No valid chi."); return; }
-            if (!_game.ClaimChi(_humanSeat, combo.Value.t1, combo.Value.t2))
+            if (options.Count == 0) { _hud.SetStatus("No valid chi."); return; }
+
+            // More than one interpretation is a real choice about hand shape, so the
+            // player makes it rather than the client picking the lowest shanten.
+            if (options.Count > 1)
+            {
+                _pendingChiOptions = options;
+                _hud.ShowChiPicker(options, _game.PendingDiscard);
+                return;
+            }
+
+            CommitChi(options[0]);
+        }
+
+        private List<(Tile t1, Tile t2)>? _pendingChiOptions;
+
+        /// <summary>Apply the chi the player picked from the variant window.</summary>
+        private void OnChiVariantChosen(int variantIndex)
+        {
+            var options = _pendingChiOptions;
+            _pendingChiOptions = null;
+            if (options == null || variantIndex < 0 || variantIndex >= options.Count) return;
+
+            if (_isNetworkMode)
+            {
+                var pick = options[variantIndex];
+                StopActionCountdown();
+                NetworkManager.Instance?.SendChi(pick.t1, pick.t2);
+                _netChiCombo = null;
+                _playerHand.ClearClaimTileHighlights();
+                _hud.HideClaimButtons();
+                _hud.SetStatus("Chi declared — waiting for server…");
+                return;
+            }
+
+            CommitChi(options[variantIndex]);
+        }
+
+        private void CommitChi((Tile t1, Tile t2) combo)
+        {
+            if (!_game.ClaimChi(_humanSeat, combo.t1, combo.t2))
                 { _hud.SetStatus("Cannot chi."); return; }
+
             _claimWindowActive = false;
             _playerHand.ClearClaimTileHighlights();
             _hud.HideClaimButtons();
@@ -2111,6 +2303,7 @@ namespace RiichiMahjong.UI
                 _hud.ShowClaimButtons(canRon: humanRon, canPon: humanPon,
                                       canChi: humanChi, canKan: humanKan);
                 _hud.HighlightLastDiscard(ToVisualSeat(discarderIndex));
+                _hud.SetCountdownTile(ToVisualSeat(discarderIndex));
 
                 if (humanPon)
                     _playerHand.HighlightClaimTiles(new[] { tile, tile });
