@@ -50,6 +50,20 @@ namespace RiichiMahjong.UI
         /// <summary>WebSocket server URL for multiplayer. Defaults to the live Render server.</summary>
         public static string ServerUrl { get; set; } = "wss://riichi-mahjong-server.onrender.com/ws";
 
+        // ---- Cosmetics -------------------------------------------------------
+
+        /// <summary>
+        /// The local player's chosen cosmetic set, in wire form.
+        /// Guests keep the free set here and only here. Signed-in players have theirs
+        /// stored on the account as well, so it follows them to another device; this
+        /// stays as the local mirror so the table can be drawn before the server replies.
+        /// </summary>
+        public static string Cosmetics { get; set; } = "";
+
+        /// <summary>The same set, parsed and validated against the catalogue.</summary>
+        public static RiichiMahjong.Core.CosmeticSet CosmeticSet
+            => RiichiMahjong.Core.CosmeticSet.Deserialise(Cosmetics);
+
         // ---- Account ---------------------------------------------------------
 
         /// <summary>Signed session token from the server (empty = not logged in).
@@ -79,6 +93,8 @@ namespace RiichiMahjong.UI
             SfxVolume     = configExists ? (float) cfg.GetValue("audio",   "sfx",        1.0f) : 1.0f;
             AuthToken     = configExists ? (string)cfg.GetValue("account", "token",      "") : "";
             AuthUsername  = configExists ? (string)cfg.GetValue("account", "username",   "") : "";
+
+            Cosmetics = configExists ? (string)cfg.GetValue("cosmetics", "set", "") : "";
 
             LayoutPreference = configExists
                 ? (LayoutPreference)(int)cfg.GetValue("display", "layout", (int)LayoutPreference.Auto)
@@ -112,6 +128,7 @@ namespace RiichiMahjong.UI
             cfg.SetValue("audio",   "sfx",        SfxVolume);
             cfg.SetValue("account", "token",      AuthToken);
             cfg.SetValue("account", "username",   AuthUsername);
+            cfg.SetValue("cosmetics", "set",      Cosmetics);
             cfg.Save(ConfigPath);
         }
 

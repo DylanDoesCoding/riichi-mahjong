@@ -154,5 +154,22 @@ namespace RiichiServer.Auth
                 break;
             }
         }
+
+        // ---- Cosmetics -------------------------------------------------------
+
+        private readonly Dictionary<long, string> _cosmetics = new();
+
+        public Task<string?> GetCosmeticsAsync(long accountId)
+        {
+            lock (_lock)
+                return Task.FromResult(_cosmetics.TryGetValue(accountId, out var set) ? set : null);
+        }
+
+        public Task SetCosmeticsAsync(long accountId, string cosmetics)
+        {
+            lock (_lock) _cosmetics[accountId] = cosmetics;
+            return Task.CompletedTask;
+        }
+
     }
 }

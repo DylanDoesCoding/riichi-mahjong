@@ -36,6 +36,13 @@ namespace RiichiServer
         public string      PlayerUuid  { get; set; } = ""; // Client-provided UUID (for reconnection)
         public string      DisplayName { get; set; } = "Player";
         public long?       AccountId   { get; set; }       // Set when a valid session token is presented
+
+        /// <summary>
+        /// This player's cosmetic set in wire form, relayed to every client at game
+        /// start. Loaded from the account when one is present; guests send nothing and
+        /// get the default set, which keeps sign-in optional.
+        /// </summary>
+        public string      Cosmetics   { get; set; } = "";
         public int         Seat        { get; set; } = -1;
         public bool        IsAlive     => _ws.State == WebSocketState.Open;
 

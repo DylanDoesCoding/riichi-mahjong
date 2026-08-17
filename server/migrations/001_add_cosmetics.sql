@@ -1,0 +1,26 @@
+-- =============================================================================
+-- 001_add_cosmetics.sql
+-- Adds per-account cosmetic storage for the quadrant customisation feature.
+--
+-- You do NOT normally need to run this by hand. PostgresAccountStore.InitAsync
+-- applies the same ALTER on every server boot, and it is idempotent, so a
+-- normal deploy migrates itself. This file exists for the case where you want
+-- the column in place before the new server rolls out, or where you are
+-- inspecting the schema change on its own.
+--
+-- Safe to run repeatedly. Adds one nullable column and takes no locks beyond a
+-- brief ACCESS EXCLUSIVE on accounts, which is instant for a nullable column
+-- with no default in PostgreSQL 11+.
+--
+-- Format: "surface|frame|prop|emblem", e.g. "tatami|brass|ashtray|crescent".
+-- NULL means the player has never chosen a set and should get the defaults.
+-- The server validates every id against the shared catalogue before storing,
+-- so an unrecognised value never reaches this column.
+--
+-- Note on RLS: public.accounts has row-level security enabled with zero
+-- policies, and the server connects as postgres, which bypasses RLS. That is
+-- deliberate. Do not add a permissive policy to "make this work" - nothing
+-- here needs one.
+-- =============================================================================
+
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cosmetics TEXT;

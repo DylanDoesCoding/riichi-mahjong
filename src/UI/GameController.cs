@@ -167,6 +167,7 @@ namespace RiichiMahjong.UI
             _hud.TouchDiscardPressed += () => _playerHand.CommitSelection();
             HookFeltTapToClearSelection();
             ApplyHandLayout();
+            ApplyCosmetics();
 
             _hud.RiichiPressed          += OnHumanRiichi;
             _hud.TsumoPressed           += OnHumanTsumo;
@@ -1385,6 +1386,39 @@ namespace RiichiMahjong.UI
 
             _hud.SetDiscardMatchHighlights(null);
             _hud.HideTileInfo();
+        }
+
+        /// <summary>
+        /// Dress each seat's wedge with that player's cosmetic set.
+        ///
+        /// A set belongs to the player, not to a position, so it is mapped through
+        /// ToVisualSeat: every client rotates the seats to put itself at the bottom, and
+        /// the same player must still be recognisable on all four screens.
+        ///
+        /// In network games the sets arrive with gameStarted. Solo games use the local
+        /// player's own set for their seat and a deterministic one per CPU index, so a
+        /// table always looks like four people rather than one player and three blanks.
+        /// </summary>
+        private void ApplyCosmetics()
+        {
+            var felt = GetNodeOrNull<TableFelt>("UI/TableFelt");
+            if (felt == null) return;
+
+            var fromServer = NetworkManager.Instance?.SeatCosmetics ?? System.Array.Empty<string>();
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                CosmeticSet set;
+
+                if (_isNetworkMode && seat < fromServer.Length)
+                    set = CosmeticSet.Deserialise(fromServer[seat]);
+                else if (seat == _humanSeat)
+                    set = GameSettings.CosmeticSet;
+                else
+                    set = CosmeticSet.ForCpuSeat(seat);
+
+                CosmeticVisuals.ApplyToFelt(felt, ToVisualSeat(seat), set);
+            }
         }
 
         /// <summary>

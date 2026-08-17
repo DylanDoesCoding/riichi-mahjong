@@ -23,6 +23,7 @@ namespace RiichiServer.Messages
         public string?   NewPassword { get; set; }   // ChangePassword, ResetPassword
         public string?   Email       { get; set; }   // SetEmail
         public string?   ResetCode   { get; set; }   // ResetPassword — 6-digit emailed code
+        public string?   Cosmetics   { get; set; }   // SetCosmetics — "surface|frame|prop|emblem"
 
         // ---- Game action fields -------------------------------------------------
         public TileDto?  Tile        { get; set; }   // Discard, Riichi, Ankan
@@ -56,5 +57,6 @@ namespace RiichiServer.Messages
         public const string RequestReset   = "requestReset";   // username → emails a reset code
         public const string ResetPassword  = "resetPassword";  // username + code + new password
         public const string GetLeaderboard = "getLeaderboard"; // top accounts by wins
+        public const string SetCosmetics   = "setCosmetics";   // token + cosmetic set to store
     }
 }

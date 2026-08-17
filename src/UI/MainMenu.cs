@@ -58,12 +58,14 @@ namespace RiichiMahjong.UI
             _centrePanel = GetNode<Control>("CentrePanel");
             var playBtn        = GetNode<Button>("CentrePanel/PlayButton");
             var multiplayerBtn = GetNode<Button>("CentrePanel/MultiplayerButton");
+            var tableBtn       = GetNode<Button>("CentrePanel/TableButton");
             var optionsBtn     = GetNode<Button>("CentrePanel/OptionsButton");
             var quitBtn        = GetNode<Button>("CentrePanel/QuitButton");
             _quickPlayBtn      = GetNode<Button>("CentrePanel/QuickPlayButton");
 
             playBtn.Pressed        += OnPlayPressed;
             multiplayerBtn.Pressed += OnMultiplayerPressed;
+            tableBtn.Pressed       += OnYourTablePressed;
             optionsBtn.Pressed     += OnOptionsPressed;
             quitBtn.Pressed        += OnQuitPressed;
             _quickPlayBtn.Pressed  += OnQuickPlayPressed;
@@ -72,6 +74,7 @@ namespace RiichiMahjong.UI
             DoloWidgets.DecorateButton(playBtn,        DoloIcon.Play,   DoloTheme.ButtonPrimary);
             DoloWidgets.DecorateButton(multiplayerBtn, DoloIcon.Globe);
             DoloWidgets.DecorateButton(_quickPlayBtn,  DoloIcon.Bolt);
+            DoloWidgets.DecorateButton(tableBtn,       DoloIcon.Tile,  DoloTheme.ButtonGhost, 18);
             DoloWidgets.DecorateButton(optionsBtn,     DoloIcon.Gear,  DoloTheme.ButtonGhost, 18);
             DoloWidgets.DecorateButton(quitBtn,        DoloIcon.Close, DoloTheme.ButtonGhost, 18);
 
@@ -139,6 +142,16 @@ namespace RiichiMahjong.UI
         }
 
         private void OnQuitPressed() => GetTree().Quit();
+
+        /// <summary>
+        /// The cosmetics picker. It is a menu entry rather than a Settings row because
+        /// making the table yours is the product, not a preference.
+        /// </summary>
+        private void OnYourTablePressed()
+        {
+            _musicPlayer.Stop();
+            GetTree().ChangeSceneToFile("res://Scenes/Cosmetics.tscn");
+        }
 
         private void OnOptionsPressed()
         {

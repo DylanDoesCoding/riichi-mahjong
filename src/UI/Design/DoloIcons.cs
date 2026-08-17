@@ -187,25 +187,23 @@ namespace RiichiMahjong.UI
             }
         }
 
+        /// <summary>
+        /// The crescent is a thick partial arc rather than a filled polygon.
+        ///
+        /// The obvious construction - trace the outer edge, then return along an inner
+        /// arc offset to one side - produces a self-intersecting polygon whenever the
+        /// offset pushes the inner arc past the outer arc's endpoints, and Godot's
+        /// triangulator rejects it. A stroked arc gives the same shape and cannot fail.
+        /// </summary>
         private void DrawCrescent(Vector2 origin, float side)
         {
-            var outer = new System.Collections.Generic.List<Vector2>();
             var centre = origin + new Vector2(side * 0.5f, side * 0.5f);
 
-            // Outer edge, then back along an inner arc offset to one side.
-            for (int i = 0; i <= 24; i++)
-            {
-                float t = Mathf.Pi * 0.35f + i * (Mathf.Pi * 1.3f / 24f);
-                outer.Add(centre + new Vector2(Mathf.Cos(t), Mathf.Sin(t)) * side * 0.36f);
-            }
-            for (int i = 24; i >= 0; i--)
-            {
-                float t = Mathf.Pi * 0.35f + i * (Mathf.Pi * 1.3f / 24f);
-                outer.Add(centre + new Vector2(side * 0.12f, -side * 0.04f)
-                                 + new Vector2(Mathf.Cos(t), Mathf.Sin(t)) * side * 0.32f);
-            }
+            // Roughly 250 degrees, open towards the upper right.
+            const float start = Mathf.Pi * 0.30f;
+            const float sweep = Mathf.Pi * 1.40f;
 
-            DrawColoredPolygon(outer.ToArray(), _color);
+            DrawArc(centre, side * 0.30f, start, start + sweep, 32, _color, side * 0.20f);
         }
     }
 

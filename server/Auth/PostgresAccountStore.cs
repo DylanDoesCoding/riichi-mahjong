@@ -66,6 +66,7 @@ namespace RiichiServer.Auth
                 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_lc      TEXT;
                 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS steam_id      TEXT;
                 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 0;
+                ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cosmetics     TEXT;
                 CREATE UNIQUE INDEX IF NOT EXISTS accounts_email_lc_idx
                     ON accounts (email_lc) WHERE email_lc IS NOT NULL;
                 CREATE UNIQUE INDEX IF NOT EXISTS accounts_steam_id_idx
@@ -248,5 +249,26 @@ namespace RiichiServer.Auth
             cmd.Parameters.AddWithValue("id", accountId);
             await cmd.ExecuteNonQueryAsync();
         }
+
+        // ---- Cosmetics -------------------------------------------------------
+
+        public async Task<string?> GetCosmeticsAsync(long accountId)
+        {
+            const string sql = "SELECT cosmetics FROM accounts WHERE id = @id;";
+            await using var cmd = _db.CreateCommand(sql);
+            cmd.Parameters.AddWithValue("id", accountId);
+            var value = await cmd.ExecuteScalarAsync();
+            return value as string;
+        }
+
+        public async Task SetCosmeticsAsync(long accountId, string cosmetics)
+        {
+            const string sql = "UPDATE accounts SET cosmetics = @c WHERE id = @id;";
+            await using var cmd = _db.CreateCommand(sql);
+            cmd.Parameters.AddWithValue("c", cosmetics);
+            cmd.Parameters.AddWithValue("id", accountId);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
     }
 }
