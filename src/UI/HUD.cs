@@ -94,8 +94,8 @@ namespace RiichiMahjong.UI
         private Tween?    _callOverlayTween  = null;  // so we can kill any in-flight animation
 
         // Scoring overlay — shown after a Tsumo or Ron win, and reused for Game Over
-        private ColorRect     _scoringBackdrop   = null!;
-        private Panel         _scoringPanel      = null!;
+        private ColorRect       _scoringBackdrop  = null!;
+        private PanelContainer  _scoringPanel     = null!;
         private Label         _scoringTitle      = null!;
         private VBoxContainer _scoringYakuRows   = null!;
         private Label         _scoringHanFuLabel = null!;
@@ -1037,15 +1037,20 @@ namespace RiichiMahjong.UI
             bar.Alignment    = BoxContainer.AlignmentMode.Center;
             bar.AddThemeConstantOverride("separation", 8);
 
-            _btnRiichi  = MakeButton("RIICHI",    new Color(0.8f, 0.2f, 0.2f));
-            _btnTsumo   = MakeButton("TSUMO",     new Color(0.2f, 0.6f, 0.2f));
-            _btnRon     = MakeButton("RON",       new Color(0.8f, 0.4f, 0.1f));
-            _btnPon     = MakeButton("PON",       new Color(0.2f, 0.4f, 0.8f));
-            _btnChi     = MakeButton("CHI",       new Color(0.5f, 0.2f, 0.7f));
-            _btnKan     = MakeButton("KAN",       new Color(0.6f, 0.3f, 0.0f));
-            _btnPass    = MakeButton("PASS",      new Color(0.4f, 0.4f, 0.4f));
-            _btnNext    = MakeButton("NEXT HAND →", new Color(0.2f, 0.6f, 0.4f));
-            _btnKyuushu = MakeButton("KYUUSHU",   new Color(0.3f, 0.5f, 0.6f));
+            // The calls keep five distinguishable hues (pass 10: colour is decoration,
+            // the calls are ranked by position and label) but re-tinted into the Dolo
+            // palette - warm, earthy, muted - instead of the old cobalt / magenta / orange
+            // that read as pasted in from another application. RON, the win, carries the
+            // gold; the melds sit on clay / plum / teal; PASS recedes; RIICHI is oxblood.
+            _btnRiichi  = MakeButton("RIICHI",      new Color("#a8463d"));  // oxblood - the commitment
+            _btnTsumo   = MakeButton("TSUMO",       new Color("#6f9463"));  // jade - the self-draw win
+            _btnRon     = MakeButton("RON",         new Color("#cf9a4b"));  // brass-gold - the prize call
+            _btnPon     = MakeButton("PON",         new Color("#b3663f"));  // terracotta
+            _btnChi     = MakeButton("CHI",         new Color("#8f6a86"));  // dusty plum
+            _btnKan     = MakeButton("KAN",         new Color("#4f7f86"));  // muted teal-slate
+            _btnPass    = MakeButton("PASS",        new Color("#4a423b"));  // recessive warm grey
+            _btnNext    = MakeButton("NEXT HAND →", new Color("#b98f4f"));  // calm brass - continue
+            _btnKyuushu = MakeButton("KYUUSHU",     new Color("#5b6b80"));  // muted steel blue
 
             _btnRiichi.Pressed   += () => EmitSignal(SignalName.RiichiPressed);
             _btnTsumo.Pressed    += () => EmitSignal(SignalName.TsumoPressed);
@@ -1582,7 +1587,7 @@ namespace RiichiMahjong.UI
         public void HideScoringPanel()
         {
             _scoringBackdrop.Visible = false;
-            _scoringNextBtn.Text    = "▶  Next Hand";  // Restore from any "Play Again" state
+            DoloWidgets.SetIconButtonText(_scoringNextBtn, "Next Hand");  // Restore from any "Play Again" state
             _scoringNextBtn.Visible  = true;
             foreach (var child in _scoringYakuRows.GetChildren())  child.QueueFree();
             foreach (var child in _scoringPayRows.GetChildren())   child.QueueFree();
@@ -1681,7 +1686,7 @@ namespace RiichiMahjong.UI
             // ── Buttons: "Play Again" for local, hidden in network ──
             if (showPlayAgain)
             {
-                _scoringNextBtn.Text    = "▶  Play Again";
+                DoloWidgets.SetIconButtonText(_scoringNextBtn, "Play Again");
                 _scoringNextBtn.Visible = true;
             }
             else
@@ -1796,19 +1801,29 @@ namespace RiichiMahjong.UI
             btn.CustomMinimumSize = new Vector2(90, 44);
             btn.AddThemeFontSizeOverride("font_size", 14);
 
-            var style = new StyleBoxFlat();
-            style.BgColor               = color;
-            style.CornerRadiusTopLeft     = 6;
-            style.CornerRadiusTopRight    = 6;
-            style.CornerRadiusBottomLeft  = 6;
-            style.CornerRadiusBottomRight = 6;
-            btn.AddThemeStyleboxOverride("normal", style);
+            // A face darker than the fill gives every call a defined edge on the felt;
+            // the ink flips to dark on the lighter (gold / jade) hues so the label stays
+            // legible without a white that would shout against the muted palette.
+            bool lightFace = color.Luminance > 0.42f;
+            Color ink      = lightFace ? new Color("#1d1610") : DoloTokens.Ivory;
 
-            var hoverStyle = (StyleBoxFlat)style.Duplicate();
-            hoverStyle.BgColor = color.Lightened(0.2f);
-            btn.AddThemeStyleboxOverride("hover", hoverStyle);
+            StyleBoxFlat Face(Color fill)
+            {
+                var box = DoloStyles.Flat(fill, DoloTokens.RadiusInset,
+                                          color.Darkened(0.35f), borderWidth: 1);
+                box.ContentMarginLeft = box.ContentMarginRight = 14;
+                box.ContentMarginTop  = box.ContentMarginBottom = 10;
+                return box;
+            }
 
-            btn.AddThemeColorOverride("font_color", Colors.White);
+            btn.AddThemeStyleboxOverride("normal",   Face(color));
+            btn.AddThemeStyleboxOverride("hover",    Face(color.Lightened(0.12f)));
+            btn.AddThemeStyleboxOverride("pressed",  Face(color.Darkened(0.14f)));
+            btn.AddThemeStyleboxOverride("disabled", Face(color.Darkened(0.45f)));
+
+            btn.AddThemeColorOverride("font_color",         ink);
+            btn.AddThemeColorOverride("font_hover_color",   ink);
+            btn.AddThemeColorOverride("font_pressed_color", ink);
             return btn;
         }
     }

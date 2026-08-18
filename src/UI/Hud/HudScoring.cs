@@ -58,7 +58,11 @@ namespace RiichiMahjong.UI
             };
             _scoringBackdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
 
-            _scoringPanel = new Panel { MouseFilter = MouseFilterEnum.Stop };
+            // A PanelContainer (not a bare Panel) so it lays the column out to fill the
+            // card, insetting it by the stylebox's 28px content margins. A plain Panel is
+            // not a container: the column would sit at its minimum width in the top-left
+            // corner and the card would collapse into its left third.
+            _scoringPanel = new PanelContainer { MouseFilter = MouseFilterEnum.Stop };
             _scoringPanel.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
             _scoringPanel.OffsetLeft   = -ScoringCardWidth  * 0.5f;
             _scoringPanel.OffsetTop    = -ScoringCardHeight * 0.5f;

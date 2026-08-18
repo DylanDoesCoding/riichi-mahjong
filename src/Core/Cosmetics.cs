@@ -54,8 +54,9 @@ namespace RiichiMahjong.Core
             new CosmeticOption("neon",   "Neon",   false),
         };
 
-        // Only the two finished sprites are claimable; the other three are designed
-        // but unmade, and their pockets draw as dashed placeholders until they exist.
+        // Ashtray, beer, coffee and teapot have finished sprites; only the snack bowl is
+        // still designed-but-unmade, and its pocket draws as a dashed placeholder until
+        // the art exists.
         public static readonly IReadOnlyList<CosmeticOption> Props = new[]
         {
             new CosmeticOption("none",    "None",       true),

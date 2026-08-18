@@ -12,9 +12,9 @@
 //   - Server URL lives in Settings rather than in the lobby (pass 06), so the
 //     lobby can be about starting a game rather than about configuration.
 //
-// The Settings card is 530 x 590 with 28px padding and 18px gaps. Its body
-// scrolls, because the card holds more rows than 590px can show and the design
-// fixes the card size rather than the content height.
+// The Settings card lays its sections across two columns so every row is visible
+// at once - the earlier single-column card held more rows than its height could
+// show, so the body scrolled and cut off mid section.
 // =============================================================================
 
 using Godot;
@@ -250,13 +250,16 @@ namespace RiichiMahjong.UI
             backdrop.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
             _optionsPanel.AddChild(backdrop);
 
-            // 530 x 590 card, 28px padding.
+            // Two columns rather than one scrolling column: the single-column card held
+            // more rows than 590px could show, so the body scrolled and cut off mid
+            // section. Splitting the sections across two columns lets every row show at
+            // once on a card that still fits the viewport - no scroll, nothing hidden.
             var card = new PanelContainer();
             card.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
-            card.OffsetLeft   = -265;
-            card.OffsetTop    = -295;
-            card.OffsetRight  =  265;
-            card.OffsetBottom =  295;
+            card.OffsetLeft   = -440;
+            card.OffsetTop    = -300;
+            card.OffsetRight  =  440;
+            card.OffsetBottom =  300;
             card.AddThemeStyleboxOverride("panel", DoloStyles.Card(28));
 
             var column = new VBoxContainer();
@@ -267,25 +270,23 @@ namespace RiichiMahjong.UI
             column.AddChild(title);
             column.AddChild(DoloStyles.HairlineRow(0.28f));
 
-            // The card size is fixed by the design and the body is taller than it, so
-            // the rows scroll rather than the card growing.
-            var scroll = new ScrollContainer
-            {
-                SizeFlagsVertical           = SizeFlags.ExpandFill,
-                HorizontalScrollMode        = ScrollContainer.ScrollMode.Disabled,
-            };
+            var columns = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+            columns.AddThemeConstantOverride("separation", 36);
 
-            var body = new VBoxContainer();
-            body.AddThemeConstantOverride("separation", 18);
-            body.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            var leftCol = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            leftCol.AddThemeConstantOverride("separation", 18);
+            var rightCol = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            rightCol.AddThemeConstantOverride("separation", 18);
 
-            BuildAudioSection(body);
-            BuildIdentitySection(body);
-            BuildDisplaySection(body);
-            BuildCreditsSection(body);
+            BuildAudioSection(leftCol);
+            BuildIdentitySection(leftCol);
 
-            scroll.AddChild(body);
-            column.AddChild(scroll);
+            BuildDisplaySection(rightCol);
+            BuildCreditsSection(rightCol);
+
+            columns.AddChild(leftCol);
+            columns.AddChild(rightCol);
+            column.AddChild(columns);
 
             var saveBtn = DoloWidgets.IconButton(DoloIcon.Check, "Save & Back",
                                                  DoloTheme.ButtonPrimary);

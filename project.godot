@@ -11,6 +11,15 @@ config_version=5
 [application]
 
 config/name="Dolo Mahjong"
+; The project was renamed from "RiichiMahjong" to "Dolo Mahjong". By default that
+; repoints user:// from app_userdata/RiichiMahjong to app_userdata/Dolo Mahjong,
+; which would orphan every existing player's settings, reconnection UUID and login.
+; custom_user_dir_name preserves path separators, so spelling out the full default
+; layout reproduces the ORIGINAL location exactly on every platform (Godot skips its
+; own "Godot/app_userdata" prefix once use_custom_user_dir is on, so it must be
+; written here explicitly - a bare "RiichiMahjong" would land in a new third folder).
+config/use_custom_user_dir=true
+config/custom_user_dir_name="Godot/app_userdata/RiichiMahjong"
 run/main_scene="res://Scenes/IntroScreen.tscn"
 config/features=PackedStringArray("4.6", "C#", "GL Compatibility")
 boot_splash/bg_color=Color(0, 0, 0, 1)

@@ -22,24 +22,38 @@ namespace RiichiMahjong.UI
     /// </summary>
     public partial class DoraCornerWedge : Control
     {
-        private const float WedgeSize = 12f;
+        // Proportional to the tile so it reads at both hand (66px) and river (28px)
+        // sizes, clamped so it never dominates a small tile or vanishes on a large one.
+        private const float WedgeFraction = 0.34f;
+        private const float WedgeMin      = 11f;
+        private const float WedgeMax      = 22f;
+
+        // A dark seam along the hypotenuse separates the gold from bright tile faces
+        // and dark felt alike, so the wedge is legible on any background - this is the
+        // cue that has to survive greyscale, so it must not depend on the felt colour.
+        private static readonly Color Seam = new(0.10f, 0.08f, 0.05f, 0.85f);
 
         public override void _Ready()
         {
             MouseFilter = MouseFilterEnum.Ignore;
             SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            // Anchored full-rect, this is size 0 until the container lays the tile out.
+            // Without a redraw on resize it would draw once at nothing and never again.
+            Resized += QueueRedraw;
         }
 
         public override void _Draw()
         {
             float w = Size.X;
-            var points = new[]
-            {
-                new Vector2(w - WedgeSize, 0f),
-                new Vector2(w, 0f),
-                new Vector2(w, WedgeSize),
-            };
-            DrawColoredPolygon(points, DoloTokens.DoraGold);
+            float wedge = Mathf.Clamp(Mathf.Min(Size.X, Size.Y) * WedgeFraction,
+                                      WedgeMin, WedgeMax);
+
+            var inner = new Vector2(w - wedge, 0f);
+            var top   = new Vector2(w, 0f);
+            var down  = new Vector2(w, wedge);
+
+            DrawColoredPolygon(new[] { inner, top, down }, DoloTokens.DoraGold);
+            DrawLine(inner, down, Seam, 1.5f);
         }
     }
 
@@ -58,6 +72,8 @@ namespace RiichiMahjong.UI
             MouseFilter  = MouseFilterEnum.Ignore;
             ClipContents = true;
             SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            // Without this the hatch draws once at size 0 and never renders at all.
+            Resized += QueueRedraw;
         }
 
         public override void _Draw()
@@ -98,6 +114,8 @@ namespace RiichiMahjong.UI
         {
             MouseFilter = MouseFilterEnum.Ignore;
             SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            // Redraw once the container has given the ring a real size (starts at 0).
+            Resized += QueueRedraw;
         }
 
         public override void _Draw()
@@ -156,6 +174,8 @@ namespace RiichiMahjong.UI
         {
             MouseFilter = MouseFilterEnum.Ignore;
             SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            // Redraw once the container has given the ring a real size (starts at 0).
+            Resized += QueueRedraw;
         }
 
         public override void _Draw()

@@ -51,7 +51,6 @@ namespace RiichiMahjong.UI
         private const int ColumnGap     = 40;
         private const int ListWidth     = 1000;
 
-        private const int ChartWidth    = 760;
         private const int ChartHeight   = 270;
 
         // Rank numeral tints, second through fourth, descending in prominence.
@@ -413,9 +412,13 @@ namespace RiichiMahjong.UI
             title.ThemeTypeVariation = DoloTheme.Mono;
             column.AddChild(title);
 
+            // Width fills the flexible rail rather than a fixed minimum: at 1920 the list
+            // (1000) plus gaps leaves the rail ~688px, so a hard 760 min pushed the rail
+            // past the viewport and clipped the Rematch / Menu buttons. The chart redraws
+            // on resize, so filling is safe.
             var chart = new PointsChart
             {
-                CustomMinimumSize = new Vector2(ChartWidth, ChartHeight),
+                CustomMinimumSize = new Vector2(0, ChartHeight),
             };
             column.AddChild(chart);
 
