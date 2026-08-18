@@ -67,10 +67,13 @@ namespace RiichiMahjong.UI
         private Label       _waitCountLabel      = null!;  // "3 left" / "0 left" under a wait tile
 
         /// <summary>
-        /// The tile pack's back art is more saturated than this felt wants, so it is
-        /// knocked back rather than used at full strength.
+        /// The back art is recoloured to the rail-brown ramp at the source (the pack ships
+        /// it in a vivid red that reads as an alarm against this felt, and a multiply can
+        /// only darken red, never turn it brown). With the art already in-palette this is
+        /// just a whisper of knock-back so a face-down tile reads as an object on the felt
+        /// rather than a lit panel.
         /// </summary>
-        private static readonly Color BackModulate = new(0.62f, 0.52f, 0.46f);
+        private static readonly Color BackModulate = new(0.92f, 0.90f, 0.88f);
 
         // ---- Asset base path -------------------------------------------------
         // Use the SVG source files (Regular/ and Black/) rather than the PNG exports
@@ -95,6 +98,14 @@ namespace RiichiMahjong.UI
             SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
             SizeFlagsVertical   = SizeFlags.ShrinkCenter;
             Flat = true;
+
+            // The shared theme gives every Button 20x10 content margins. A Button folds
+            // its stylebox margins into its minimum size, so without this a 28px river
+            // tile would demand a 40px cell — four columns fit where six should, and the
+            // river silently clips one to two discards by an exhaustive draw. Flat=true
+            // stops the box from being *drawn* but not from being *measured*, so the tile
+            // owns empty styleboxes with no margins. The tile paints its own face anyway.
+            ClearButtonPadding();
 
             // The art root must exist before any layer is added to it.
             _artRoot = new Control();
@@ -267,6 +278,20 @@ namespace RiichiMahjong.UI
             Pressed += OnPressed;
             Resized += ApplySideways;
             Refresh();
+        }
+
+        /// <summary>
+        /// Replace every Button stylebox state with a zero-margin empty box, so the
+        /// theme's 20x10 content padding stops inflating the tile's minimum size.
+        /// </summary>
+        private void ClearButtonPadding()
+        {
+            var empty = new StyleBoxEmpty();
+            AddThemeStyleboxOverride("normal",   empty);
+            AddThemeStyleboxOverride("hover",     empty);
+            AddThemeStyleboxOverride("pressed",   empty);
+            AddThemeStyleboxOverride("disabled",  empty);
+            AddThemeStyleboxOverride("focus",     empty);
         }
 
         // =====================================================================

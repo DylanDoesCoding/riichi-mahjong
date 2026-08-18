@@ -106,6 +106,11 @@ namespace RiichiMahjong.UI
 
         public override void _Ready()
         {
+            // Every theme type variation on this screen resolves against the shared theme,
+            // so it has to be applied here as the other screens do - without it Quick Play
+            // and the rest render unstyled (the brass primary button as a dark ghost).
+            DoloTheme.Apply(this);
+
             // Dark full-screen background
             var bg = new ColorRect();
             bg.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);

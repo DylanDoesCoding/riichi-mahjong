@@ -53,6 +53,22 @@ namespace RiichiMahjong.UI
         }
 
         /// <summary>
+        /// Re-label a button built by <see cref="IconButton"/>. The caption lives in a
+        /// child Label, not the button's own Text — setting <c>button.Text</c> would make
+        /// the Button draw a second caption underneath the row, doubling it. This finds
+        /// that child Label and updates it instead, leaving the drawn icon in place.
+        /// </summary>
+        public static void SetIconButtonText(Button button, string text)
+        {
+            foreach (var child in button.GetChildren())
+            {
+                if (child is not HBoxContainer row) continue;
+                foreach (var inner in row.GetChildren())
+                    if (inner is Label label) { label.Text = text; return; }
+            }
+        }
+
+        /// <summary>
         /// Give an existing scene Button a drawn icon. The button's own text is moved
         /// into the row and cleared, since a Button renders its Text underneath any
         /// children and would otherwise draw the label twice.

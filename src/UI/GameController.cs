@@ -1417,7 +1417,10 @@ namespace RiichiMahjong.UI
                 else
                     set = CosmeticSet.ForCpuSeat(seat);
 
-                CosmeticVisuals.ApplyToFelt(felt, ToVisualSeat(seat), set);
+                // Only the local player's own wedge tints; every other seat stays quiet
+                // so the felt reads as one table, not a four-colour pinwheel (pass 10).
+                CosmeticVisuals.ApplyToFelt(felt, ToVisualSeat(seat), set,
+                                            tintSurface: seat == _humanSeat);
             }
         }
 

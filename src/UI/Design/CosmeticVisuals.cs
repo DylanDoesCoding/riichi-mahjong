@@ -16,14 +16,24 @@ namespace RiichiMahjong.UI
     {
         private const string PropPath = "res://Assets/Props";
 
-        /// <summary>The wedge fill for a surface id.</summary>
-        public static Color Surface(string id) => id switch
+        // How far a chosen surface pulls the felt away from its quiet tone. The mockup's
+        // colourblind pass rules that the felt stays quiet so the tiles carry state - a
+        // wedge tint must not compete with a dora border for attention - so a surface is
+        // a whisper of hue over the felt, not a colour block. 0 = pure felt, 1 = raw swatch.
+        private const float SurfaceTint = 0.35f;
+
+        /// <summary>The wedge fill for a surface id, muted toward the quiet felt tone.</summary>
+        public static Color Surface(string id)
         {
-            "tatami"  => DoloTokens.Tatami,
-            "oxblood" => DoloTokens.Oxblood,
-            "slate"   => DoloTokens.Slate,
-            _         => DoloTokens.FeltQuiet,
-        };
+            Color raw = id switch
+            {
+                "tatami"  => DoloTokens.Tatami,
+                "oxblood" => DoloTokens.Oxblood,
+                "slate"   => DoloTokens.Slate,
+                _         => DoloTokens.FeltQuiet,
+            };
+            return DoloTokens.FeltQuiet.Lerp(raw, SurfaceTint);
+        }
 
         /// <summary>
         /// The prop sprite, or null where the art does not exist yet. A null leaves the
@@ -34,11 +44,14 @@ namespace RiichiMahjong.UI
         {
             "ashtray" => GD.Load<Texture2D>($"{PropPath}/ashtray.png"),
             "beer"    => GD.Load<Texture2D>($"{PropPath}/beer.png"),
+            "coffee"  => GD.Load<Texture2D>($"{PropPath}/coffee.png"),
+            "teapot"  => GD.Load<Texture2D>($"{PropPath}/teapot.png"),
             _         => null,
         };
 
         /// <summary>Whether this prop has finished art behind it.</summary>
-        public static bool PropIsDrawn(string id) => id is "ashtray" or "beer";
+        public static bool PropIsDrawn(string id)
+            => id is "ashtray" or "beer" or "coffee" or "teapot";
 
         /// <summary>The nameplate frame for a frame id.</summary>
         public static StyleBoxFlat Frame(string id)
@@ -101,11 +114,19 @@ namespace RiichiMahjong.UI
             return new DoloIconRect(icon, size, DoloTokens.Brass);
         }
 
-        /// <summary>Apply a whole set to one seat's wedge on the felt.</summary>
-        public static void ApplyToFelt(TableFelt? felt, int visualSeat, CosmeticSet set)
+        /// <summary>
+        /// Apply a whole set to one seat's wedge on the felt. Only the local player's own
+        /// wedge takes a surface tint (<paramref name="tintSurface"/>); every other seat
+        /// stays on the quiet felt so the table never becomes a four-colour pinwheel. The
+        /// prop still applies to every seat, since that is where a remote player's identity
+        /// belongs once the felt has gone quiet.
+        /// </summary>
+        public static void ApplyToFelt(TableFelt? felt, int visualSeat, CosmeticSet set,
+                                       bool tintSurface)
         {
             if (felt == null) return;
-            felt.SetSeatSurface(visualSeat, Surface(set.Surface));
+            felt.SetSeatSurface(visualSeat,
+                                tintSurface ? Surface(set.Surface) : DoloTokens.FeltQuiet);
             felt.SetSeatProp(visualSeat, Prop(set.Prop));
         }
     }

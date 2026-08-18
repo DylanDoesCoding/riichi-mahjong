@@ -3,10 +3,31 @@
 Review of the ten-pass redesign (PR #17) against
 `C:\Dev\Riichi mahjong redesign\design_handoff_dolo_ui\README.md`.
 
-**Nothing in this document is fixed yet.** It is the work list for the next
-session. The redesign itself builds clean, boots clean and passes 476 tests —
-every item below is a *visual* or *behavioural* defect that only shows up when
-the client is actually rendered and played.
+Every item below is a *visual* or *behavioural* defect that only shows up when
+the client is actually rendered and played — each one passed the headless smoke
+check and the 476 unit tests.
+
+## Status — updated 2026-08-18 (branch `fix/redesign-review-p0-p1`)
+
+**Done and verified** against the rendered screens via `ReviewShots` / `AutoPlay`:
+
+- **P0.1** rivers clip discards → `TileNode` empty styleboxes; `AutoPlay` now logs
+  `held == visible` everywhere (incl. `held=18`). Also fixes P0.2 (discards small).
+- **P1 3–7** all five: lobby now themed (3), scoring card fills its width (4),
+  overlays redraw so the furiten hatch renders (5), `user://` pinned back to the
+  original path (6), results rail fits 1920 (7).
+- **P2 8–11** the design calls: felt is one quiet tone, only the local player's
+  wedge tints (8); tile backs recoloured red→rail-brown in the art (9); call
+  buttons re-tinted into the Dolo palette (10); Settings is a two-column card,
+  no scroll (11).
+- **P3 23** default prop `coffee` now has art (Dylan added coffee + teapot);
+  wired into `CosmeticVisuals`, `coffee.png` background cleaned up.
+- Plus: dora corner wedge made proportional + outlined (Dylan's "clearer dora"),
+  and the **"Next Hand" button double-caption** bug found and fixed.
+
+**Not committed to `master` yet** — awaiting PR. **Remaining: the rest of P3**
+(items 12–22, 24–32). Test backlog captured in [`TEST_PLAN.md`](TEST_PLAN.md),
+scheduled for after this PR.
 
 ---
 
