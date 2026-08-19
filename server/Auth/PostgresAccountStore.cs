@@ -82,6 +82,14 @@ namespace RiichiServer.Auth
             await cmd.ExecuteNonQueryAsync();
         }
 
+        public async Task PingAsync()
+        {
+            // A trivial query is enough to open a real connection and register
+            // database activity — that is all the keep-alive needs.
+            await using var cmd = _db.CreateCommand("SELECT 1;");
+            await cmd.ExecuteScalarAsync();
+        }
+
         public async Task<AccountRecord?> CreateAsync(string username, string passwordHash)
         {
             const string sql = """

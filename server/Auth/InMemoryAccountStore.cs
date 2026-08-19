@@ -17,6 +17,8 @@ namespace RiichiServer.Auth
             return Task.CompletedTask;
         }
 
+        public Task PingAsync() => Task.CompletedTask;   // always reachable, nothing to keep alive
+
         public Task<AccountRecord?> CreateAsync(string username, string passwordHash)
         {
             lock (_lock)
