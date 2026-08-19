@@ -45,11 +45,19 @@ custom_minimum_size = Vector2(320, 56)
 text = "Play vs CPU"
 theme_override_font_sizes/font_size = 22
 
+[node name="SpacerP1" type="Control" parent="CentrePanel"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 14)
+
 [node name="MultiplayerButton" type="Button" parent="CentrePanel"]
 layout_mode = 2
 custom_minimum_size = Vector2(320, 56)
 text = "Multiplayer"
 theme_override_font_sizes/font_size = 22
+
+[node name="SpacerP2" type="Control" parent="CentrePanel"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 14)
 
 [node name="QuickPlayButton" type="Button" parent="CentrePanel"]
 layout_mode = 2

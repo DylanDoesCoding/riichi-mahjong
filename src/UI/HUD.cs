@@ -610,13 +610,14 @@ namespace RiichiMahjong.UI
                 vbox.AddThemeConstantOverride("separation", 2);
 
                 // ---- Wind: tile glyph plus the letter ----
-                // Two channels for the same fact, so the seat reads without colour.
-                // The desktop plate has room for both; the phone chip takes the letter
-                // only, and its badge is built but left hidden so SetSeatWind can stay
-                // one code path.
+                // Two channels for the same fact, so the seat reads without colour. The
+                // mockup wants the wind character at full size as the primary label, so the
+                // desktop glyph is drawn large (32 x 42) with the letter as a small second
+                // channel; the phone chip takes the letter only, and its badge is built but
+                // left hidden so SetSeatWind can stay one code path.
                 _windBadges[i] = new TextureRect
                 {
-                    CustomMinimumSize = new Vector2(20, 27),
+                    CustomMinimumSize = new Vector2(32, 42),
                     ExpandMode        = TextureRect.ExpandModeEnum.IgnoreSize,
                     StretchMode       = TextureRect.StretchModeEnum.KeepAspectCentered,
                     MouseFilter       = MouseFilterEnum.Ignore,
@@ -923,10 +924,16 @@ namespace RiichiMahjong.UI
 
         private const int RiverBackdropInset = 10;
 
-        /// <summary>The recessed pad a river sits on: darker than the felt, hairline edge.</summary>
+        /// <summary>
+        /// The recessed pad a river sits on: darker than the felt, edged with the mockup's
+        /// defined river hairline (rgba(206,182,120,0.45)). The old HairlineFaint (0.14)
+        /// made the pads read as barely-there smudges rather than as places on the table.
+        /// </summary>
+        private static readonly Color RiverHairline = new(0.808f, 0.714f, 0.471f, 0.45f);
+
         private static StyleBoxFlat RiverBackdropStyle()
             => DoloStyles.Flat(new Color(0f, 0f, 0f, 0.20f), DoloTokens.RadiusBoard,
-                               DoloTokens.HairlineFaint, borderWidth: 1);
+                               RiverHairline, borderWidth: 1);
 
         // =====================================================================
         // Countdown bar — public API
@@ -958,16 +965,13 @@ namespace RiichiMahjong.UI
                 : 0f;
 
             _countdownFill.AnchorRight = fraction;
-            _countdownFill.OffsetRight = 0f;    // ensure no residual pixel offset
+            _countdownFill.OffsetRight = -1f;   // sit inside the trough's 1px hairline
 
-            // green → yellow → red as time runs out
-            Color fillColor;
-            if (fraction >= 0.5f)
-                fillColor = new Color(0.20f, 0.78f, 0.30f)
-                    .Lerp(new Color(0.92f, 0.78f, 0.10f), (1f - fraction) * 2f);
-            else
-                fillColor = new Color(0.92f, 0.78f, 0.10f)
-                    .Lerp(new Color(0.92f, 0.22f, 0.22f), (0.5f - fraction) * 2f);
+            // Calm brass for most of the window, warming to a deep red only over the final
+            // stretch — the Dolo palette's own urgency ramp, not the old traffic light.
+            Color fillColor = fraction > 0.4f
+                ? DoloTokens.Brass
+                : DoloTokens.Brass.Lerp(DoloTokens.FuritenRed, (0.4f - fraction) / 0.4f);
             _countdownFill.Color = fillColor;
 
             int secs = (int)MathF.Ceiling(remainingSecs);
@@ -996,30 +1000,35 @@ namespace RiichiMahjong.UI
             _countdownContainer.MouseFilter  = MouseFilterEnum.Ignore;
             _countdownContainer.Visible      = false;
 
-            // Dark trough background
-            var bg = new ColorRect();
-            bg.AnchorRight  = 1f;
-            bg.AnchorBottom = 1f;
-            bg.Color        = new Color(0.07f, 0.07f, 0.10f, 0.92f);
-            bg.MouseFilter  = MouseFilterEnum.Ignore;
+            // Dark inset trough in the Dolo palette, rounded with a faint brass hairline.
+            var bg = new Panel();
+            bg.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            bg.MouseFilter = MouseFilterEnum.Ignore;
+            bg.AddThemeStyleboxOverride("panel", DoloStyles.Flat(
+                DoloTokens.DeepField, DoloTokens.RadiusTile, DoloTokens.HairlineSoft, borderWidth: 1));
             _countdownContainer.AddChild(bg);
 
-            // Coloured fill — AnchorRight is updated each frame to animate the drain
+            // Coloured fill — AnchorRight is updated each frame to animate the drain.
+            // Inset 1px so it sits inside the trough's hairline.
             _countdownFill = new ColorRect();
             _countdownFill.AnchorRight  = 1f;
             _countdownFill.AnchorBottom = 1f;
-            _countdownFill.Color        = new Color(0.20f, 0.78f, 0.30f);
+            _countdownFill.OffsetLeft   = 1f;
+            _countdownFill.OffsetTop    = 1f;
+            _countdownFill.OffsetBottom = -1f;
+            _countdownFill.Color        = DoloTokens.Brass;
             _countdownFill.MouseFilter  = MouseFilterEnum.Ignore;
             _countdownContainer.AddChild(_countdownFill);
 
-            // Seconds label centred over the bar
+            // Seconds label centred over the bar, in the mono readout face.
             _countdownLabel = new Label();
-            _countdownLabel.AnchorRight         = 1f;
-            _countdownLabel.AnchorBottom        = 1f;
+            _countdownLabel.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
             _countdownLabel.HorizontalAlignment = HorizontalAlignment.Center;
             _countdownLabel.VerticalAlignment   = VerticalAlignment.Center;
-            _countdownLabel.AddThemeFontSizeOverride("font_size", 11);
-            _countdownLabel.AddThemeColorOverride("font_color", Colors.White);
+            _countdownLabel.ThemeTypeVariation  = DoloTheme.MonoSmall;
+            _countdownLabel.AddThemeColorOverride("font_color", DoloTokens.Ivory);
+            _countdownLabel.AddThemeConstantOverride("outline_size", 3);
+            _countdownLabel.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f, 0.75f));
             _countdownLabel.MouseFilter = MouseFilterEnum.Ignore;
             _countdownContainer.AddChild(_countdownLabel);
 
@@ -1127,28 +1136,30 @@ namespace RiichiMahjong.UI
             _waitsPopup.OffsetBottom = -155;
             _waitsPopup.Visible      = false;
 
-            var popupStyle = new StyleBoxFlat();
-            popupStyle.BgColor     = new Color(0.08f, 0.08f, 0.12f, 0.93f);
-            popupStyle.BorderColor = new Color(0.10f, 0.85f, 0.25f, 1f);
-            popupStyle.BorderWidthTop    = popupStyle.BorderWidthBottom =
-            popupStyle.BorderWidthLeft   = popupStyle.BorderWidthRight  = 2;
-            popupStyle.CornerRadiusTopLeft    = popupStyle.CornerRadiusTopRight    =
-            popupStyle.CornerRadiusBottomLeft = popupStyle.CornerRadiusBottomRight = 6;
+            // A proper Dolo card — brass hairline and a soft shadow — rather than the
+            // pre-redesign green-bordered panel.
+            var popupStyle = DoloStyles.Flat(DoloTokens.Card, DoloTokens.RadiusCard,
+                                             DoloTokens.HairlineMedium, borderWidth: 1);
+            popupStyle.ContentMarginLeft = popupStyle.ContentMarginRight  = 18;
+            popupStyle.ContentMarginTop  = popupStyle.ContentMarginBottom = 12;
+            popupStyle.ShadowColor  = DoloTokens.ShadowCardColor;
+            popupStyle.ShadowSize   = DoloTokens.ShadowButton;
+            popupStyle.ShadowOffset = DoloTokens.ShadowButtonOffset;
             _waitsPopup.AddThemeStyleboxOverride("panel", popupStyle);
 
             var vbox = new VBoxContainer();
             vbox.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
             vbox.Alignment = BoxContainer.AlignmentMode.Center;
-            vbox.AddThemeConstantOverride("separation", 4);
+            vbox.AddThemeConstantOverride("separation", 6);
 
             _waitsTitle = new Label { Text = "Waiting for:" };
             _waitsTitle.HorizontalAlignment = HorizontalAlignment.Center;
-            _waitsTitle.AddThemeFontSizeOverride("font_size", 12);
-            _waitsTitle.AddThemeColorOverride("font_color", new Color(0.8f, 1f, 0.8f));
+            _waitsTitle.ThemeTypeVariation  = DoloTheme.Mono;
+            _waitsTitle.AddThemeColorOverride("font_color", DoloTokens.BodyText);
 
             _waitsRow = new HBoxContainer();
             _waitsRow.Alignment = BoxContainer.AlignmentMode.Center;
-            _waitsRow.AddThemeConstantOverride("separation", 4);
+            _waitsRow.AddThemeConstantOverride("separation", 14);
 
             vbox.AddChild(_waitsTitle);
             vbox.AddChild(_waitsRow);
@@ -1190,17 +1201,27 @@ namespace RiichiMahjong.UI
 
             foreach (var w in waits)
             {
-                // Each wait tile: tile image stacked above its remaining count
+                // Each wait tile: tile image stacked above its remaining count. The column
+                // is at least as wide as its "N left" label so neighbouring counts never
+                // collide the way the pre-redesign 30px tiles let them.
                 var col = new VBoxContainer();
                 col.Alignment = BoxContainer.AlignmentMode.Center;
-                col.AddThemeConstantOverride("separation", 2);
+                col.AddThemeConstantOverride("separation", 3);
+                col.CustomMinimumSize = new Vector2(48, 0);
 
                 var node = new TileNode();
-                node.CustomMinimumSize = new Vector2(30, 40);
+                node.CustomMinimumSize = new Vector2(32, 42);
+                node.SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter;
                 node.SetTile(w, faceDown: false);
                 node.SetInteractive(false);
 
                 col.AddChild(node);
+
+                // Add to the tree before applying the wait display: SetWaitDisplay builds
+                // on the tile's art layers, which only exist once the node has entered the
+                // tree and run _Ready. Applied earlier it silently no-ops, and a dead wait
+                // keeps its face instead of dropping to the brass outline.
+                _waitsRow.AddChild(col);
 
                 if (remaining != null && remaining.TryGetValue(w.TileId, out int left))
                 {
@@ -1220,8 +1241,6 @@ namespace RiichiMahjong.UI
                 {
                     node.SetWaitDisplay(1, furiten: true);
                 }
-
-                _waitsRow.AddChild(col);
             }
 
             _waitsPopup.Visible = true;
@@ -1759,37 +1778,43 @@ namespace RiichiMahjong.UI
 
         private void BuildMenuButton()
         {
-            var btn = MakeButton("⬅ Menu", new Color(0.25f, 0.25f, 0.30f));
-            btn.CustomMinimumSize = new Vector2(90, 34);
-            btn.AddThemeFontSizeOverride("font_size", 13);
-
+            // Both are quiet ghost buttons in the Dolo palette so they sit on the felt as
+            // table furniture rather than the pre-redesign grey and cobalt slabs.
+            var btn = new Button { Text = "" };
+            btn.ThemeTypeVariation = DoloTheme.ButtonGhost;
             btn.SetAnchorsAndOffsetsPreset(LayoutPreset.TopLeft);
-            btn.OffsetLeft   = 8;
-            btn.OffsetTop    = 8;
-            btn.OffsetRight  = 100;
-            btn.OffsetBottom = 42;
+            btn.OffsetLeft   = 10;
+            btn.OffsetTop    = 10;
+            btn.OffsetRight  = 108;
+            btn.OffsetBottom = 46;
+
+            // A back chevron plus a small label — same idiom as the menu screens.
+            var row = new HBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+            row.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            row.AddThemeConstantOverride("separation", 8);
+            row.Alignment = BoxContainer.AlignmentMode.Center;
+            row.AddChild(new DoloIconRect(DoloIcon.Back, 14, DoloTokens.BodyText));
+            var menuLabel = new Label { Text = "Menu", VerticalAlignment = VerticalAlignment.Center };
+            menuLabel.AddThemeFontSizeOverride("font_size", DoloTokens.SizeBodySmall);
+            menuLabel.AddThemeColorOverride("font_color", DoloTokens.BodyText);
+            row.AddChild(menuLabel);
+            btn.AddChild(row);
 
             btn.Pressed += () => EmitSignal(SignalName.MenuPressed);
             AddChild(btn);
 
-            // Yaku reference button — top-left, just below the menu button
+            // Yaku reference button — top-left, just below the menu button.
             var yakuBtn = new Button { Text = "?" };
+            yakuBtn.ThemeTypeVariation = DoloTheme.ButtonGhost;
             yakuBtn.SetAnchorsAndOffsetsPreset(LayoutPreset.TopLeft);
-            yakuBtn.OffsetLeft   = 8;
-            yakuBtn.OffsetTop    = 50;
-            yakuBtn.OffsetRight  = 48;
-            yakuBtn.OffsetBottom = 84;
+            yakuBtn.OffsetLeft   = 10;
+            yakuBtn.OffsetTop    = 52;
+            yakuBtn.OffsetRight  = 46;
+            yakuBtn.OffsetBottom = 88;
             yakuBtn.TooltipText  = "Yaku Reference";
-            yakuBtn.AddThemeFontSizeOverride("font_size", 18);
-
-            var yakuStyle = new StyleBoxFlat();
-            yakuStyle.BgColor = new Color(0.18f, 0.28f, 0.50f);
-            yakuStyle.SetCornerRadiusAll(6);
-            yakuBtn.AddThemeStyleboxOverride("normal", yakuStyle);
-            var yakuHover = (StyleBoxFlat)yakuStyle.Duplicate();
-            yakuHover.BgColor = yakuStyle.BgColor.Lightened(0.18f);
-            yakuBtn.AddThemeStyleboxOverride("hover", yakuHover);
-            yakuBtn.AddThemeColorOverride("font_color", Colors.White);
+            yakuBtn.AddThemeFontSizeOverride("font_size", DoloTokens.SizeButton);
+            yakuBtn.AddThemeColorOverride("font_color", DoloTokens.Brass);
+            yakuBtn.AddThemeColorOverride("font_hover_color", DoloTokens.Ivory);
 
             yakuBtn.Pressed += () => EmitSignal(SignalName.YakuReferencePressed);
             AddChild(yakuBtn);

@@ -1460,12 +1460,18 @@ namespace RiichiMahjong.UI
         {
             if (hand == null) return;
 
-            float span = sideTile.Y * 7f;   // half a hand's worth of stacked tiles
+            // Side tiles are rotated 90°, so their on-table footprint is the tile's
+            // dimensions swapped: sideTile.Y wide, sideTile.X tall. The column must be
+            // that wide or the rotated art clips against the screen edge.
+            int cellW = sideTile.Y;
+            int cellH = sideTile.X;
+
+            float span = cellH * 7.5f;   // half a full 13-14 tile hand, stacked and centred
             hand.OffsetTop    = -span;
             hand.OffsetBottom =  span;
 
-            if (fromLeft) { hand.OffsetLeft = 6;              hand.OffsetRight = 6 + sideTile.X; }
-            else          { hand.OffsetLeft = -(6 + sideTile.X); hand.OffsetRight = -6; }
+            if (fromLeft) { hand.OffsetLeft = 6;                hand.OffsetRight = 6 + cellW; }
+            else          { hand.OffsetLeft = -(6 + cellW);     hand.OffsetRight = -6; }
         }
 
         /// <summary>

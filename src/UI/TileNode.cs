@@ -47,6 +47,8 @@ namespace RiichiMahjong.UI
 
         private int _artInsetX;   // horizontal padding per side
         private int _liftHeadroom; // vertical space reserved above the art for the lift
+        private Vector2I _artSize;  // un-rotated artwork size
+        private Vector2I _cellSize; // hit cell size
 
         // ---- Child nodes -----------------------------------------------------
 
@@ -277,6 +279,15 @@ namespace RiichiMahjong.UI
 
             Pressed += OnPressed;
             Resized += ApplySideways;
+            Resized += ApplyArtInset;
+
+            // SetSideways / SetCellMetrics run before the node enters the tree (the art
+            // layers don't exist yet), so their layout work no-ops. The node is often
+            // pre-sized to its CustomMinimumSize before Resized is connected, so that
+            // signal may never fire either — apply both explicitly now that the art root
+            // and children exist, or side tiles never rotate and never re-centre.
+            ApplyArtInset();
+            ApplySideways();
             Refresh();
         }
 
@@ -331,6 +342,8 @@ namespace RiichiMahjong.UI
         /// </summary>
         public void SetCellMetrics(Vector2I art, Vector2I cell)
         {
+            _artSize          = art;
+            _cellSize         = cell;
             CustomMinimumSize = new Vector2(cell.X, cell.Y);
             _artInsetX        = Mathf.Max(0, (cell.X - art.X) / 2);
             _liftHeadroom     = Mathf.Max(0, cell.Y - art.Y);
@@ -345,6 +358,22 @@ namespace RiichiMahjong.UI
         private void ApplyArtInset()
         {
             if (_artRoot == null) return;
+
+            if (_sideways)
+            {
+                // A side hand is a portrait tile rotated 90° into a landscape cell. The
+                // caller sizes the cell landscape (art dims swapped), so centring the
+                // portrait art rect on the cell makes the rotated result fill the cell
+                // exactly — the earlier version left the art in an upright 42px cell and
+                // the rotation overflowed, clipping every side tile to a sliver.
+                float cx = (_cellSize.X - _artSize.X) / 2f;
+                float cy = (_cellSize.Y - _artSize.Y) / 2f;
+                _artRoot.OffsetLeft   =  cx;
+                _artRoot.OffsetRight  = -cx;
+                _artRoot.OffsetTop    =  cy;
+                _artRoot.OffsetBottom = -cy;
+                return;
+            }
 
             float rise = Selected ? _liftHeadroom
                        : Lifted   ? _liftHeadroom * 0.5f
@@ -363,6 +392,25 @@ namespace RiichiMahjong.UI
         }
 
         // =====================================================================
+        // Texture loading
+        // =====================================================================
+
+        // Every face-up tile and every face-down back shares one of ~40 textures, so a
+        // per-path cache turns hundreds of GD.Load calls into one each. It also hardens
+        // the blank-cream-face fault the review saw (a tile with no artwork): a load that
+        // returns null is not cached, so the next Refresh — which any hand update or dora
+        // glow triggers — retries and self-heals rather than leaving the ivory body bare.
+        private static readonly System.Collections.Generic.Dictionary<string, Texture2D> _textureCache = new();
+
+        private static Texture2D? LoadTileTexture(string path)
+        {
+            if (_textureCache.TryGetValue(path, out var cached)) return cached;
+            var texture = GD.Load<Texture2D>(path);
+            if (texture != null) _textureCache[path] = texture;
+            return texture;
+        }
+
+        // =====================================================================
         // Visual refresh
         // =====================================================================
 
@@ -374,7 +422,7 @@ namespace RiichiMahjong.UI
             {
                 // Face-down: the real Back.svg from the pack, knocked back so it sits
                 // on the felt as a tile rather than glowing against it.
-                _textureRect.Texture = GD.Load<Texture2D>(
+                _textureRect.Texture = LoadTileTexture(
                     $"{TileBasePath}/{GameSettings.TileThemeFolder}/Back.svg");
                 _textureRect.SelfModulate = BackModulate;
 
@@ -388,7 +436,7 @@ namespace RiichiMahjong.UI
                 // Face-up: load SVG artwork on top of tile body
                 string fileName = GetTileFileName(TileData);
                 string path = $"{TileBasePath}/{GameSettings.TileThemeFolder}/{fileName}.svg";
-                _textureRect.Texture      = GD.Load<Texture2D>(path);
+                _textureRect.Texture      = LoadTileTexture(path);
                 _textureRect.SelfModulate = Colors.White;
 
                 // Tile body colour matches the active theme
@@ -579,6 +627,7 @@ namespace RiichiMahjong.UI
         public void SetSideways(bool sideways)
         {
             _sideways = sideways;
+            ApplyArtInset();   // re-centre the portrait art in the landscape cell
             ApplySideways();
         }
 

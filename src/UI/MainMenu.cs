@@ -97,9 +97,14 @@ namespace RiichiMahjong.UI
         /// <summary>Version and engine line, sitting quietly at the bottom of the screen.</summary>
         private void BuildFooter()
         {
+            // Build the version from its parts rather than the full string, whose trailing
+            // "(official)" is build provenance and reads as noise on a title screen.
+            var v = Engine.GetVersionInfo();
+            string version = $"{v["major"]}.{v["minor"]}.{v["patch"]}-{v["status"]}";
+
             var footer = new Label
             {
-                Text                = $"DOLO MAHJONG  ·  GODOT {Engine.GetVersionInfo()["string"]}",
+                Text                = $"DOLO MAHJONG  ·  GODOT {version}",
                 HorizontalAlignment = HorizontalAlignment.Center,
                 MouseFilter         = MouseFilterEnum.Ignore,
             };
