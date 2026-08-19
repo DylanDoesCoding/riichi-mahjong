@@ -133,6 +133,29 @@ static class CosmeticsTests
         Test("Field whitespace is trimmed before validation",
             Same(CosmeticSet.Deserialise(" oxblood | neon | teapot | crescent "), custom));
 
+        // =====================================================================
+        // 4. Finished-prop set — the exact assertions that would have caught the
+        //    shipped item-23 bug (default prop was "coffee" with no art)
+        // =====================================================================
+
+        Test("Default prop has finished art",
+            CosmeticCatalogue.FinishedProps.Contains(
+                CosmeticCatalogue.DefaultFor(CosmeticSlot.Prop)));
+
+        for (int seat = 0; seat < 4; seat++)
+            Test($"CPU seat {seat} prop has finished art (no dashed placeholder)",
+                CosmeticCatalogue.FinishedProps.Contains(CosmeticSet.ForCpuSeat(seat).Prop));
+
+        // Every finished-prop id is itself a real catalogue option — no typo'd id
+        // that would claim art for a prop that does not exist.
+        foreach (var id in CosmeticCatalogue.FinishedProps)
+            Test($"Finished prop '{id}' is a catalogue option",
+                CosmeticCatalogue.IsValid(CosmeticSlot.Prop, id));
+
+        // The snack bowl is the one prop deliberately still awaiting art.
+        Test("Snack bowl is not marked finished",
+            !CosmeticCatalogue.FinishedProps.Contains("bowl"));
+
         return (pass, fail);
     }
 }

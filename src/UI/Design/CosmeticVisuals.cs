@@ -37,8 +37,8 @@ namespace RiichiMahjong.UI
 
         /// <summary>
         /// The prop sprite, or null where the art does not exist yet. A null leaves the
-        /// dashed pocket showing, which is the honest state for coffee, teapot and the
-        /// snack bowl - they are specified but unmade.
+        /// dashed pocket showing, which is the honest state for the snack bowl - it is
+        /// specified but unmade. Ashtray, beer, coffee and teapot are finished.
         /// </summary>
         public static Texture2D? Prop(string id) => id switch
         {
@@ -49,9 +49,12 @@ namespace RiichiMahjong.UI
             _         => null,
         };
 
-        /// <summary>Whether this prop has finished art behind it.</summary>
-        public static bool PropIsDrawn(string id)
-            => id is "ashtray" or "beer" or "coffee" or "teapot";
+        /// <summary>
+        /// Whether this prop has finished art behind it. Delegates to Core's
+        /// <see cref="CosmeticCatalogue.FinishedProps"/> so "which props are real" has one
+        /// source of truth the tests can also read.
+        /// </summary>
+        public static bool PropIsDrawn(string id) => CosmeticCatalogue.PropIsFinished(id);
 
         /// <summary>The nameplate frame for a frame id.</summary>
         public static StyleBoxFlat Frame(string id)

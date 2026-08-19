@@ -97,6 +97,20 @@ namespace RiichiMahjong.Core
             CosmeticSlot.Emblem  => "none",
             _                    => "",
         };
+
+        /// <summary>
+        /// The props that have finished sprite art. The snack bowl is designed but not yet
+        /// drawn, and "none" is the absence of a prop, so neither is here. This lives in
+        /// Core as the single home for "which props are real": the UI's
+        /// <c>CosmeticVisuals.PropIsDrawn</c> delegates to it, and a default or CPU-seat prop
+        /// that is not in this set is exactly the bug (a table shipping a dashed placeholder)
+        /// that the tests guard against.
+        /// </summary>
+        public static readonly IReadOnlySet<string> FinishedProps =
+            new HashSet<string> { "ashtray", "beer", "coffee", "teapot" };
+
+        /// <summary>Whether this prop has finished art behind it.</summary>
+        public static bool PropIsFinished(string id) => FinishedProps.Contains(id);
     }
 
     /// <summary>One player's chosen set.</summary>
