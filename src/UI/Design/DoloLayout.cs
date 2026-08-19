@@ -15,6 +15,7 @@
 // =============================================================================
 
 using Godot;
+using RiichiMahjong.Core;
 
 namespace RiichiMahjong.UI
 {
@@ -98,26 +99,42 @@ namespace RiichiMahjong.UI
         // Rivers
         // =====================================================================
 
-        public static Vector2I RiverTile => IsTouch ? new Vector2I(20, 27) : new Vector2I(28, 38);
+        /// <summary>
+        /// The active river measurements, in Core so the capacity arithmetic is unit-testable
+        /// (see <see cref="RiverGeometry"/>). Tile size, separation and the rect dimensions
+        /// are all drawn from here, so the numbers the UI lays out with and the numbers the
+        /// tests assert on cannot drift apart.
+        /// </summary>
+        public static RiverMetrics River => IsTouch ? RiverGeometry.Touch : RiverGeometry.Desktop;
 
-        public static int RiverSeparation => IsTouch ? 4 : 2;
+        public static Vector2I RiverTile => new(River.TileWidth, River.TileHeight);
 
-        /// <summary>River rects as offsets from the table centre, in visual seat order.</summary>
-        public static (float l, float t, float r, float b)[] RiverRects => IsTouch
-            ? new (float, float, float, float)[]
+        public static int RiverSeparation => River.Separation;
+
+        /// <summary>River centres as offsets from the table centre, in visual seat order.</summary>
+        private static Vector2[] RiverCentres => IsTouch
+            ? new Vector2[] { new(0, 78),  new(207, 0), new(0, -78),  new(-207, 0) }
+            : new Vector2[] { new(0, 239), new(471, 0), new(0, -261), new(-471, 0) };
+
+        /// <summary>
+        /// River rects as (l,t,r,b) offsets from the table centre, in visual seat order.
+        /// Each is the seat's centre expanded to the Core rect size, so the rect the UI
+        /// draws stays locked to the dimensions the capacity test checks.
+        /// </summary>
+        public static (float l, float t, float r, float b)[] RiverRects
+        {
+            get
             {
-                ( -97,   40,   97,  116),   // self  (south)
-                ( 110,  -38,  304,   38),   // right (west)
-                ( -97, -116,   97,  -40),   // top   (north)
-                (-304,  -38, -110,   38),   // left  (east)
+                float hw = River.RectWidth * 0.5f;
+                float hh = River.RectHeight * 0.5f;
+                var centres = RiverCentres;
+                var rects = new (float, float, float, float)[centres.Length];
+                for (int i = 0; i < centres.Length; i++)
+                    rects[i] = (centres[i].X - hw, centres[i].Y - hh,
+                                centres[i].X + hw, centres[i].Y + hh);
+                return rects;
             }
-            : new (float, float, float, float)[]
-            {
-                ( -89,  160,   89,  318),
-                ( 382,  -79,  560,   79),
-                ( -89, -340,   89, -182),
-                (-560,  -79, -382,   79),
-            };
+        }
 
         // =====================================================================
         // Nameplates
