@@ -442,6 +442,10 @@ namespace RiichiMahjong.Core
 			int count = player.Hand.ClosedTiles.Count(t => t == PendingDiscard);
 			if (count < 2) return false;
 
+			// A player who could have Ron'd this tile but let it be pon'd instead has
+			// passed on the win → missed-Ron furiten. Record before the pon mutates hands.
+			RecordMissedRonFuriten(claimerIndex: claimingPlayerIndex);
+
 			var source = GetClaimSource(DiscarderIndex, claimingPlayerIndex);
 			player.Hand.ApplyPon(PendingDiscard, PendingDiscard, source);
 
@@ -488,6 +492,10 @@ namespace RiichiMahjong.Core
             // containment checks suffice.)
             if (!player.Hand.ClosedTiles.Any(t => t == t1)) return false;
             if (!player.Hand.ClosedTiles.Any(t => t == t2)) return false;
+
+            // A player who could have Ron'd this tile but let it be chi'd instead has
+            // passed on the win → missed-Ron furiten. Record before the chi mutates hands.
+            RecordMissedRonFuriten(claimerIndex: claimingPlayerIndex);
 
             player.Hand.ApplyChi(t1, t2, PendingDiscard, ClaimSource.Left);
 
@@ -718,6 +726,11 @@ namespace RiichiMahjong.Core
         {
             if (!IsChankanWindow) return;
 
+            // An opponent who could have robbed the kan (Ron on the kakan tile) but passed
+            // has declined a winning tile → missed-Ron furiten, same as any other pass.
+            // DiscarderIndex is the kakan player, so they are excluded; no meld-claimer here.
+            RecordMissedRonFuriten(claimerIndex: -1);
+
             IsChankanWindow = false;
             PendingDiscard  = null;
             // DiscarderIndex is the kakan player — CurrentPlayerIndex hasn't changed.
@@ -749,6 +762,10 @@ namespace RiichiMahjong.Core
             var player = Players[claimingPlayerIndex];
             if (player.Hand.IsRiichi) return false;
             if (player.Hand.ClosedTiles.Count(t => t == PendingDiscard) < 3) return false;
+
+            // A player who could have Ron'd this tile but let it be kan'd instead has
+            // passed on the win → missed-Ron furiten. Record before the kan mutates hands.
+            RecordMissedRonFuriten(claimerIndex: claimingPlayerIndex);
 
             var source = GetClaimSource(DiscarderIndex, claimingPlayerIndex);
             player.Hand.ApplyKanOpen(PendingDiscard, PendingDiscard, source);
@@ -816,16 +833,9 @@ namespace RiichiMahjong.Core
 			// applies when the player PASSES on a winning tile, not the moment the
 			// tile appears. Calling RecordMissedDiscard in Discard() sets furiten
 			// before the claim window opens, permanently blocking ClaimRon.
-			var missed   = PendingDiscard!;
-			int discarder = DiscarderIndex;
-			for (int i = 0; i < 4; i++)
-			{
-				if (i == discarder) continue;
-				var otherHand = Players[i].Hand;
-				bool isWait   = otherHand.IsTenpai() && otherHand.IsWaitingFor(missed);
-				Players[i].Furiten.RecordMissedDiscard(missed, isWait, Players[i].DeclaredRiichi);
-			}
+			RecordMissedRonFuriten(claimerIndex: -1);
 
+			int discarder = DiscarderIndex;
 			PendingDiscard = null;
 			CurrentPlayerIndex = (discarder + 1) % 4;
 			TurnNumber++;
@@ -848,6 +858,34 @@ namespace RiichiMahjong.Core
 		// =====================================================================
 		// Resolution helpers
 		// =====================================================================
+
+		/// <summary>
+		/// Record missed-Ron (temporary) furiten for every player who could have won on
+		/// the pending discard but did not claim the Ron, at the moment the claim window
+		/// closes. A tenpai player waiting on the tile who passes on the Ron becomes
+		/// temporarily furiten (permanently, if they are in riichi) — and this holds
+		/// regardless of HOW the window closes: whether everyone passes (PassAllClaims),
+		/// or a third player takes the tile for a pon / chi / open kan, or a kakan is left
+		/// un-robbed. Without calling this on the meld-claim paths, a player who declined a
+		/// winning tile that was then pon'd/chi'd would wrongly stay non-furiten.
+		///
+		/// <paramref name="claimerIndex"/> is the player taking the tile for a meld — they
+		/// acted rather than passed, so they are excluded (and their hand is about to
+		/// change) — or -1 when nobody claimed. Uses PendingDiscard / DiscarderIndex, so
+		/// call it before either is cleared.
+		/// </summary>
+		private void RecordMissedRonFuriten(int claimerIndex)
+		{
+			var missed    = PendingDiscard!;
+			int discarder = DiscarderIndex;
+			for (int i = 0; i < 4; i++)
+			{
+				if (i == discarder || i == claimerIndex) continue;
+				var otherHand = Players[i].Hand;
+				bool isWait   = otherHand.IsTenpai() && otherHand.IsWaitingFor(missed);
+				Players[i].Furiten.RecordMissedDiscard(missed, isWait, Players[i].DeclaredRiichi);
+			}
+		}
 
 		private void ResolveRon(int winner, int discarder, YakuCheckResult yakuResult, WinCheckResult winCheck)
 		{
