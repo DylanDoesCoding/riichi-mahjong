@@ -151,6 +151,12 @@ namespace RiichiServer.Auth
         // IAccountStore — every call goes through RunAsync
         // =====================================================================
 
+        // Routed through RunAsync so a keep-alive ping also drives recovery: if
+        // the database went away it re-inits first, and a failed ping marks the
+        // store unhealthy so the next call reconnects.
+        public Task PingAsync()
+            => RunAsync(() => _inner.PingAsync());
+
         public Task<AccountRecord?> CreateAsync(string username, string passwordHash)
             => RunAsync(() => _inner.CreateAsync(username, passwordHash));
 

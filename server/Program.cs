@@ -731,6 +731,47 @@ app.MapGet("/ws", async context =>
 // ---- Health check --------------------------------------------------------
 app.MapGet("/health", () => Results.Ok(new { status = "ok", time = DateTime.UtcNow }));
 
+// ---- Database keep-alive --------------------------------------------------
+// Runs one trivial query so an external scheduler (.github/workflows/
+// keepalive.yml) can generate the database activity a free-tier Postgres
+// needs to avoid auto-pausing after ~7 days idle. The result is cached for a
+// minute so repeated hits can't be used to hammer the database.
+// 200 = reachable, 503 = unavailable (or accounts disabled).
+var dbHealthGate = new object();
+var dbHealthAt   = DateTime.MinValue;
+var dbHealthOk   = false;
+var dbHealthWhy  = "not checked yet";
+app.MapGet("/health/db", async () =>
+{
+    lock (dbHealthGate)
+    {
+        if (DateTime.UtcNow - dbHealthAt < TimeSpan.FromSeconds(60))
+            return DbHealthResult(dbHealthOk, dbHealthWhy, cached: true);
+    }
+
+    bool ok;
+    string why;
+    if (accounts == null)
+    {
+        ok = false;
+        why = "accounts disabled (no DATABASE_URL)";
+    }
+    else
+    {
+        try   { await accounts.PingAsync(); ok = true;  why = "select 1 ok"; }
+        catch (Exception ex) { ok = false; why = ex.Message; }
+    }
+
+    lock (dbHealthGate) { dbHealthAt = DateTime.UtcNow; dbHealthOk = ok; dbHealthWhy = why; }
+    return DbHealthResult(ok, why, cached: false);
+
+    static IResult DbHealthResult(bool ok, string why, bool cached)
+    {
+        var body = new { db = ok ? "ok" : "unavailable", detail = why, cached, time = DateTime.UtcNow };
+        return ok ? Results.Ok(body) : Results.Json(body, statusCode: 503);
+    }
+});
+
 // ---- Suppress favicon.ico 404 log spam from browsers ---------------------
 app.MapGet("/favicon.ico", () => Results.NoContent());
 

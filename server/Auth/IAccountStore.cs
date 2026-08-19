@@ -29,6 +29,12 @@ namespace RiichiServer.Auth
         /// <summary>Prepare the backing store (creates the schema if needed).</summary>
         Task InitAsync();
 
+        /// <summary>Lightweight round-trip that proves the database is reachable,
+        /// without reading or writing any account data. Used by the keep-alive
+        /// health check to generate the activity a free-tier Postgres needs to
+        /// avoid auto-pausing. Throws if the store is unreachable.</summary>
+        Task PingAsync();
+
         /// <summary>Create an account. Returns null when the username is already taken
         /// (case-insensitive).</summary>
         Task<AccountRecord?> CreateAsync(string username, string passwordHash);

@@ -199,7 +199,11 @@ In the Lobby UI, change the server URL field to `ws://localhost:5000/ws` for loc
 The server is hosted on [Render](https://render.com) (free tier, no credit card required).
 
 **Live server:** `wss://riichi-mahjong-server.onrender.com/ws`  
-**Health check:** `https://riichi-mahjong-server.onrender.com/health`
+**Health check:** `https://riichi-mahjong-server.onrender.com/health`  
+**DB keep-alive:** `https://riichi-mahjong-server.onrender.com/health/db` — runs one
+`SELECT 1` (200 reachable / 503 unavailable). Pinged every 3 days by
+`.github/workflows/keepalive.yml` so the free-tier Supabase Postgres never hits
+its ~7-day idle auto-pause.
 
 > **Note:** Render's free tier spins down after 15 minutes of inactivity.  
 > The first connection after idle takes ~30 seconds to cold-start.

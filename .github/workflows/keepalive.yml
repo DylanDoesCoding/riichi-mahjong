@@ -1,0 +1,35 @@
+name: supabase-keepalive
+
+# Pings the server's database health endpoint on a schedule so the free-tier
+# Supabase Postgres keeps seeing activity and never reaches its ~7-day idle
+# auto-pause (a recurring outage for this project). The endpoint runs one
+# `SELECT 1`, so this ping needs no database credentials — only the public URL.
+#
+# A run fails (and notifies) only if the endpoint still reports the DB
+# unavailable after retries, which absorbs a Render free-tier cold start.
+
+on:
+  schedule:
+    - cron: '17 6 */3 * *'   # every 3 days at 06:17 UTC — well inside the 7-day window
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health/db
+        env:
+          # Defaults to the deployed server. Override in repo Settings →
+          # Secrets and variables → Actions → Variables (name: KEEPALIVE_URL)
+          # if the server URL ever changes.
+          KEEPALIVE_URL: ${{ vars.KEEPALIVE_URL || 'https://riichi-mahjong-server.onrender.com/health/db' }}
+        run: |
+          echo "Pinging $KEEPALIVE_URL"
+          # --retry (with default transient-error handling) rides out a Render
+          # cold start (502/503 while booting); --fail-with-body then fails the
+          # job on a genuine 503 while still printing the endpoint's detail.
+          curl --fail-with-body --show-error --silent \
+               --connect-timeout 30 --max-time 60 \
+               --retry 6 --retry-delay 30 --retry-all-errors \
+               "$KEEPALIVE_URL"
+          echo
