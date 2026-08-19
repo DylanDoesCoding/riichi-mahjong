@@ -41,11 +41,19 @@ public partial class AutoPlay : Node
     private int _handsSeen;
     private int _shots;
     private int _lastLoggedWall = int.MaxValue;
+    private bool _clipDetected;
+
+    // The game ends by changing the scene to Results, which frees this node — so the
+    // SceneTree is captured up front and every Quit goes through it, since GetTree() on a
+    // freed node throws. Without this the process either crashed (before the guards) or
+    // hung idle on the rematch screen (after them) instead of exiting.
+    private SceneTree _tree = null!;
 
     public override async void _Ready()
     {
         DirAccess.MakeDirRecursiveAbsolute(OutDir);
         Log("=== autoplay: full solo game ===");
+        _tree = GetTree();
 
         _table = GD.Load<PackedScene>("res://Scenes/GameTable.tscn").Instantiate();
         AddChild(_table);
@@ -57,6 +65,9 @@ public partial class AutoPlay : Node
         while (_frame < MaxFrames)
         {
             await Frames(ActionInterval);
+            // Reaching the results screen swaps the scene and frees this node; once that
+            // happens there is no tree left to drive, so stop rather than crash on it.
+            if (!IsInsideTree()) break;
             _frame += ActionInterval;
 
             SampleRivers();
@@ -67,9 +78,15 @@ public partial class AutoPlay : Node
             if (over) break;
         }
 
+        // Whether the game freed us on its way to the results screen or we simply ran out
+        // of frames, quit through the cached tree. A clip already forced exit 1 in
+        // SampleRivers, so reaching here means no river clipped.
+        Log(_clipDetected
+            ? "clip check: FAIL — a river clipped discards (exit 1)"
+            : "clip check: OK — no river clipped its discards");
         Log($"=== finished after {_frame} frames, {_handsSeen} hand ends, {_shots} shots ===");
         Flush();
-        GetTree().Quit();
+        _tree.Quit(_clipDetected ? 1 : 0);
     }
 
     // =====================================================================
@@ -79,6 +96,10 @@ public partial class AutoPlay : Node
     /// <summary>Returns true when the game is over.</summary>
     private async System.Threading.Tasks.Task<bool> Step()
     {
+        // If the game already swapped us out for the results scene, this node is freed —
+        // report game-over so the loop ends and quits through the cached tree.
+        if (!IsInsideTree()) return true;
+
         // Game over lands on the results screen, which replaces the whole scene.
         if (GetTree().CurrentScene?.Name == "Results" || FindNodeOfType<ResultsScreen>(GetTree().Root) != null)
         {
@@ -204,10 +225,22 @@ public partial class AutoPlay : Node
                                        && c.Position.X + c.Size.X <= rect.X + 0.5f)
                     shown++;
 
+            if (held > shown) _clipDetected = true;
             parts.Add($"seat{i}: held={held} visible={shown}{(held > shown ? "  CLIPPED" : "")}");
         }
 
         Log($"wall={wallLabel}  " + string.Join("   ", parts));
+
+        // Fail fast, while the node is still in the tree: a clip forces exit 1 the moment
+        // it is seen. Waiting until the end of the game is unreliable because reaching the
+        // results screen swaps the scene and frees this node before an end-of-run gate
+        // could run. A non-zero exit lets a harness run fail a change, not just narrate it.
+        if (_clipDetected)
+        {
+            Log("clip check: FAIL — a river clipped discards (exit 1)");
+            Flush();
+            _tree.Quit(1);
+        }
     }
 
     private int FindWallCount()
@@ -294,12 +327,19 @@ public partial class AutoPlay : Node
     private async System.Threading.Tasks.Task Frames(int count)
     {
         for (int i = 0; i < count; i++)
+        {
+            // The game-over scene change can free this node mid-await; without the guard
+            // the next ToSignal calls GetTree() on a freed node and throws "data.tree is null".
+            if (!IsInsideTree()) return;
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
     }
 
     private async System.Threading.Tasks.Task Capture(string name)
     {
+        if (!IsInsideTree()) return;
         await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        if (!IsInsideTree()) return;
         var image = GetViewport().GetTexture().GetImage();
         image.SavePng($"{OutDir}/auto-{name}.png");
         _shots++;

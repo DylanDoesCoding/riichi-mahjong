@@ -1969,6 +1969,16 @@ static class Program
         pass += mPass;
         fail += mFail;
 
+        // ---- Cosmetics: catalogue defaults, CPU seats and the wire format (separate file) ---
+        var (cPass, cFail) = CosmeticsTests.Run();
+        pass += cPass;
+        fail += cFail;
+
+        // ---- River geometry: the P0.1 capacity arithmetic (separate file) ---
+        var (rgPass, rgFail) = RiverGeometryTests.Run();
+        pass += rgPass;
+        fail += rgFail;
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         if (fail > 0)
         {
