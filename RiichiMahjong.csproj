@@ -11,13 +11,17 @@
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
-  <!-- Core/AI live in the shared lib; server is a separate ASP.NET project.
-       Exclude both to avoid duplicate type definitions and missing ASP.NET refs. -->
+  <!-- Core/AI live in the shared lib; server is a separate ASP.NET project;
+       tests are their own console project. Exclude all of them so the client
+       doesn't pull in duplicate types, missing ASP.NET refs, or — for tests —
+       the generated tests/obj/**/*AssemblyInfo.cs files, which redeclare
+       assembly attributes and break the build once the tests are built. -->
   <ItemGroup>
     <Compile Remove="src/Core/**/*.cs" />
     <Compile Remove="src/AI/**/*.cs" />
     <Compile Remove="server/**/*.cs" />
     <Compile Remove="shared/**/*.cs" />
+    <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
 
   <ItemGroup>
