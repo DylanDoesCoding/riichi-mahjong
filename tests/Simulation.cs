@@ -1993,6 +1993,11 @@ static class Program
         pass += rgPass;
         fail += rgFail;
 
+        // ---- Furiten: missed Ron registers however the claim window closes (separate file) ---
+        var (fPass, fFail) = FuritenTests.Run();
+        pass += fPass;
+        fail += fFail;
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         _unitFailures = fail;
         if (fail > 0)
