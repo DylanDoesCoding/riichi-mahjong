@@ -1,3 +1,26 @@
+# Test plan — cosmetics + river geometry
+
+## Status — DONE 2026-08-18 (branch `test/cosmetics-catalogue-tests`)
+
+Sections **A, B and C are implemented** (476 → 527 unit tests, 0 fail). Section **D**
+stays on the `ReviewShots` / `AutoPlay` harnesses, as intended, and is unchanged.
+
+- **A** — `tests/CosmeticsTests.cs`: slot defaults, CPU seats and the wire format, plus
+  the defensive Deserialise cases. Pure additions.
+- **B** — finished-prop set moved into Core (`CosmeticCatalogue.FinishedProps` /
+  `PropIsFinished`); `CosmeticVisuals.PropIsDrawn` delegates to it. Tests: the default
+  prop and every CPU prop have finished art (the exact assertions that would have caught
+  the shipped item-23 bug).
+- **C** — river capacity extracted to Core (`RiverGeometry.Fit` / `Capacity`);
+  `DoloLayout` derives tile size, separation and the rect dimensions from it (rects
+  unchanged, verified on the rendered table). Tests assert desktop ≥ 22 (6×4 = 24), lock
+  touch at 16, and encode the P0.1 case (a 40px-min tile regresses below a full hand).
+  `AutoPlay` now exits non-zero when any river clips, so the harness gates the regression.
+
+---
+
+The original backlog follows, for reference.
+
 # Test plan — to add *after* the next PR
 
 Scheduled for after the redesign-review fixes land (branch
