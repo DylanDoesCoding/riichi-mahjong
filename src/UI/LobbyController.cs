@@ -41,7 +41,7 @@ namespace RiichiMahjong.UI
         // Identity strip on the play-online card
         private Label  _identityLabel     = null!;
         private Button _accountBtn        = null!;
-        private Panel  _serverDot         = null!;
+        private DoloIconRect _serverDot   = null!;
         private Label  _serverStatusLabel = null!;
 
         // ---- Leaderboard widgets ----------------------------------------------
@@ -288,9 +288,8 @@ namespace RiichiMahjong.UI
             var serverRow = new HBoxContainer();
             serverRow.AddThemeConstantOverride("separation", 8);
 
-            _serverDot = new Panel
+            _serverDot = new DoloIconRect(DoloIcon.Dot, 10, DoloTokens.DimText)
             {
-                CustomMinimumSize = new Vector2(10, 10),
                 SizeFlagsVertical = SizeFlags.ShrinkCenter,
                 MouseFilter       = MouseFilterEnum.Ignore,
             };
@@ -315,8 +314,7 @@ namespace RiichiMahjong.UI
         private void SetServerStatus(bool ok, string text)
         {
             var tint = ok ? DoloTokens.Positive : DoloTokens.DimText;
-            _serverDot.AddThemeStyleboxOverride("panel",
-                DoloStyles.Flat(tint, 5, DoloTokens.Hairline(0.4f), borderWidth: 1));
+            _serverDot.IconColor = tint;
             _serverStatusLabel.Text = $"SERVER {text.ToUpperInvariant()}";
             _serverStatusLabel.AddThemeColorOverride("font_color", tint);
         }

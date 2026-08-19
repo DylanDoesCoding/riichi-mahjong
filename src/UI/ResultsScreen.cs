@@ -176,11 +176,13 @@ namespace RiichiMahjong.UI
         {
             bool isFirst = place == 0;
 
+            // First place is emphasised by a taller fixed height, the brass ring and the
+            // gradient — not by ExpandFill, which let it swallow all the column's leftover
+            // vertical space and balloon to ~430px against its 150px minimum.
             var frame = new PanelContainer
             {
-                CustomMinimumSize   = new Vector2(0, isFirst ? 150 : 112),
-                SizeFlagsVertical   = isFirst ? SizeFlags.ExpandFill : SizeFlags.Fill,
-                SizeFlagsStretchRatio = isFirst ? 1.35f : 1.0f,
+                CustomMinimumSize = new Vector2(0, isFirst ? 168 : 112),
+                SizeFlagsVertical = SizeFlags.Fill,
             };
 
             var style = isFirst

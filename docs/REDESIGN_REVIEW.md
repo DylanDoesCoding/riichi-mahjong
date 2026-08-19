@@ -7,9 +7,10 @@ Every item below is a *visual* or *behavioural* defect that only shows up when
 the client is actually rendered and played — each one passed the headless smoke
 check and the 476 unit tests.
 
-## Status — updated 2026-08-18 (branch `fix/redesign-review-p0-p1`)
+## Status — updated 2026-08-18
 
-**Done and verified** against the rendered screens via `ReviewShots` / `AutoPlay`:
+**P0/P1/P2 — DONE and MERGED** (PR #18, merge commit `028f7c4`). Verified against the
+rendered screens via `ReviewShots` / `AutoPlay`:
 
 - **P0.1** rivers clip discards → `TileNode` empty styleboxes; `AutoPlay` now logs
   `held == visible` everywhere (incl. `held=18`). Also fixes P0.2 (discards small).
@@ -25,9 +26,35 @@ check and the 476 unit tests.
 - Plus: dora corner wedge made proportional + outlined (Dylan's "clearer dora"),
   and the **"Next Hand" button double-caption** bug found and fixed.
 
-**Not committed to `master` yet** — awaiting PR. **Remaining: the rest of P3**
-(items 12–22, 24–32). Test backlog captured in [`TEST_PLAN.md`](TEST_PLAN.md),
-scheduled for after this PR.
+**P3 12–22, 24–32 — DONE** (branch `polish/redesign-review-p3`, not yet committed).
+Verified via `ReviewShots` (all ten screens) + unit tests (476 pass) + `smoke.sh`:
+
+- **12/13** opponent hands: top now uses compact tiles; side hands render as rotated
+  landscape tiles clear of the screen edge (the rotation was silently never applied —
+  `Resized` fired before its handler was connected, so it is now applied in `_Ready`).
+- **14/15** wordmark: single `SansTracked` variation carries both weight + tracking
+  (nesting dropped the weight); lockup centred in its control.
+- **16/17/18/26** icons redrawn: globe (vertical-ellipse meridian), gear (ring + 8
+  teeth + hub), tile (one-circle roundel), and a new `Dot` icon for the server status
+  light (a 10px StyleBoxFlat degenerated into a diamond).
+- **19** waits popup: Dolo card instead of the green panel; per-wait columns widened so
+  counts no longer collide; dead-wait face-drop + furiten hatch now apply (they no-op'd
+  because `SetWaitDisplay` ran before the node entered the tree).
+- **20** countdown bar: Dolo inset trough, brass fill warming to deep red near the end.
+- **21** table `?`/`Menu`: ghost buttons with a drawn back chevron.
+- **22** cosmetics live preview: new `WedgePreview` draws just the self wedge at 1:1
+  (prop centred, nameplate below) instead of the whole four-wedge felt scaled down.
+- **25** results first-place row no longer balloons (fixed 168px, not `ExpandFill`).
+- **27** footer drops `(official)`. **28** top menu buttons spaced so shadows don't merge.
+- **29** seat-wind glyph enlarged to 32×42 (the primary label). **31** river hairline to
+  the mockup's `rgba(206,182,120,0.45)`.
+- **30** felt riichi stick: verified it renders (staged in `ReviewShots`, confirmed) —
+  the earlier overlay-redraw fix resolved it; no change needed.
+- **24/32** blank-cream tile: all tile art files (incl. `*-Dora`) exist and the fault did
+  not reproduce; hardened with a `TileNode` texture cache that does not cache a null load,
+  so a transient miss self-heals on the next `Refresh`.
+
+**Remaining:** the `TEST_PLAN.md` backlog (sections A–C).
 
 ---
 

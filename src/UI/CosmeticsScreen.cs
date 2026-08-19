@@ -24,7 +24,9 @@ namespace RiichiMahjong.UI
 
         private CosmeticSet _set = new();
 
-        private TableFelt?     _previewFelt;
+        private WedgePreview?  _previewWedge;
+        private TextureRect    _previewProp   = null!;
+        private DashedRing     _previewPocket = null!;
         private PanelContainer _previewPlate = null!;
         private Label          _previewName  = null!;
         private Control?       _previewEmblem;
@@ -269,10 +271,27 @@ namespace RiichiMahjong.UI
                 ClipContents      = true,
             };
 
-            // The real felt node, so the preview is the table rather than a mock-up of it.
-            _previewFelt = new TableFelt();
-            _previewFelt.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            holder.AddChild(_previewFelt);
+            // Just the self wedge, at 1:1 — not the whole four-wedge table scaled down.
+            _previewWedge = new WedgePreview();
+            _previewWedge.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            holder.AddChild(_previewWedge);
+
+            // The player's prop, at true table size, sitting in the wedge above the plate.
+            int propSize = DoloLayout.PropSize;
+            _previewPocket = new DashedRing { RingColor = DoloTokens.HairlineMedium };
+            PlaceProp(_previewPocket, propSize);
+            holder.AddChild(_previewPocket);
+
+            _previewProp = new TextureRect
+            {
+                ExpandMode   = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode  = TextureRect.StretchModeEnum.KeepAspectCentered,
+                MouseFilter  = MouseFilterEnum.Ignore,
+                Visible      = false,
+                SelfModulate = new Color(0.88f, 0.88f, 0.88f),
+            };
+            PlaceProp(_previewProp, propSize);
+            holder.AddChild(_previewProp);
 
             // The nameplate, drawn at table scale so the frame and emblem read true.
             _previewPlate = new PanelContainer();
@@ -319,14 +338,28 @@ namespace RiichiMahjong.UI
             return column;
         }
 
+        /// <summary>Centre a prop horizontally in the wedge, above the nameplate.</summary>
+        private static void PlaceProp(Control node, int size)
+        {
+            node.SetAnchorsAndOffsetsPreset(LayoutPreset.Center);
+            node.OffsetLeft   = -size / 2f;
+            node.OffsetRight  =  size / 2f;
+            node.OffsetTop    = -size / 2f - 44f;   // lift clear of the plate at the bottom
+            node.OffsetBottom =  size / 2f - 44f;
+        }
+
         private void RefreshPreview()
         {
-            if (_previewFelt == null) return;
+            if (_previewWedge == null) return;
 
-            // Only the self wedge is the player's; the rest stay quiet so the preview
-            // shows the contrast they will actually see.
-            _previewFelt.SetSeatSurface(TableFelt.SeatSelf, CosmeticVisuals.Surface(_set.Surface));
-            _previewFelt.SetSeatProp(TableFelt.SeatSelf, CosmeticVisuals.Prop(_set.Prop));
+            _previewWedge.SetSurface(CosmeticVisuals.Surface(_set.Surface));
+
+            // The prop shows when it has finished art; otherwise the dashed pocket marks
+            // where it will sit, exactly as the table does.
+            var prop = CosmeticVisuals.Prop(_set.Prop);
+            _previewProp.Texture    = prop;
+            _previewProp.Visible    = prop != null;
+            _previewPocket.Visible  = prop == null;
 
             _previewPlate.AddThemeStyleboxOverride("panel", CosmeticVisuals.Frame(_set.Frame));
 

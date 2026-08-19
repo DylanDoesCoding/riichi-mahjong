@@ -24,18 +24,27 @@ namespace RiichiMahjong.UI
         [Export] public bool            IsInteractive  { get; set; } = false;
         [Export] public bool            FaceDown       { get; set; } = true;
 
-        // ---- Tile size: CPU side tiles are compact (face-down only) ----------
+        // ---- Tile size: the three opponent hands are compact (face-down only) ----
 
         private bool IsSideHand => Orientation is HandOrientation.Left or HandOrientation.Right;
 
+        /// <summary>All three opponent seats (top and both sides) use compact tiles;
+        /// only the local player's bottom hand gets full-size interactive cells.</summary>
+        private bool IsCompactHand => Orientation is HandOrientation.Top
+                                                    or HandOrientation.Left
+                                                    or HandOrientation.Right;
+
         /// <summary>The artwork size — what the player sees.</summary>
-        private Vector2I ArtSize => IsSideHand ? DoloLayout.SideTile : DoloLayout.HandArt;
+        private Vector2I ArtSize => IsCompactHand ? DoloLayout.SideTile : DoloLayout.HandArt;
 
         /// <summary>
         /// The hit cell — larger than the art, with the visual gap as padding inside it.
-        /// Side hands are not interactive, so their cell is their art.
+        /// Side hands are rotated 90°, so their cell footprint is the tile's dimensions
+        /// swapped (landscape); the top hand and the local hand stay upright.
         /// </summary>
-        private Vector2I CellSize => IsSideHand ? DoloLayout.SideTile : DoloLayout.HandCell;
+        private Vector2I CellSize => IsSideHand
+            ? new Vector2I(DoloLayout.SideTile.Y, DoloLayout.SideTile.X)
+            : IsCompactHand ? DoloLayout.SideTile : DoloLayout.HandCell;
 
         private int TileW => CellSize.X;
         private int TileH => CellSize.Y;

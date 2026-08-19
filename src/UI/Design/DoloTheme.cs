@@ -114,6 +114,31 @@ namespace RiichiMahjong.UI
             return new FontVariation { BaseFont = baseFont, VariationOpentype = axes };
         }
 
+        /// <summary>
+        /// A weighted Source Sans variation with extra glyph tracking, built as a single
+        /// FontVariation over the base file. Nesting a FontVariation inside another (a
+        /// tracking variation over the semibold variation) silently drops the weight axis,
+        /// so the weight and the tracking have to be set together on one variation.
+        /// </summary>
+        public static Font SansTracked(int weight, int spacingGlyph)
+        {
+            var baseFont = GD.Load<FontFile>($"{FontPath}/SourceSans3.ttf");
+            if (baseFont == null) return SansSemiBold;
+
+            var textServer = TextServerManager.GetPrimaryInterface();
+            var axes = new Godot.Collections.Dictionary
+            {
+                { (int)textServer.NameToTag("weight"), weight },
+            };
+
+            return new FontVariation
+            {
+                BaseFont          = baseFont,
+                VariationOpentype = axes,
+                SpacingGlyph      = spacingGlyph,
+            };
+        }
+
         // =====================================================================
         // Theme construction
         // =====================================================================
