@@ -1969,6 +1969,11 @@ static class Program
         pass += mPass;
         fail += mFail;
 
+        // ---- Cosmetics: catalogue defaults, CPU seats and the wire format (separate file) ---
+        var (cPass, cFail) = CosmeticsTests.Run();
+        pass += cPass;
+        fail += cFail;
+
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
         if (fail > 0)
         {
