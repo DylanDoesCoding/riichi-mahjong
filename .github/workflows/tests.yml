@@ -1,0 +1,30 @@
+name: tests
+
+# Runs the headless test console app (unit tests + a full AI-vs-AI game
+# simulation) on every push and pull request. This app now exits non-zero on
+# any unit-test failure or an unresolved simulation hand, so a real regression
+# fails the job — unlike `dotnet test`, which reports a false green for this
+# repo because the suite is a console Main(), not an xUnit/NUnit project.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  console-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # The test project pulls src/Core and src/AI in directly and has no Godot
+      # dependency, so it builds and runs on a headless Linux runner.
+      - name: Run test console app
+        run: dotnet run --project tests/RiichiMahjong.Tests.csproj --configuration Release

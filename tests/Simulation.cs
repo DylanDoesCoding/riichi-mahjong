@@ -25,9 +25,10 @@ static class Program
     static int _riichiDeclared  = 0;
     static int _totalHan        = 0;
     static int _scoredHands     = 0;
+    static int _unitFailures    = 0;   // unit-test failures, surfaced to the process exit code
     static readonly List<string> _log = new();
 
-    static void Main()
+    static int Main()
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         Console.WriteLine("═══════════════════════════════════════════════════");
@@ -42,7 +43,20 @@ static class Program
         SimulateGame();
 
         // --- Summary ---
-        PrintSummary();
+        bool simOk = PrintSummary();
+
+        // --- Exit code: non-zero if any unit test failed or the sim did not
+        //     resolve cleanly, so CI (and any caller) gates on real results
+        //     instead of the process always exiting 0. ---
+        if (_unitFailures > 0 || !simOk)
+        {
+            Console.WriteLine(
+                $"\nEXIT: FAILURE — {_unitFailures} unit-test failure(s)" +
+                (simOk ? "" : ", simulation did not resolve cleanly"));
+            return 1;
+        }
+        Console.WriteLine("\nEXIT: SUCCESS — all unit tests passed, simulation resolved cleanly");
+        return 0;
     }
 
     // =========================================================================
@@ -1980,6 +1994,7 @@ static class Program
         fail += rgFail;
 
         Console.WriteLine($"\n  Result: {pass} passed, {fail} failed\n");
+        _unitFailures = fail;
         if (fail > 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
@@ -2180,7 +2195,7 @@ static class Program
     // Summary
     // =========================================================================
 
-    static void PrintSummary()
+    static bool PrintSummary()
     {
         Console.WriteLine("\n═══════════════════════════════════════════════════");
         Console.WriteLine("  Simulation Summary");
@@ -2208,5 +2223,6 @@ static class Program
         }
         Console.ResetColor();
         Console.WriteLine("═══════════════════════════════════════════════════");
+        return ok;
     }
 }
